@@ -5,10 +5,10 @@ contact. Read this BEFORE changing anything — code, prompts, or docs. It is
 constitutional, not archival: each principle carries the reason it exists.
 
 ## Identity
-haejwo (해줘 — English: "just handle it") is a **lubricant layer** on top of
-Claude Code and Codex — they are the harnesses; haejwo makes multiple models
-run well on them: the user just talks, and the host judges, tiers execute,
-gates enforce. 해줘 names the EXPERIENCE, not the mechanism (the mechanism is
+haejwo (해줘 — English: "just handle it") is the **cold-start plugin** for
+Claude Code and Codex — they are the official harnesses; haejwo is a
+lubricant layer that makes multiple models run well on top. The user just
+talks; the host judges, tiers execute, gates enforce. 해줘 names the EXPERIENCE, not the mechanism (the mechanism is
 closer to 시켜, "make others do it"); that is deliberate benefit-naming, and
 it stays honest only while the name-integrity rule holds: **the moment users
 must understand or manage the plugin to get their work done, 해줘 stops

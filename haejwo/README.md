@@ -1,19 +1,17 @@
-# haejwo (해줘) — the lubricant layer
+# haejwo (해줘) — the cold-start plugin
 
 > **"just handle it."** — you talk; the models work it out among themselves.
 
-Claude Code and Codex are already great harnesses. haejwo is the thin layer that makes **multiple models run well on top of them — automatically**. You don't drive it with commands: you just say what you want (however roughly — that's the 해줘), and the host plans with an independent reviewer, delegates across cost tiers, reviews, and verifies.
+Claude Code and Codex are the official coding harnesses: complete, widely used, and best matched to their models. haejwo is the cold-start plugin — a lubricant layer that makes **multiple models run well on top of them, automatically**. You don't drive it with commands: you just say what you want (however roughly — that's the 해줘), and the host plans with an independent reviewer, delegates across cost tiers, reviews, and verifies.
 
 Underneath, it keeps the expensive main model on **judgment** (plan, delegate, decide, synthesize) and pushes **execution** to cheap tiers — and doesn't just ask nicely: a PreToolUse hook **physically blocks** the main agent when it starts implementing instead of delegating.
-
-The 4-layer design: *declaration + role assignment + operating criteria + enforcement* — the point is not making the model work smart; it's making the expensive model **unable** to do cheap work.
 
 ## The 4 layers
 
 | Layer | Artifact | What it does |
 |---|---|---|
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the orchestration rules + live config into every session |
-| Roles | `agents/` | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) + codex slot (`scripts/codex_consult.sh`, read-only outside perspective) |
+| Roles | `agents/` | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — read-only outside perspective) |
 | Criteria | `rules/orchestration.md` | When the main agent handles directly vs must delegate |
 | **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied** with a delegation instruction; Bash writes to code files are denied outright |
 
@@ -28,7 +26,7 @@ The 4-layer design: *declaration + role assignment + operating criteria + enforc
 - Known bypass gap (accepted): commands that write code dynamically are regex-invisible to the guard; the injected rules forbid them by instruction. This is a delegation aid, not a security boundary.
 
 ## First run
-`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, codex reviewer; probes `codex login status` and smoke-tests the codex slot read-only; persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.
+`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, independent reviewer; probes the other CLI and smoke-tests the reviewer slot read-only; persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.
 
 ## Zero-command by design
 Normal use involves **no haejwo commands at all**. You talk; the host does the rest automatically:
@@ -42,8 +40,8 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 | Command | Role |
 |---|---|
 | `/haejwo:plan <topic>` | Pre-implementation consensus: independent-reviewer debate → agreed plan (conversation-first; file only on request); feature-scale briefs embed it (`Plan:` section) |
-| `/haejwo:setup` | First-run (or re-run) interactive configuration + codex probe |
-| `/haejwo:status` | Config, this turn's counter, codex readiness, subagent-hook observations |
+| `/haejwo:setup` | First-run (or re-run) interactive configuration + reviewer probe |
+| `/haejwo:status` | Config, this turn's counter, reviewer readiness, subagent-hook observations |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |
 | `/haejwo:push [auto\|ask]` | Per-repo push consent — outward actions are host-owned, ask-first until granted (registry, not a gate) |
 
@@ -51,7 +49,7 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 
 Env override for a single command: `HAEJWO_GATE=off <cmd>`.
 
-**Reasoning policy:** reviewer effort scales with the decision's stakes — `medium` for routine checks, `high` (runner default) for standard consults, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. The claude reviewer path uses `deep-reasoner` (opus, high effort). Uniform max dilutes budget exactly where judgment compounds.
+**Reasoning policy:** reviewer effort scales with the decision's stakes — `medium` for routine checks, `high` (runner default) for standard consults, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. Claude-host same-family fallback uses `deep-reasoner`; other-CLI review uses the configured runner. Uniform max dilutes budget exactly where judgment compounds.
 
 ## Install
 

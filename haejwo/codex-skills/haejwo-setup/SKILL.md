@@ -1,6 +1,6 @@
 ---
 name: haejwo-setup
-description: First-run (or re-run) configuration — pick model tiers, edit budget, bash-guard, and the optional codex reviewer via interactive choices; probes codex readiness; persists once so it never asks again.
+description: Configure haejwo once (writes config) — model tiers, edit budget, bash-guard, and the optional independent reviewer.
 ---
 
 <!-- MIRROR of commands/setup.md for the Codex host — do not edit by hand;

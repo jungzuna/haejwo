@@ -68,7 +68,7 @@ codex plugin add haejwo@haejwo
 
 ## 듀얼호스트 패리티
 
-repo 하나, `hooks.json` 하나, python 코어 하나 — codex 동작은 전부 **추측이 아니라 실측**했습니다(환경변수 호환 별칭, deny 왕복, `apply_patch` 멀티파일 파싱과 통째-거부, `turn_id` 턴 리셋, 서브에이전트 `agent_type` 면제). 리뷰어는 호스트별로 반전되어 항상 다른 모델 계열이 검토합니다. codex 쪽 티어는 네이티브 `spawn_agent`의 model/effort 파라미터로 돕니다 — 판단(reasoner) 티어는 호스트 모델을 상속(판단은 조용히 다운그레이드되지 않음), 실행·잡무 티어만 다운시프트.
+repo 하나, `hooks.json` 하나, python 코어 하나 — codex 동작은 전부 **추측이 아니라 실측**했습니다(환경변수 호환 별칭, deny 왕복, `apply_patch` 멀티파일 파싱과 통째-거부, `turn_id` 턴 리셋, 서브에이전트 `agent_type` 면제). codex 쪽 티어는 네이티브 `spawn_agent`의 model/effort 파라미터로 돕니다 — 판단(reasoner) 티어는 호스트 모델을 상속(판단은 조용히 다운그레이드되지 않음), 실행·잡무 티어만 다운시프트.
 
 ## 문서
 

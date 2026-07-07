@@ -2,7 +2,7 @@
   "name": "haejwo",
   "displayName": "haejwo (해줘)",
   "description": "해줘 — \"just handle it.\" Cold-start plugin for Claude Code and Codex: the user writes the ask, the host plans and delegates across model tiers, a different vendor's model reviews when available, and a PreToolUse gate keeps expensive judgment from becoming cheap execution. Zero workflow commands; commands are settings only.",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "author": {
     "name": "jungzuna",
     "url": "https://github.com/jungzuna"

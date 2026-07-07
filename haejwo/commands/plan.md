@@ -19,7 +19,7 @@ Reviewer selection: `--reviewer` if given; else the configured other-CLI reviewe
 
 ## 3. Disagreement ledger (the anti-fake-convergence core)
 Convert every reviewer objection into a ledger row: `# | objection | evidence level | host response | status`. Status must be one of **accepted** (plan changed — say how), **rejected** (with grounded rationale), **deferred** (explicitly parked, with why). Capitulation without rationale is not a valid status. The ledger is YOUR debate discipline — surface only the material disagreements and their resolutions to the user, not the ceremonial full table.
-- Rounds 2-3 (only if substantive objections remain): send the REVISED plan + ledger back via `--resume` (codex remembers the session) or the same subagent. Round 2 = revised plan + remaining objections; round 3 = final objections or deadlock. **Hard cap: 3 rounds.**
+- Rounds 2-3 (only if substantive objections remain): send the REVISED plan + ledger back via `--resume` (codex remembers the session) or the same subagent. Round 2 = revised plan + remaining objections; round 3 = final objections or deadlock. **Hard cap: 3 rounds.** Do not re-litigate settled rows unless new evidence changes them.
 
 ## 4. Converge or escalate
 - **Consensus** = every ledger row has a status + rationale, and no substantive objection stands unaddressed.

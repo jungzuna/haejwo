@@ -25,7 +25,7 @@ The 4-layer design: *declaration + role assignment + operating criteria + enforc
 - Deny reason (the model sees it verbatim): budget state + exactly whom to delegate to.
 - The last allowed edit also injects a "budget now full — delegate further edits" warning.
 - **Fail-open**: any hook error/ambiguity ⇒ allow. This is a delegation gate, not a security boundary.
-- Known bypass gap (accepted): `python -c` / `node -e` style writes are regex-invisible; the injected rules forbid them by instruction.
+- Known bypass gap (accepted): commands that write code dynamically are regex-invisible to the guard; the injected rules forbid them by instruction. This is a delegation aid, not a security boundary.
 
 ## First run
 `SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, codex reviewer; probes `codex login status` and smoke-tests the codex slot read-only; persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.

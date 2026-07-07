@@ -40,7 +40,7 @@ codex plugin add haejwo@haejwo
 | **무설정 오케스트레이션** | SessionStart가 규칙과 현재 설정을 자동 주입. 안전 기본값 즉시 가동: 게이트 ON, 2파일/턴, bash-guard ON |
 | **판단-우선 계획** | feature급 작업은 plan 합의로 시작 — 기획·분석·검토 결정을 구현 전에 토론 |
 | **교차-벤더 리뷰** (가능할 때) | 두 CLI가 있으면 리뷰어는 다른 회사 모델 — Claude Code에선 codex, Codex에선 claude |
-| **싼 실행 티어** | 판단은 호스트가, 구현·잡무는 저렴한 워커 티어로 (Codex에선 `spawn_agent` 모델 매핑) |
+| **싼 실행 티어** | 판단은 호스트가 — 그리고 호스트는 **세션에서 지정한 그 모델 그대로**, haejwo가 절대 바꾸지 않습니다. 구현·잡무만 저렴한 워커 티어로 (Codex에선 `spawn_agent` 모델 매핑) |
 | **물리적 위임 게이트** | PreToolUse 게이트가 턴당 **코드파일 N개** 초과와 메인 에이전트의 Bash 코드 수정을 차단. 서브에이전트 면제, 훅 오류는 통과(fail-open) |
 | **push 동의** | 워커는 절대 push/배포 안 함. 호스트도 `/haejwo:push auto`로 허락하기 전엔 물어봄 |
 

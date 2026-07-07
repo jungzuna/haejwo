@@ -49,7 +49,7 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 
 Env override for a single command: `HAEJWO_GATE=off <cmd>`.
 
-**Reasoning policy:** reviewer effort scales with the decision's stakes — `medium` for routine checks, `high` (runner default) for standard consults, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. Claude-host same-family fallback uses `deep-reasoner`; other-CLI review uses the configured runner. Uniform max dilutes budget exactly where judgment compounds.
+**Reasoning policy:** The orchestrating host is always your session's model (`/model` in Claude Code, the model picker in Codex); haejwo configures only worker tiers and reviewer selection. Reviewer effort scales with the decision's stakes — `medium` for routine checks, `high` (runner default) for standard consults, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. Claude-host same-family fallback uses `deep-reasoner`; other-CLI review uses the configured runner. Uniform max dilutes budget exactly where judgment compounds.
 
 ## Install
 

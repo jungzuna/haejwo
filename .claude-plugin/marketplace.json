@@ -1,0 +1,15 @@
+{
+  "name": "haejwo",
+  "owner": {
+    "name": "jungzuna",
+    "url": "https://github.com/jungzuna"
+  },
+  "description": "Marketplace for haejwo — the lubricant harness for Claude Code and Codex CLI.",
+  "plugins": [
+    {
+      "name": "haejwo",
+      "source": "./haejwo",
+      "description": "Keeps the expensive main model on judgment work: role-tiered subagents, delegation rules, and a PreToolUse gate that physically blocks the main agent from over-editing code."
+    }
+  ]
+}

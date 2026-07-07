@@ -1,0 +1,19 @@
+{
+  "name": "haejwo",
+  "interface": {
+    "displayName": "haejwo (해줘)"
+  },
+  "plugins": [
+    {
+      "name": "haejwo",
+      "source": {
+        "source": "local",
+        "path": "./haejwo"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

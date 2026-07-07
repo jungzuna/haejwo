@@ -1,0 +1,75 @@
+<p align="center">
+  <img src="assets/haejwo.png" width="520" alt="해줘 — 비싼 모델은 드러누워 해줘만 외치고, 작은 워커 티어들이 땀 흘리며 실제 작업을 한다">
+</p>
+
+<h1 align="center">해줘</h1>
+
+<p align="center"><strong>haejwo — "just handle it."</strong><br><em>말만 하세요; 모델들이 자기들끼리 알아서 굴립니다.</em></p>
+
+<p align="center"><sub><a href="README.md">English</a></sub></p>
+
+[Claude Code](https://claude.com/claude-code)와 [Codex CLI](https://github.com/openai/codex) 위에서 도는 **윤활제 하네스**입니다. 그냥 원하는 걸 말하면 — 아무리 대충 말해도, 그게 바로 "해줘" — 밑에서 여러 모델이 알아서 잘 굴러갑니다. 호스트 모델은 독립 리뷰어와 계획을 합의하고, 비용 티어별로 위임하고, 검토·검증합니다. 익혀야 할 워크플로 명령어는 없습니다.
+
+핵심 아이디어: 비싼 메인 모델은 **판단**(계획·위임·결정·종합)만 하고 **실행**은 싼 티어로 — 그리고 부탁만 하는 게 아니라, 메인 에이전트가 위임 대신 직접 구현을 시작하면 `PreToolUse` 훅이 **물리적으로 차단**합니다.
+
+## 동작 구조
+
+| 레이어 | 역할 |
+|---|---|
+| **선언** | SessionStart 훅이 오케스트레이션 규칙 + 현재 설정을 매 세션에 주입 |
+| **역할** | `deep-reasoner`(opus) · `default-worker`(sonnet) · `task-worker`(haiku) · 독립 리뷰어는 항상 **다른 모델** — Claude 호스트에선 codex, Codex 호스트에선 claude |
+| **기준** | 주입 규칙: 메인이 직접 처리할 것 vs 반드시 위임할 것; feature급 작업 전 plan 합의 |
+| **강제** | PreToolUse 게이트: 메인 에이전트는 턴당 **서로 다른 코드파일 N개**(기본 2)까지 — N+1번째 편집은 위임 안내와 함께 *거부*. Bash로 코드 고치기는 즉시 거부. 서브에이전트는 면제; 모든 거부는 대안을 명시; 훅 오류는 무조건 통과(fail-open) |
+
+평상시엔 **해줘 명령어를 한 번도 안 칩니다** — 명령어는 설정·점검용(`setup`, `status`, `gate`, `push`, 수동 트리거용 `plan`)뿐입니다.
+
+## 설치
+
+**Claude Code:**
+```
+/plugin marketplace add jungzuna/haejwo
+/plugin install haejwo@haejwo
+```
+
+**Codex CLI** (같은 repo, 같은 훅 — 실측 호환):
+```
+codex plugin marketplace add https://github.com/jungzuna/haejwo
+codex plugin add haejwo@haejwo
+```
+대화형 codex에서 `/hooks`로 훅을 1회 신뢰해 주세요. 명령어는 `@haejwo-*` 스킬로 나타납니다.
+
+**Codex는 선택입니다** — Claude Code 호스트에서 codex가 없으면 독립 리뷰는 번들된 `deep-reasoner`로 자동 대체됩니다. **Opus 접근이 없다면?** `/haejwo:setup`에서 `Balanced`/`Budget` 프리셋을 고르세요 — 모든 역할이 계정이 실제로 가진 모델 안에서 돕니다.
+
+### 조합별로 얻는 것
+
+| | Claude Code만 | Codex만 | 둘 다 |
+|---|---|---|---|
+| 게이트 + 규칙 + plan-first + push 동의 | ✓ | ✓ | ✓ |
+| 모델 티어 (opus/sonnet/haiku 위임) | ✓ | 아직 없음 | ✓ (Claude 쪽) |
+| **다른 모델**의 독립 리뷰 | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트(독립성 약함) | ✓ codex↔claude |
+
+다른 쪽 CLI는 **다른 모델의 리뷰**를 원할 때만 설치하면 됩니다 — 두 번째 CLI가 사주는 게 바로 그것입니다(Claude Code를 추가하면 모델 티어도 함께). 같은 모델 대체도 동작하지만, 다른 모델은 자기검토가 못 잡는 걸 잡습니다.
+
+훅은 세션 시작 시 로드됩니다 — 설치 후 재시작(Claude Code는 `/reload-plugins`). 첫 실행 때 `/haejwo:setup`(모델 티어·예산·리뷰어 대화형 설정, 1회 저장)을 한 번 권하고 다시 묻지 않습니다. 설정 전에도 안전 기본값이 켜져 있습니다.
+
+로컬 개발 설치: 클론 후 `/plugin marketplace add <클론경로>`.
+
+## 듀얼호스트 패리티
+
+repo 하나, `hooks.json` 하나, python 코어 하나 — codex 동작은 전부 **추측이 아니라 실측**했습니다(환경변수 호환 별칭, deny 왕복, `apply_patch` 멀티파일 파싱과 통째-거부, `turn_id` 턴 리셋, 서브에이전트 `agent_type` 면제). 리뷰어는 호스트별로 반전되어 항상 다른 모델 계열이 검토합니다. codex 쪽 모델 티어(spawn_agent) 매핑은 아직 제공되지 않습니다.
+
+## 문서
+
+| 문서 | 내용 |
+|---|---|
+| [`haejwo/README.md`](haejwo/README.md) | 딥다이브: 게이트 시맨틱, 첫 실행, 명령어, 추론 정책, 검증 |
+| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | 헌법 — 원칙 12개와 유래 사건, 충돌 시 우선순위, 개정 규칙 |
+| [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | 모든 LLM 대면 문자열의 스타일 법 (deny 문구는 테스트되는 계약) |
+
+## 검증
+
+`python3 tests/test_hooks.py` — hermetic 계약 테스트 스위트(stdlib만). CI가 push마다 실행합니다.
+
+## 라이선스
+
+[MIT](LICENSE)

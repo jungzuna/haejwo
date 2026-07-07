@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.reply.md
+*.log
+.DS_Store
+
+# development-process artifacts — never published
+docs/plans/
+notes/
+*.draft.md

@@ -34,8 +34,8 @@ Mirror work still needs:
 `Plan: mirror <source> + preserve <real forks — what's copied, what must NOT
 generalize>`. If implementation invalidates an assumption, say so and adjust.
 
-**Delegation discipline:** briefs are self-contained: goal, files,
-constraints, done-criteria. Reports stay <= ~200 words and end with
+**Delegation discipline:** briefs are self-contained and minimize worker
+judgment: goal, files, constraints, done-criteria. Reports stay <= ~200 words and end with
 `Judgment calls:` (brief-unsettled behavioral choices, or `none`). Review
 diffs before accepting: every behavior change must trace to the brief or a
 listed judgment; carry accepted judgments upward. Countable done-criteria

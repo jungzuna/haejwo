@@ -5,17 +5,18 @@ contact. Read this BEFORE changing anything — code, prompts, or docs. It is
 constitutional, not archival: each principle carries the reason it exists.
 
 ## Identity
-haejwo (해줘 — English: "just handle it") is a **lubricant harness** on top of Claude Code:
-the user just talks, and multiple models run well together — the host judges,
-tiers execute, gates enforce. 해줘 names the EXPERIENCE, not the mechanism
-(the mechanism is closer to 시켜, "make others do it"); that is deliberate
-benefit-naming, and it stays honest only while the name-integrity rule holds:
-**the moment users must understand or manage the harness to get their work
-done, 해줘 stops being true.**
+haejwo (해줘 — English: "just handle it") is a **lubricant layer** on top of
+Claude Code and Codex — they are the harnesses; haejwo makes multiple models
+run well on them: the user just talks, and the host judges, tiers execute,
+gates enforce. 해줘 names the EXPERIENCE, not the mechanism (the mechanism is
+closer to 시켜, "make others do it"); that is deliberate benefit-naming, and
+it stays honest only while the name-integrity rule holds: **the moment users
+must understand or manage the plugin to get their work done, 해줘 stops
+being true.**
 
 ## Principles
 1. **Preserve the name promise.** The user never manages workflow; orchestration
-   and harness failures are host-owned. *[first-run and recovery design]*
+   and plugin failures are host-owned. *[first-run and recovery design]*
 2. **Spend model budget where judgment compounds.** Reviewer effort scales with
    the decision's stakes — uniform max dilutes it; cheaper tiers implement and
    do chores; trivial 1-2 file work stays with the host. *[planning outweighs
@@ -24,7 +25,7 @@ done, 해줘 stops being true.**
 3. **Enforce economics physically.** Prompts can guide; gates and budgets must
    make expensive mistakes hard. *[instructions alone don't bind; the
    PreToolUse gate does]*
-4. **Never brick the session.** Gates are harness affordances, not security
+4. **Never brick the session.** Gates are plugin affordances, not security
    boundaries; on any error or ambiguity, fail open. *[failure-classifier design]*
 5. **Hard-gate only countable invariants.** Semantic judgments get norms and
    nudges; outward or irreversible actions get ask-once consent registries.

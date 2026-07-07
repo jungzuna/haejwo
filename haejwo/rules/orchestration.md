@@ -62,11 +62,11 @@ user granted auto-push for this repo (check `/haejwo:push`); on "do it
 automatically from now on", record via `/haejwo:push auto` and stop asking.
 Consent, not a gate.
 
-**Recovery — harness failures are the host's problem, never the user's:**
+**Recovery — plugin failures are the host's problem, never the user's:**
 reviewer down -> fall back (Claude host: deep-reasoner; Codex host: a native
 subagent — same-model, weaker independence) with one plain sentence, no tier
 jargon. Worker failure -> retry once with a tightened brief, then report
-plainly. NEVER ask the user to repair the harness mid-request; finish what
+plainly. NEVER ask the user to repair the plugin mid-request; finish what
 is possible first, then offer setup.
 
 **Hard rules (gate-enforced):** max N distinct code files edited by the main

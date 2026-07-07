@@ -8,7 +8,7 @@
 
 <p align="center"><sub><a href="README.md">English</a></sub></p>
 
-[Claude Code](https://claude.com/claude-code)와 [Codex CLI](https://github.com/openai/codex) 위에서 도는 **윤활제 하네스**입니다. 그냥 원하는 걸 말하면 — 아무리 대충 말해도, 그게 바로 "해줘" — 밑에서 여러 모델이 알아서 잘 굴러갑니다. 호스트 모델은 독립 리뷰어와 계획을 합의하고, 비용 티어별로 위임하고, 검토·검증합니다. 익혀야 할 워크플로 명령어는 없습니다.
+[Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)는 이미 공식 코딩 하네스입니다 — 가장 완성돼 있고, 가장 많이 쓰이고, 자기 모델과 가장 잘 맞습니다. haejwo는 이들을 대체하지 않습니다 — **처음에 하나 깔아두는 콜드스타트 플러그인**으로, 그 위에서 **여러 모델이 알아서 잘 굴러가게** 만듭니다. 그냥 원하는 걸 프롬프트로 쓰면 — 아무리 대충 써도, 그게 바로 "해줘" — 호스트 모델이 계획하고, 비용 티어로 위임하고, **다른 회사 모델**을 리뷰어 삼아 토론하고, 검토·검증합니다. 익혀야 할 워크플로 명령어는 없습니다.
 
 핵심 아이디어: 비싼 메인 모델은 **판단**(계획·위임·결정·종합)만 하고 **실행**은 싼 티어로 — 그리고 부탁만 하는 게 아니라, 메인 에이전트가 위임 대신 직접 구현을 시작하면 `PreToolUse` 훅이 **물리적으로 차단**합니다.
 
@@ -17,7 +17,7 @@
 | 레이어 | 역할 |
 | --- | --- |
 | **선언** | SessionStart 훅이 오케스트레이션 규칙 + 현재 설정을 매 세션에 주입 |
-| **역할** | `deep-reasoner`(opus) · `default-worker`(sonnet) · `task-worker`(haiku) · 독립 리뷰어는 상대 CLI가 있는 한 **다른 모델** — Claude 호스트에선 codex, Codex 호스트에선 claude |
+| **역할** | `deep-reasoner`(opus) · `default-worker`(sonnet) · `task-worker`(haiku) · 독립 리뷰어: 출고 전에 **다른 회사의 모델**이 호스트의 계획·패치에 도전 (상대 CLI가 있는 한) — Claude 호스트에선 codex, Codex 호스트에선 claude |
 | **기준** | 주입 규칙: 메인이 직접 처리할 것 vs 반드시 위임할 것; feature급 작업 전 plan 합의 |
 | **강제** | PreToolUse 게이트: 메인 에이전트는 턴당 **서로 다른 코드파일 N개**(기본 2)까지 — N+1번째 편집은 위임 안내와 함께 *거부*. Bash로 코드 고치기는 즉시 거부. 서브에이전트는 면제; 모든 거부는 대안을 명시; 훅 오류는 무조건 통과(fail-open) |
 
@@ -46,7 +46,7 @@ codex plugin add haejwo@haejwo
 | --- | --- | --- | --- |
 | 게이트 + 규칙 + plan-first + push 동의 | ✓ | ✓ | ✓ |
 | 모델 티어 (실행은 싸게, 판단은 비싸게) | ✓ opus/sonnet/haiku | ✓ `spawn_agent` 모델 매핑 (판단은 상속, 실행은 다운시프트) | ✓ |
-| **다른 모델**의 독립 리뷰 | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트(독립성 약함) | ✓ codex↔claude |
+| **교차-벤더 적대적 리뷰** | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트(독립성 약함) | ✓ codex↔claude |
 
 다른 쪽 CLI는 **다른 모델의 리뷰**를 원할 때만 설치하면 됩니다 — 두 번째 CLI가 사주는 게 바로 그것입니다(Claude Code를 추가하면 모델 티어도 함께). 같은 모델 대체도 동작하지만, 다른 모델은 자기검토가 못 잡는 걸 잡습니다.
 

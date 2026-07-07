@@ -14,7 +14,7 @@
 
 <p align="center"><sub><a href="README.ko.md">한국어</a></sub></p>
 
-A **lubricant harness** for [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex): you just say what you want — however roughly, that's the 해줘 — and multiple models run well together underneath. The host model plans with an independent reviewer, delegates across cost tiers, reviews, and verifies. No workflow commands to learn.
+[Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex) are already the official coding harnesses: complete, widely used, and best matched to their models. haejwo doesn't replace them — it's the **cold-start plugin** you install first to make **multiple models run well on top of them, automatically**. You just write the ask as a prompt — however roughly, that's the 해줘 — and the host model plans, delegates across cost tiers, debates with an independent reviewer running on a **different vendor's model**, reviews, and verifies. No workflow commands to learn.
 
 The core idea: keep the expensive main model on **judgment** (plan, delegate, decide, synthesize) and push **execution** to cheap tiers — and don't just ask nicely. A `PreToolUse` hook **physically blocks** the main agent when it starts implementing instead of delegating.
 
@@ -23,7 +23,7 @@ The core idea: keep the expensive main model on **judgment** (plan, delegate, de
 | Layer | What it does |
 | --- | --- |
 | **Declaration** | A SessionStart hook injects the orchestration rules + live config into every session |
-| **Roles** | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) · an independent reviewer that is **a different model** whenever the other CLI is available — codex on a Claude host, claude on a Codex host |
+| **Roles** | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) · an independent reviewer: **a different vendor's model** challenges the host's plan or patch before it ships (whenever the other CLI is available) — codex on a Claude host, claude on a Codex host |
 | **Criteria** | Injected rules: when the main agent handles directly vs must delegate; plan-first consensus before feature-scale work |
 | **Enforcement** | PreToolUse gate: max **N distinct code files per turn** (default 2) for the main agent — the N+1th edit is *denied* with a delegation instruction. Bash writes to code files are denied outright. Subagents are exempt; every denial says exactly what to do instead; any hook error fails open |
 
@@ -52,7 +52,7 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 | --- | --- | --- | --- |
 | Gate + rules + plan-first + push consent | ✓ | ✓ | ✓ |
 | Model tiers (cheap execution, expensive judgment) | ✓ opus/sonnet/haiku | ✓ via `spawn_agent` model mapping (judgment inherits; execution downshifts) | ✓ |
-| Independent review by a **different** model | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
+| **Cross-vendor adversarial review** | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.
 
@@ -62,7 +62,7 @@ Local development install: clone, then `/plugin marketplace add <clone-path>` / 
 
 ## Commands (settings & inspection only — the supporting cast)
 
-Normal use needs **none** of these; you just talk. They exist to adjust or inspect the harness:
+Normal use needs **none** of these; you just talk. They exist to adjust or inspect the plugin:
 
 | Claude Code · Codex skill | Role |
 | --- | --- |

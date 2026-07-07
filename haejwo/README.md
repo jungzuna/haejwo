@@ -59,7 +59,7 @@ See the [root README](../README.md) for install (GitHub or local-clone marketpla
 
 Hooks load at session start — restart the session (or `/reload-plugins` on Claude Code) after install.
 
-**Dual-host parity:** gate (apply_patch-aware, whole-patch atomic deny), bash-guard (codex names its shell tool `Bash` too), rules injection, turn reset (`turn_id`), worker exemption (codex subagents carry the same `agent_type`/`agent_id` fields — measured), and the independent reviewer inverts per host: codex_consult.sh on Claude, **claude_consult.sh on Codex** (principle 9: a different model). Codex-side model-tier spawn mapping is not yet enabled.
+**Dual-host parity:** gate (apply_patch-aware, whole-patch atomic deny), bash-guard (codex names its shell tool `Bash` too), rules injection, turn reset (`turn_id`), worker exemption (codex subagents carry the same `agent_type`/`agent_id` fields — measured), and the independent reviewer inverts per host: codex_consult.sh on Claude, **claude_consult.sh on Codex** (principle 9: a different model). Codex-side tiers ride the native `spawn_agent` model/effort parameters — judgment inherits the host model; execution downshifts (`models_codex` in config).
 
 Optional hardening (README-only, not auto-applied): add `permissions.deny` rules for `Bash(sed:*)` etc. and deny `Read` of the state dir to prevent tampering.
 

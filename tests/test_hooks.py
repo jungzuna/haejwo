@@ -16,6 +16,8 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 SCRIPTS = os.path.join(PLUGIN, "scripts")
+sys.path.insert(0, SCRIPTS)
+from hjw_common import DEFAULT_CONFIG  # noqa: E402
 
 PASS, FAIL = 0, []
 
@@ -154,6 +156,7 @@ def main():
             "never the user",                       # recovery ownership
             "delegation signal",                    # bash-write rule
             "xhigh only for architecture forks",    # stakes-scaled effort
+            "judgment inherits the host model (omit model); execution downshifts",  # codex-tier routing
         ]
         for phrase in CANARIES:
             check(f"canary: {phrase!r}", phrase in rules_text)
@@ -340,6 +343,28 @@ def main():
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("configured -> rules + config summary",
               "haejwo config" in ctx and "delegate" in ctx.lower())
+        check("claude host summary has no codex-tiers leakage",
+              "codex tiers" not in ctx and "models:" in ctx and "codex reviewer" in ctx)
+
+        # codex-host branch: host is path-sniffed off the DATA argv (root|data
+        # containing "/.codex/"), so a data dir alone is enough to flip it.
+        codex_data = os.path.join(data, ".codex", "plugins", "data", "haejwo")
+        os.makedirs(codex_data, exist_ok=True)
+        with open(os.path.join(codex_data, "config.json"), "w") as f:
+            json.dump({"configured": True}, f)
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, codex_data)
+        ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("codex host -> codex tiers + claude reviewer + spawn_agent summary",
+              "codex tiers" in ctx and "claude reviewer" in ctx
+              and "spawn_agent" in ctx and "gpt-5.4-mini" in ctx, ctx)
+
+        print("== hjw_common.DEFAULT_CONFIG ==")
+        check("models_codex defaults",
+              DEFAULT_CONFIG["models_codex"] == {
+                  "deep_reasoner": "inherit",
+                  "default_worker": "gpt-5.4",
+                  "task_worker": "gpt-5.4-mini",
+              })
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

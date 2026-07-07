@@ -8,20 +8,9 @@
 
 <p align="center"><sub><a href="README.md">English</a></sub></p>
 
-[Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)는 이미 공식 코딩 하네스입니다 — 가장 완성돼 있고, 가장 많이 쓰이고, 자기 모델과 가장 잘 맞습니다. haejwo는 이들을 대체하지 않습니다 — **처음에 하나 깔아두는 콜드스타트 플러그인**으로, 그 위에서 **여러 모델이 알아서 잘 굴러가게** 만듭니다. 그냥 원하는 걸 프롬프트로 쓰면 — 아무리 대충 써도, 그게 바로 "해줘" — 호스트 모델이 계획하고, 비용 티어로 위임하고, **다른 회사 모델**을 리뷰어 삼아 토론하고, 검토·검증합니다. 익혀야 할 워크플로 명령어는 없습니다.
+[Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)는 이미 공식 코딩 하네스입니다 — 가장 완성돼 있고, 가장 많이 쓰이고, 자기 모델과 가장 잘 맞습니다. haejwo는 이들을 대체하지 않습니다 — **깔면 그걸로 끝**: 설정도 워크플로 명령어도 없이, 그 위에서 **여러 모델이 알아서 잘 굴러가게** 만드는 콜드스타트 플러그인입니다. 그냥 원하는 걸 프롬프트로 쓰면 — 아무리 대충 써도, 그게 바로 "해줘" — 호스트 모델이 계획하고, 비용 티어로 위임하고, (상대 CLI가 있으면) **다른 회사 모델**을 리뷰어 삼아 토론하고, 검토·검증합니다.
 
 핵심 아이디어: 비싼 메인 모델은 **판단**(계획·위임·결정·종합)만 하고 **실행**은 싼 티어로 — 그리고 부탁만 하는 게 아니라, 메인 에이전트가 위임 대신 직접 구현을 시작하면 `PreToolUse` 훅이 **물리적으로 차단**합니다.
-
-## 동작 구조
-
-| 레이어 | 역할 |
-| --- | --- |
-| **선언** | SessionStart 훅이 오케스트레이션 규칙 + 현재 설정을 매 세션에 주입 |
-| **역할** | `deep-reasoner`(opus) · `default-worker`(sonnet) · `task-worker`(haiku) · 독립 리뷰어: 출고 전에 **다른 회사의 모델**이 호스트의 계획·패치에 도전 (상대 CLI가 있는 한) — Claude 호스트에선 codex, Codex 호스트에선 claude |
-| **기준** | 주입 규칙: 메인이 직접 처리할 것 vs 반드시 위임할 것; feature급 작업 전 plan 합의 |
-| **강제** | PreToolUse 게이트: 메인 에이전트는 턴당 **서로 다른 코드파일 N개**(기본 2)까지 — N+1번째 편집은 위임 안내와 함께 *거부*. Bash로 코드 고치기는 즉시 거부. 서브에이전트는 면제; 모든 거부는 대안을 명시; 훅 오류는 무조건 통과(fail-open) |
-
-평상시엔 **해줘 명령어를 한 번도 안 칩니다** — 명령어는 설정·점검용(`setup`, `status`, `gate`, `push`, 수동 트리거용 `plan`)뿐입니다.
 
 ## 설치
 
@@ -40,6 +29,23 @@ codex plugin add haejwo@haejwo
 
 **Codex는 선택입니다** — Claude Code 호스트에서 codex가 없으면 리뷰는 번들된 `deep-reasoner`로 대체됩니다 (같은 계열이라 독립성은 약해집니다). **Opus 접근이 없다면?** `/haejwo:setup`에서 `Balanced`/`Budget` 프리셋을 고르세요 — 모든 역할이 계정이 실제로 가진 모델 안에서 돕니다.
 
+훅은 세션 시작 시 로드됩니다 — 설치 후 재시작(Claude Code는 `/reload-plugins`). 첫 실행 때 `/haejwo:setup`(모델 티어·예산·리뷰어 대화형 설정, 1회 저장)을 한 번 권하고 다시 묻지 않습니다. 설정 전에도 안전 기본값이 켜져 있습니다.
+
+로컬 개발 설치: 클론 후 `/plugin marketplace add <클론경로>` / `codex plugin marketplace add <클론경로>`.
+
+## 무엇을 얻나
+
+| 기능 | 하는 일 |
+| --- | --- |
+| **무설정 오케스트레이션** | SessionStart가 규칙과 현재 설정을 자동 주입. 안전 기본값 즉시 가동: 게이트 ON, 2파일/턴, bash-guard ON |
+| **판단-우선 계획** | feature급 작업은 plan 합의로 시작 — 기획·분석·검토 결정을 구현 전에 토론 |
+| **교차-벤더 리뷰** (가능할 때) | 두 CLI가 있으면 리뷰어는 다른 회사 모델 — Claude Code에선 codex, Codex에선 claude |
+| **싼 실행 티어** | 판단은 호스트가, 구현·잡무는 저렴한 워커 티어로 (Codex에선 `spawn_agent` 모델 매핑) |
+| **물리적 위임 게이트** | PreToolUse 게이트가 턴당 **코드파일 N개** 초과와 메인 에이전트의 Bash 코드 수정을 차단. 서브에이전트 면제, 훅 오류는 통과(fail-open) |
+| **push 동의** | 워커는 절대 push/배포 안 함. 호스트도 `/haejwo:push auto`로 허락하기 전엔 물어봄 |
+
+평상시엔 **해줘 명령어를 한 번도 안 칩니다** — 명령어는 설정·점검용(`setup`, `status`, `gate`, `push`, 수동 트리거용 `plan`)뿐입니다.
+
 ### 조합별로 얻는 것
 
 | | Claude Code만 | Codex만 | 둘 다 |
@@ -49,10 +55,6 @@ codex plugin add haejwo@haejwo
 | **교차-벤더 적대적 리뷰** | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트(독립성 약함) | ✓ codex↔claude |
 
 다른 쪽 CLI는 **다른 모델의 리뷰**를 원할 때만 설치하면 됩니다 — 두 번째 CLI가 사주는 게 바로 그것입니다(Claude Code를 추가하면 모델 티어도 함께). 같은 모델 대체도 동작하지만, 다른 모델은 자기검토가 못 잡는 걸 잡습니다.
-
-훅은 세션 시작 시 로드됩니다 — 설치 후 재시작(Claude Code는 `/reload-plugins`). 첫 실행 때 `/haejwo:setup`(모델 티어·예산·리뷰어 대화형 설정, 1회 저장)을 한 번 권하고 다시 묻지 않습니다. 설정 전에도 안전 기본값이 켜져 있습니다.
-
-로컬 개발 설치: 클론 후 `/plugin marketplace add <클론경로>` / `codex plugin marketplace add <클론경로>`.
 
 ## 명령어 (설정·점검 전용 — 보조 역할)
 

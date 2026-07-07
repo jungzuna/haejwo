@@ -14,20 +14,9 @@
 
 <p align="center"><sub><a href="README.ko.md">한국어</a></sub></p>
 
-[Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex) are already the official coding harnesses: complete, widely used, and best matched to their models. haejwo doesn't replace them — it's the **cold-start plugin** you install first to make **multiple models run well on top of them, automatically**. You just write the ask as a prompt — however roughly, that's the 해줘 — and the host model plans, delegates across cost tiers, debates with an independent reviewer running on a **different vendor's model**, reviews, and verifies. No workflow commands to learn.
+[Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex) are already the official coding harnesses: complete, widely used, and best matched to their models. haejwo doesn't replace them — install it and it's on: the **cold-start plugin** that makes **multiple models run well on top of them, automatically**, with no configuration or workflow commands. You just write the ask as a prompt — however roughly, that's the 해줘 — and the host model plans, delegates across cost tiers, debates with an independent reviewer running on a **different vendor's model** when available, reviews, and verifies.
 
 The core idea: keep the expensive main model on **judgment** (plan, delegate, decide, synthesize) and push **execution** to cheap tiers — and don't just ask nicely. A `PreToolUse` hook **physically blocks** the main agent when it starts implementing instead of delegating.
-
-## How it works
-
-| Layer | What it does |
-| --- | --- |
-| **Declaration** | A SessionStart hook injects the orchestration rules + live config into every session |
-| **Roles** | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) · an independent reviewer: **a different vendor's model** challenges the host's plan or patch before it ships (whenever the other CLI is available) — codex on a Claude host, claude on a Codex host |
-| **Criteria** | Injected rules: when the main agent handles directly vs must delegate; plan-first consensus before feature-scale work |
-| **Enforcement** | PreToolUse gate: max **N distinct code files per turn** (default 2) for the main agent — the N+1th edit is *denied* with a delegation instruction. Bash writes to code files are denied outright. Subagents are exempt; every denial says exactly what to do instead; any hook error fails open |
-
-Normal use involves **zero haejwo commands** — commands exist only for settings and inspection (`setup`, `status`, `gate`, `push`, plus `plan` as an optional manual trigger).
 
 ## Install
 
@@ -46,7 +35,24 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 
 **Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
 
-### What you get per setup
+Hooks load at session start — restart (or `/reload-plugins` on Claude Code) after install. On first run, haejwo nudges once toward `/haejwo:setup` (interactive model-tier / budget / reviewer configuration, persisted — asked once, never again). Safe defaults are active even before setup.
+
+Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
+
+## What you get
+
+| Feature | What it does |
+| --- | --- |
+| **Zero-config orchestration** | SessionStart injects the rules and live config automatically. Safe defaults are active immediately: gate ON, 2 files/turn, bash-guard ON |
+| **Judgment-first planning** | Feature-scale work starts with plan consensus: the host debates planning, analysis, and review decisions before implementation |
+| **Cross-vendor review when available** | With both CLIs installed, the reviewer is the other company's model — codex on Claude Code, claude on Codex |
+| **Cheap execution tiers** | The host keeps judgment; implementation and chores route to cheaper worker tiers (`spawn_agent` model mapping on Codex) |
+| **Physical delegation gate** | A PreToolUse gate stops the main agent after **N distinct code files per turn** and blocks main-agent Bash writes to code files. Subagents are exempt; hook errors fail open |
+| **Push consent** | Workers never push or deploy. The host asks first unless you grant repo-level auto-push with `/haejwo:push auto` |
+
+Normal use involves **zero haejwo commands** — commands exist only for settings and inspection (`setup`, `status`, `gate`, `push`, plus `plan` as an optional manual trigger).
+
+### Host combinations
 
 | | Claude Code only | Codex only | Both CLIs |
 | --- | --- | --- | --- |
@@ -55,10 +61,6 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 | **Cross-vendor adversarial review** | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.
-
-Hooks load at session start — restart (or `/reload-plugins` on Claude Code) after install. On first run, haejwo nudges once toward `/haejwo:setup` (interactive model-tier / budget / reviewer configuration, persisted — asked once, never again). Safe defaults are active even before setup.
-
-Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 
 ## Commands (settings & inspection only — the supporting cast)
 

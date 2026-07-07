@@ -46,7 +46,7 @@ Local development install: clone, then `/plugin marketplace add <clone-path>` / 
 | **Zero-config orchestration** | SessionStart injects the rules and live config automatically. Safe defaults are active immediately: gate ON, 2 files/turn, bash-guard ON |
 | **Judgment-first planning** | Feature-scale work starts with plan consensus: the host debates planning, analysis, and review decisions before implementation |
 | **Cross-vendor review when available** | With both CLIs installed, the reviewer is the other company's model — codex on Claude Code, claude on Codex |
-| **Cheap execution tiers** | The host keeps judgment; implementation and chores route to cheaper worker tiers (`spawn_agent` model mapping on Codex) |
+| **Cheap execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to cheaper worker tiers (`spawn_agent` model mapping on Codex) |
 | **Physical delegation gate** | A PreToolUse gate stops the main agent after **N distinct code files per turn** and blocks main-agent Bash writes to code files. Subagents are exempt; hook errors fail open |
 | **Push consent** | Workers never push or deploy. The host asks first unless you grant repo-level auto-push with `/haejwo:push auto` |
 

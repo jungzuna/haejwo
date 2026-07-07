@@ -44,7 +44,7 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@haejwo-*` skills.
 
-**Codex is optional** on a Claude Code host — without it, independent review falls back to the bundled `deep-reasoner`. **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
+**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
 
 ### What you get per setup
 

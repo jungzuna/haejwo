@@ -1,6 +1,6 @@
 {
   "name": "haejwo",
-  "version": "2.4.3",
+  "version": "2.4.4",
   "description": "해줘 — \"just handle it.\" Cold-start plugin for Claude Code and Codex: the user writes the ask, the host plans and delegates across model tiers, a different vendor's model reviews when available, and a PreToolUse gate keeps expensive judgment from becoming cheap execution. Zero workflow commands; commands are settings only.",
   "hooks": "./hooks/hooks.json",
   "skills": "./codex-skills/",

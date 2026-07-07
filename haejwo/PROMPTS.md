@@ -4,7 +4,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 
 ## Language
 - **English everywhere by default** — prompts, comments, error messages, docs.
-- Korean only as a proper noun or quoted term where the word itself IS the meaning (e.g. haejwo/해줘) — never for instructions.
+- Korean only as a proper noun or quoted term where the word itself IS the meaning (e.g. haejwo/해줘) — never for instructions. Localized user docs (`README.*.md`) are the one exception.
 
 ## Command files (`commands/*.md`)
 - Frontmatter: `description:` one sentence, verb-first, states what it does and whether it is read-only or writes; `argument-hint:` always present.
@@ -20,7 +20,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 - Body shape: one role paragraph → imperative behavior bullets → a final **`Report back:`** contract with a length cap, ending with `Judgment calls:` (behavioral choices the brief didn't settle, or `none`).
 
 ## Rules (`rules/orchestration.md`)
-- Bold section labels + bullets only; no prose paragraphs. Every rule actionable.
+- Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
 - Total injected size (rules + config summary) must stay under session_brief's 5000-char hard cap; keep ≤4600 so there's headroom for config lines.
 
 ## Hook-emitted text (the model reads these verbatim)

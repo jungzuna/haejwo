@@ -38,7 +38,7 @@ codex plugin add haejwo@haejwo
 ```
 대화형 codex에서 `/hooks`로 훅을 1회 신뢰해 주세요. 명령어는 `@haejwo-*` 스킬로 나타납니다.
 
-**Codex는 선택입니다** — Claude Code 호스트에서 codex가 없으면 독립 리뷰는 번들된 `deep-reasoner`로 자동 대체됩니다. **Opus 접근이 없다면?** `/haejwo:setup`에서 `Balanced`/`Budget` 프리셋을 고르세요 — 모든 역할이 계정이 실제로 가진 모델 안에서 돕니다.
+**Codex는 선택입니다** — Claude Code 호스트에서 codex가 없으면 리뷰는 번들된 `deep-reasoner`로 대체됩니다 (같은 계열이라 독립성은 약해집니다). **Opus 접근이 없다면?** `/haejwo:setup`에서 `Balanced`/`Budget` 프리셋을 고르세요 — 모든 역할이 계정이 실제로 가진 모델 안에서 돕니다.
 
 ### 조합별로 얻는 것
 

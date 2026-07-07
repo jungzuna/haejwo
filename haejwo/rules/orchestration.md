@@ -43,7 +43,11 @@ done-criteria); reports <= ~200 words ending with `Judgment calls:`
 (behavioral choices the brief didn't settle, or `none`). Review diffs before
 accepting and ask: does every observable behavior change trace to the brief
 or a listed judgment? Carry accepted judgments into your own report —
-decisions must not vanish one layer up.
+decisions must not vanish one layer up. Acceptance: countable done-criteria
+need NAMED deterministic evidence (tests/checks that actually ran); semantic
+traceability is judged separately — no stated evidence, no acceptance. If a
+retry or judgment call traces to an ambiguous brief or norm, say so
+(amendment signal).
 
 **Progress & reporting:** format follows content — tables where scanning
 comparable fields beats prose, otherwise terse lines. Long/multi-phase work:

@@ -157,6 +157,8 @@ def main():
             "delegation signal",                    # bash-write rule
             "xhigh only for architecture forks",    # stakes-scaled effort
             "judgment inherits the host model (omit model); execution downshifts",  # codex-tier routing
+            "no stated evidence, no acceptance",    # acceptance evidence split
+            "amendment signal",                     # calibration loop
         ]
         for phrase in CANARIES:
             check(f"canary: {phrase!r}", phrase in rules_text)

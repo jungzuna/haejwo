@@ -1,8 +1,8 @@
-# haejwo (해줘) — the lubricant harness
+# haejwo (해줘) — the lubricant layer
 
 > **"just handle it."** — you talk; the models work it out among themselves.
 
-Claude Code is already a great harness. haejwo is the thin layer that makes **multiple models run well on top of it — automatically**. You don't drive it with commands: you just say what you want (however roughly — that's the 해줘), and the host plans with an independent reviewer, delegates across cost tiers, reviews, and verifies.
+Claude Code and Codex are already great harnesses. haejwo is the thin layer that makes **multiple models run well on top of them — automatically**. You don't drive it with commands: you just say what you want (however roughly — that's the 해줘), and the host plans with an independent reviewer, delegates across cost tiers, reviews, and verifies.
 
 Underneath, it keeps the expensive main model on **judgment** (plan, delegate, decide, synthesize) and pushes **execution** to cheap tiers — and doesn't just ask nicely: a PreToolUse hook **physically blocks** the main agent when it starts implementing instead of delegating.
 
@@ -36,7 +36,7 @@ Normal use involves **no haejwo commands at all**. You talk; the host does the r
 - Implementation → delegated to the right tier; the gate enforces it when the host forgets.
 - Push/deploy → host asks once; say "do it automatically from now on" and it records the grant.
 
-Commands are for **settings and inspection only** (below). The name-integrity rule: the moment users must **understand or manage the harness** — delegation, reviewer consensus, edit limits, tiers, or recovery commands — to get their work done, 해줘 stops being true. Any change that requires that is off-concept.
+Commands are for **settings and inspection only** (below). The name-integrity rule: the moment users must **understand or manage the plugin** — delegation, reviewer consensus, edit limits, tiers, or recovery commands — to get their work done, 해줘 stops being true. Any change that requires that is off-concept.
 
 ## Commands
 | Command | Role |

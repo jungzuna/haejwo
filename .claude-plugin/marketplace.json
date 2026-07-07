@@ -4,7 +4,7 @@
     "name": "jungzuna",
     "url": "https://github.com/jungzuna"
   },
-  "description": "Marketplace for haejwo — the lubricant harness for Claude Code and Codex CLI.",
+  "description": "Marketplace for haejwo — the cold-start lubricant layer for Claude Code and Codex.",
   "plugins": [
     {
       "name": "haejwo",

@@ -2,7 +2,7 @@
   "name": "haejwo",
   "displayName": "haejwo (해줘)",
   "description": "해줘 — \"just handle it.\" A lubricant harness on top of Claude Code: you talk, and the models work it out among themselves — the host plans with an independent reviewer, delegates to cost tiers (opus=reasoning, sonnet=implementation, haiku=chores, codex=outside review), and verifies; a PreToolUse gate physically keeps the expensive main model from doing cheap work. Zero workflow commands. Commands exist only for settings (setup/status/gate/push).",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "author": {
     "name": "jungzuna",
     "url": "https://github.com/jungzuna"

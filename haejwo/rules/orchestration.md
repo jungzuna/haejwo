@@ -19,6 +19,9 @@ lines; test suites; refactors; repo-wide exploration; research; log triage.
 - Judgment-heavy implementation (security, concurrency, data integrity,
   crypto, migrations, public API) -> ESCALATE: opus model override, or
   sonnet + mandatory independent adversarial review before accepting.
+- On Codex hosts (no bundled tier agents): delegate via native spawn_agent,
+  passing model + reasoning_effort from the injected codex tier config —
+  judgment inherits the host model (omit model); execution downshifts.
 - Independent review / outside perspective -> the OTHER model's runner:
   `${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh` on a Claude host,
   `${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh` on a Codex host

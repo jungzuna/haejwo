@@ -39,6 +39,15 @@ DEFAULT_CONFIG = {
         "default_worker": "sonnet",
         "task_worker": "haiku",
     },
+    # Codex-host tiers (native spawn_agent model/reasoning_effort params).
+    # "inherit" = omit the model param so judgment never silently downgrades;
+    # execution downshifts — that's the economic point. Exact model names are
+    # account/version-dependent (codex has no stable aliases); setup edits them.
+    "models_codex": {
+        "deep_reasoner": "inherit",
+        "default_worker": "gpt-5.4",
+        "task_worker": "gpt-5.4-mini",
+    },
     "codex": {"enabled": False, "verified_at": None},
 }
 

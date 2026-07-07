@@ -1,7 +1,7 @@
 # haejwo maintainer guide (for coding agents)
 
-This repo is maintained largely BY coding agents — including, probably, you.
-Read these BEFORE changing anything:
+If you are a coding agent working on this repo, read these BEFORE changing
+anything:
 
 1. `haejwo/PHILOSOPHY.md` — the constitution: 12 principles with origin cases,
    the precedence order for conflicts, and the amendment rule.

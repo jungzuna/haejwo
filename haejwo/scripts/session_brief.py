@@ -50,15 +50,35 @@ def main():
                 "reports end with `Judgment calls:`; push/deploy asks first."
             )
         g = cfg["gate"]
-        m = cfg["models"]
+        # Host detection by plugin path: codex passes compat env/argv rooted
+        # under /.codex/plugins (measured) — no extra probe needed.
+        on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
+        if on_codex:
+            mc = cfg.get("models_codex", {})
+            tiers = (
+                f"codex tiers (pass model + reasoning_effort on spawn_agent; "
+                f"'inherit' = omit model): "
+                f"deep-reasoner={mc.get('deep_reasoner', 'inherit')}/high, "
+                f"default-worker={mc.get('default_worker', 'gpt-5.4')}/medium, "
+                f"task-worker={mc.get('task_worker', 'gpt-5.4-mini')}/low"
+            )
+            reviewer_label = "claude reviewer"
+            fallback = "disabled (fallback: native subagent, same-model)"
+        else:
+            m = cfg["models"]
+            tiers = (
+                f"models: deep-reasoner={m['deep_reasoner']}, "
+                f"default-worker={m['default_worker']}, task-worker={m['task_worker']} "
+                f"(pass as Agent-tool model override if it differs from the agent default)"
+            )
+            reviewer_label = "codex reviewer"
+            fallback = "disabled (fallback: deep-reasoner)"
         summary = (
             f"[haejwo config] gate={'ON' if g['enabled'] else 'OFF'} "
             f"budget={g['max_files_per_turn']} files/turn "
-            f"bash_guard={'ON' if g['bash_guard'] else 'OFF'} | models: "
-            f"deep-reasoner={m['deep_reasoner']}, default-worker={m['default_worker']}, "
-            f"task-worker={m['task_worker']} (pass as Agent-tool model override if it "
-            f"differs from the agent default) | codex reviewer: "
-            f"{'enabled' if cfg['codex'].get('enabled') else 'disabled (fallback: deep-reasoner)'}"
+            f"bash_guard={'ON' if g['bash_guard'] else 'OFF'} | {tiers} | "
+            f"{reviewer_label}: "
+            f"{'enabled' if cfg['codex'].get('enabled') else fallback}"
         )
         context = (rules + "\n\n" + summary).strip()
 

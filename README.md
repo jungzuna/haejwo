@@ -7,10 +7,9 @@
 <p align="center"><strong>haejwo — "just handle it."</strong><br><em>you talk; the models work it out among themselves.</em></p>
 
 <p align="center">
-  <a href="https://github.com/jungzuna/haejwo/actions/workflows/tests.yml"><img src="https://github.com/jungzuna/haejwo/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/github/v/tag/jungzuna/haejwo?label=release&color=111111&style=flat-square" alt="release">
   <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%C2%B7%20Codex-111111?style=flat-square" alt="hosts">
-  <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-111111?style=flat-square" alt="Apache-2.0">
 </p>
 
 <p align="center"><sub><a href="README.ko.md">한국어</a></sub></p>
@@ -22,9 +21,9 @@ The core idea: keep the expensive main model on **judgment** (plan, delegate, de
 ## How it works
 
 | Layer | What it does |
-|---|---|
+| --- | --- |
 | **Declaration** | A SessionStart hook injects the orchestration rules + live config into every session |
-| **Roles** | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) · an independent reviewer that is always **a different model** — codex on a Claude host, claude on a Codex host |
+| **Roles** | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) · an independent reviewer that is **a different model** whenever the other CLI is available — codex on a Claude host, claude on a Codex host |
 | **Criteria** | Injected rules: when the main agent handles directly vs must delegate; plan-first consensus before feature-scale work |
 | **Enforcement** | PreToolUse gate: max **N distinct code files per turn** (default 2) for the main agent — the N+1th edit is *denied* with a delegation instruction. Bash writes to code files are denied outright. Subagents are exempt; every denial says exactly what to do instead; any hook error fails open |
 
@@ -50,9 +49,9 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 ### What you get per setup
 
 | | Claude Code only | Codex only | Both CLIs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Gate + rules + plan-first + push consent | ✓ | ✓ | ✓ |
-| Model tiers (opus/sonnet/haiku delegation) | ✓ | not yet | ✓ (Claude side) |
+| Model tiers (cheap execution, expensive judgment) | ✓ opus/sonnet/haiku | ✓ via `spawn_agent` model mapping (judgment inherits; execution downshifts) | ✓ |
 | Independent review by a **different** model | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.
@@ -61,14 +60,26 @@ Hooks load at session start — restart (or `/reload-plugins` on Claude Code) af
 
 Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 
+## Commands (settings & inspection only — the supporting cast)
+
+Normal use needs **none** of these; you just talk. They exist to adjust or inspect the harness:
+
+| Claude Code · Codex skill | Role |
+| --- | --- |
+| `/haejwo:setup` · `@haejwo-setup` | First-run configuration — tiers, edit budget, bash-guard, reviewer. Asked once, persisted |
+| `/haejwo:status` · `@haejwo-status` | Current config, this turn's edit counter, reviewer readiness, hook observations |
+| `/haejwo:gate` · `@haejwo-gate` | Inspect or tune the gate live — budget `N`, `on`/`off` (emergency hatch) |
+| `/haejwo:push` · `@haejwo-push` | Per-repo push consent — ask-first until you grant auto |
+| `/haejwo:plan` · `@haejwo-plan` | Manual trigger for plan consensus (the host already runs it proactively before feature-scale work) |
+
 ## Dual-host parity
 
-One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). The independent reviewer inverts per host so review always comes from a different model family. Codex-side model-tier spawn mapping is not yet enabled.
+One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). The independent reviewer inverts per host so review always comes from a different model family. Codex-side tiers ride the native `spawn_agent` model/effort parameters — the reasoner tier inherits the host model (judgment never silently downgrades); worker and chore tiers downshift.
 
 ## Docs
 
 | Doc | What's inside |
-|---|---|
+| --- | --- |
 | [`haejwo/README.md`](haejwo/README.md) | Deep dive: gate semantics, first run, commands, reasoning policy, verification |
 | [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | The constitution — 12 principles with origin cases, precedence order, amendment rule |
 | [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | Prompt & style law for every LLM-facing string (deny messages are a tested contract) |
@@ -79,4 +90,4 @@ One repo, one `hooks.json`, one python core — every codex behavior was **measu
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)

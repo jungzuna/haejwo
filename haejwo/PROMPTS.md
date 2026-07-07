@@ -1,6 +1,6 @@
 # haejwo prompt & style policy
 
-Scope: **every text an LLM reads or emits** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `session_brief.py`), script comments/errors (`scripts/`), and README.
+Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `session_brief.py`), script comments/errors (`scripts/`), and README language that defines identity or behavior.
 
 ## Language
 - **English everywhere by default** — prompts, comments, error messages, docs.
@@ -21,7 +21,7 @@ Scope: **every text an LLM reads or emits** — `commands/*.md`, `agents/*.md`, 
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels + bullets only; no prose paragraphs. Every rule actionable.
-- Total injected size (rules + config summary) must stay under session_brief's 3800-char cap.
+- Total injected size (rules + config summary) must stay under session_brief's 5000-char hard cap; keep ≤4600 so there's headroom for config lines.
 
 ## Hook-emitted text (the model reads these verbatim)
 - Prefixes: `[haejwo gate]` for gate/bash-guard decisions; `[haejwo]` / `[haejwo config]` for session context.
@@ -42,7 +42,7 @@ Scope: **every text an LLM reads or emits** — `commands/*.md`, `agents/*.md`, 
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.
 
 ## Reasoning policy
-- Reviewer effort scales with the decision's stakes: `medium` = routine checks, `high` = standard consults (runner default), `xhigh` = architecture forks / security-critical / final deadlock rounds only. Never pin one level for everything — uniform max dilutes budget where judgment compounds. Non-reasoning probes (connectivity smokes) stay explicit `low`. Claude reviewer = `deep-reasoner`.
+- Reviewer effort scales with the decision's stakes: `medium` = routine checks, `high` = standard consults (runner default), `xhigh` = architecture forks / security-critical / final deadlock rounds only. Never pin one level for everything — uniform max dilutes budget where judgment compounds. Non-reasoning probes (connectivity smokes) stay explicit `low`. Claude-host same-family fallback = `deep-reasoner`; other-CLI review uses the configured runner.
 
 ## Maintenance
 - Any prompt change bumps `plugin.json` version — patch for wording, minor for behavior.

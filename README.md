@@ -74,7 +74,7 @@ Normal use needs **none** of these; you just talk. They exist to adjust or inspe
 
 ## Dual-host parity
 
-One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). The independent reviewer inverts per host so review always comes from a different model family. Codex-side tiers ride the native `spawn_agent` model/effort parameters — the reasoner tier inherits the host model (judgment never silently downgrades); worker and chore tiers downshift.
+One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). Codex-side tiers ride the native `spawn_agent` model/effort parameters — the reasoner tier inherits the host model (judgment never silently downgrades); worker and chore tiers downshift.
 
 ## Docs
 

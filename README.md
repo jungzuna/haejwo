@@ -24,6 +24,8 @@ The core idea: keep the expensive main model on **judgment** (plan, delegate, de
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
+/reload-plugins   # only if a session is already open (a fresh session loads it automatically)
+/haejwo:setup     # optional one-time config — safe defaults work without it
 ```
 
 **Codex CLI** (same repo, same hooks — measured-compatible):
@@ -33,9 +35,9 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@haejwo-*` skills.
 
-**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
+Hooks load at session start, so restart the session (or run `/reload-plugins` on Claude Code) after install. `/haejwo:setup` is optional — it configures model tiers, edit budget, and the reviewer once and persists; safe defaults are already active before you run it, and on first use haejwo offers it automatically.
 
-Hooks load at session start — restart (or `/reload-plugins` on Claude Code) after install. On first run, haejwo nudges once toward `/haejwo:setup` (interactive model-tier / budget / reviewer configuration, persisted — asked once, never again). Safe defaults are active even before setup.
+**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
 
 Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 

@@ -18,6 +18,8 @@
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
+/reload-plugins   # 이미 열려 있는 세션이 있을 때만 (새 세션은 자동으로 로드됩니다)
+/haejwo:setup     # 선택 — 안 해도 안전 기본값으로 동작합니다
 ```
 
 **Codex CLI** (같은 repo, 같은 훅 — 전부 실측으로 확인된 호환):
@@ -27,9 +29,9 @@ codex plugin add haejwo@haejwo
 ```
 대화형 codex에서는 `/hooks`로 훅을 한 번만 신뢰해 주세요. 명령어는 `@haejwo-*` 스킬로 나타납니다.
 
-**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). **Opus 접근이 없다면** `/haejwo:setup`에서 `Balanced`나 `Budget` 프리셋을 고르세요 — 모든 역할이 계정에 실제로 있는 모델 안에서 돕니다.
+훅은 세션이 시작될 때 로드되니, 설치 후 세션을 재시작하세요(Claude Code는 `/reload-plugins`). `/haejwo:setup`은 선택입니다 — 모델 티어·편집 예산·리뷰어를 한 번 설정해 영구 저장하는 것뿐이고, 실행 전에도 안전 기본값이 이미 돌아가며 첫 사용 때 haejwo가 알아서 한 번 권합니다.
 
-훅은 세션이 시작될 때 로드됩니다 — 설치 후 재시작하세요(Claude Code는 `/reload-plugins`). 첫 실행 때 딱 한 번 `/haejwo:setup`을 권합니다: 모델 티어·편집 예산·리뷰어를 선택지로 답하면 영구 저장되고, 다시 묻지 않습니다. 저장하기 전에도 안전한 기본값으로 이미 돌아갑니다.
+**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). **Opus 접근이 없다면** `/haejwo:setup`에서 `Balanced`나 `Budget` 프리셋을 고르세요 — 모든 역할이 계정에 실제로 있는 모델 안에서 돕니다.
 
 로컬 개발용: 클론한 뒤 `/plugin marketplace add <클론 경로>` / `codex plugin marketplace add <클론 경로>`.
 

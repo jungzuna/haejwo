@@ -13,10 +13,18 @@ suites; refactors; repo-wide exploration; research; log triage.
 **Routing:**
 - Hard design/analysis/debugging-by-reasoning -> `haejwo:deep-reasoner` (opus)
 - Implementation from a clear brief -> `haejwo:default-worker` (sonnet)
-- Mechanical chores -> `haejwo:task-worker` (haiku)
+- Mechanical chores -> `haejwo:task-worker` (haiku) — ONLY when the brief
+  contains the exact answer (diff, rename map, template). If the worker
+  must decide anything, default-worker; in doubt, sonnet.
 - Security/concurrency/data integrity/crypto/migrations/public API ->
-  ESCALATE: opus override, or sonnet + mandatory independent adversarial
-  review before accepting.
+  ESCALATE only with the risk named in the brief: default sonnet + mandatory
+  independent adversarial review; opus override only for a named
+  reasoning-depth risk. Docs/config/boilerplate execution never escalates —
+  architecture/security/API judgment belongs to main or deep-reasoner.
+- Delegation without an explicit model INHERITS the session model. Generic
+  agents (general-purpose/Explore/bare spawn_agent) must carry a lower
+  execution tier: haiku to locate, sonnet to read+summarize; prefer haejwo
+  tiers.
 - On Codex hosts: use native spawn_agent + injected codex tier config —
   judgment inherits the host model (omit model); execution downshifts.
 - Independent review/outside perspective -> the OTHER model's runner:
@@ -42,6 +50,10 @@ listed judgment; carry accepted judgments upward. Countable done-criteria
 need named deterministic evidence; semantic traceability is separate — no
 stated evidence, no acceptance. If a retry or judgment call traces to an
 ambiguous brief or norm, say so (amendment signal).
+
+**Long sessions:** main turns re-read the whole context; workers start
+fresh — delegate even mid-size work, and offer a fresh-session handoff when
+feature-scale work lands in a heavy session.
 
 **Progress & reporting:** format follows content — tables for comparable
 fields, terse lines otherwise. Long/multi-phase work: ONE compact plan table,

@@ -83,6 +83,20 @@ def patch_payload(ops, sid="sess-CX", turn_id="t1"):
             "tool_name": "apply_patch", "cwd": "/repo", "tool_input": {"command": cmd}}
 
 
+def task_payload(subagent_type, model=None, sid="sess-T", agent=None, tool="Task"):
+    d = {
+        "session_id": sid, "prompt_id": "p1", "hook_event_name": "PreToolUse",
+        "tool_name": tool, "cwd": "/repo",
+        "tool_input": {"subagent_type": subagent_type},
+    }
+    if model:
+        d["tool_input"]["model"] = model
+    if agent:
+        d["agent_type"] = agent
+        d["agent_id"] = "agent-123"
+    return d
+
+
 def main():
     data = tempfile.mkdtemp(prefix="hjw-test-")
     try:
@@ -163,6 +177,10 @@ def main():
             "execution never escalates",            # escalation discipline (2.5.0)
             "INHERITS the session model",           # inheritance-leak guard (2.5.0)
             "workers start fresh",                  # context economy (2.5.0)
+            "raise tier once",                      # worker-failure diagnostic (2.6.0)
+            "verification breadth",                 # effort-by-verification-breadth (2.6.0)
+            "never grind",                          # retry stop-condition (2.6.0)
+            "fixed per consult session",            # reviewer model pinning (2.6.0)
         ]
         for phrase in CANARIES:
             check(f"canary: {phrase!r}", phrase in rules_text)
@@ -362,15 +380,99 @@ def main():
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("codex host -> codex tiers + claude reviewer + spawn_agent summary",
               "codex tiers" in ctx and "claude reviewer" in ctx
-              and "spawn_agent" in ctx and "gpt-5.4-mini" in ctx, ctx)
+              and "spawn_agent" in ctx and "gpt-5.6-luna" in ctx, ctx)
 
         print("== hjw_common.DEFAULT_CONFIG ==")
         check("models_codex defaults",
               DEFAULT_CONFIG["models_codex"] == {
                   "deep_reasoner": "inherit",
-                  "default_worker": "gpt-5.4",
-                  "task_worker": "gpt-5.4-mini",
+                  "default_worker": "gpt-5.6-terra",
+                  "task_worker": "gpt-5.6-luna",
               })
+        check("gate.delegation_guard defaults True",
+              DEFAULT_CONFIG["gate"]["delegation_guard"] is True)
+
+        print("== delegation_gate.py ==")
+        rc, out = run("delegation_gate.py", task_payload("general-purpose"), data)
+        reason = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        check("deny: general-purpose without model", decision(out) == "deny", str(out))
+        check("deny reason instructs default-worker + INHERIT",
+              "haejwo:default-worker" in reason and "INHERIT" in reason)
+
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", model="haiku"), data)
+        check("allow: general-purpose WITH explicit model", decision(out) != "deny", str(out))
+
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", model="inherit"), data)
+        check("deny: general-purpose with model='inherit' (non-explicit)",
+              decision(out) == "deny", str(out))
+
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", model=" "), data)
+        check("deny: general-purpose with whitespace-only model (non-explicit)",
+              decision(out) == "deny", str(out))
+
+        with open(os.path.join(data, "config.json"), "w") as f:
+            json.dump({"gate": {"delegation_guard": False}}, f)
+        rc, out = run("delegation_gate.py", task_payload("Explore"), data)
+        check("allow: Explore without model but delegation_guard disabled",
+              decision(out) != "deny", str(out))
+        os.remove(os.path.join(data, "config.json"))
+
+        rc, out = run("delegation_gate.py", task_payload("haejwo:default-worker"), data)
+        check("allow: haejwo:* tiered worker without model",
+              decision(out) != "deny", str(out))
+
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", agent="task-worker"), data)
+        check("SUBAGENT delegation -> allow (exempt)", decision(out) != "deny", str(out))
+
+        rc, out = run("delegation_gate.py", "not-json{{{", data)
+        check("fail-open: garbage stdin -> allow (rc0)", rc == 0 and decision(out) != "deny")
+
+        rc, out = run("delegation_gate.py", "", data)
+        check("fail-open: empty stdin -> allow (rc0)", rc == 0 and decision(out) != "deny")
+
+        obs_file = os.path.join(data, "state", "observations.jsonl")
+        obs_recs = [json.loads(l) for l in open(obs_file)]
+        check("envelope: v1 delegation record with null requested_model (deny case)",
+              any(r.get("hook") == "delegation" and r.get("v") == 1
+                  and r.get("requested_model") is None
+                  and r.get("subagent_type") == "general-purpose"
+                  for r in obs_recs))
+
+        print("== delegation_gate.py fail-open edge cases ==")
+        fo_data = tempfile.mkdtemp(prefix="hjw-test-failopen-")
+        try:
+            null_ti = task_payload("general-purpose")
+            null_ti["tool_input"] = None
+            rc, out = run("delegation_gate.py", null_ti, fo_data)
+            check("fail-open: tool_input null -> allow rc0",
+                  rc == 0 and decision(out) != "deny", str(out))
+
+            rc, out = run("delegation_gate.py", task_payload(5), fo_data)
+            check("fail-open: subagent_type non-string (5) -> allow rc0",
+                  rc == 0 and decision(out) != "deny", str(out))
+
+            with open(os.path.join(fo_data, "config.json"), "w") as f:
+                f.write("{ not valid json !!! ### garbage")
+            rc, out = run("delegation_gate.py",
+                          task_payload("haejwo:default-worker"), fo_data)
+            check("fail-open: malformed config.json -> allow rc0",
+                  rc == 0 and decision(out) != "deny", str(out))
+        finally:
+            shutil.rmtree(fo_data, ignore_errors=True)
+
+        print("== hooks.json hook-target existence ==")
+        hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")
+        hooks_text = open(hooks_path, encoding="utf-8").read()
+        script_names = sorted(set(re.findall(
+            r"\$\{CLAUDE_PLUGIN_ROOT\}/scripts/([^\"\s]+\.py)", hooks_text)))
+        check("hooks.json references at least one script", len(script_names) > 0)
+        for name in script_names:
+            check(f"hook target exists: scripts/{name}",
+                  os.path.isfile(os.path.join(SCRIPTS, name)))
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "max_files_per_turn": 2,
         "bash_guard": True,
+        "delegation_guard": True,
     },
     "code_extensions": [
         "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "java", "go", "rs",
@@ -41,12 +42,12 @@ DEFAULT_CONFIG = {
     },
     # Codex-host tiers (native spawn_agent model/reasoning_effort params).
     # "inherit" = omit the model param so judgment never silently downgrades;
-    # execution downshifts — that's the economic point. Exact model names are
-    # account/version-dependent (codex has no stable aliases); setup edits them.
+    # execution downshifts — that's the economic point. Exact names are
+    # release-tested pins; setup edits them; never auto-rewrite user pins.
     "models_codex": {
         "deep_reasoner": "inherit",
-        "default_worker": "gpt-5.4",
-        "task_worker": "gpt-5.4-mini",
+        "default_worker": "gpt-5.6-terra",
+        "task_worker": "gpt-5.6-luna",
     },
     "codex": {"enabled": False, "verified_at": None},
 }

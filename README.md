@@ -88,6 +88,20 @@ One repo, one `hooks.json`, one python core — every codex behavior was **measu
 | [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | The constitution — 12 principles with origin cases, precedence order, amendment rule |
 | [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | Prompt & style law for every LLM-facing string (deny messages are a tested contract) |
 
+## Non-goals
+
+Boundaries that keep haejwo a lubricant layer on top of the host, not a harness:
+
+- Scheduler, durable task queue, or persistent agent roster
+- General DAG or recursive multi-agent runtime
+- Model gateway, billing optimizer, or price-based router
+- Cross-vendor WORKER routing — worker vendor follows the host; only review crosses vendors (want GPT execution? run the Codex host)
+- Worktree orchestration, patch merging, or a replacement sandbox
+- Hosted control plane or dashboard
+- Autonomous push/deploy/publish
+- Workflow DSL or ontology framework
+- A second operating architecture (e.g. an advisor-style cheap-main mode)
+
 ## Verification
 
 `python3 tests/test_hooks.py` — a hermetic, stdlib-only contract suite: gate counting/dedup/deny wording, concurrency (flock), bash-guard suites, codex `apply_patch` fixtures, turn/stale reset, subagent exemption, manifest version sync, command↔skill mirror drift canaries, rule-text canaries. CI runs it on every push.

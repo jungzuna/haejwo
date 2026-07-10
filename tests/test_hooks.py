@@ -159,6 +159,10 @@ def main():
             "judgment inherits the host model (omit model); execution downshifts",  # codex-tier routing
             "no stated evidence, no acceptance",    # acceptance evidence split
             "amendment signal",                     # calibration loop
+            "exact answer",                         # haiku litmus (2.5.0)
+            "execution never escalates",            # escalation discipline (2.5.0)
+            "INHERITS the session model",           # inheritance-leak guard (2.5.0)
+            "workers start fresh",                  # context economy (2.5.0)
         ]
         for phrase in CANARIES:
             check(f"canary: {phrase!r}", phrase in rules_text)

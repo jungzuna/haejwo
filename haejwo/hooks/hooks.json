@@ -22,6 +22,17 @@
             "statusMessage": "haejwo bash-guard"
           }
         ]
+      },
+      {
+        "matcher": "^(Task|Agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/delegation_gate.py\" \"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_DATA}\"",
+            "timeout": 10,
+            "statusMessage": "haejwo delegation"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

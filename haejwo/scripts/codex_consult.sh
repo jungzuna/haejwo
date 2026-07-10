@@ -28,7 +28,14 @@
 #                   sandbox-constrained hosts: only danger-full-access can touch files.
 #   CODEX_EFFORT    low|medium|high (default)|xhigh — scale to the decision's
 #                   stakes; xhigh for the hardest calls only, low for probes.
-#   CODEX_MODEL     force a specific model (optional).
+#   CODEX_MODEL     force a specific reviewer model (optional). Fixed for the
+#                   whole consult session — never swap models mid-thread on a
+#                   --resume call; escalate stakes via CODEX_EFFORT=xhigh
+#                   instead, and use a frontier model for xhigh rounds. If
+#                   codex exec pre-execution-rejects this model as
+#                   unknown/unavailable, this script retries ONCE with the
+#                   CLI default and marks the reply — never silently retried
+#                   twice, never persisted.
 #   CODEX_TIMEOUT   seconds; default by effort (150/300/600/1200). 0 = unlimited.
 #   ALLOW_EMPTY_DIFF=1     allow an intentional no-op implement run.
 #   CODEX_ALLOW_MARKERS=1  disable the runtime-error scan (safety valve; rarely needed).
@@ -165,6 +172,32 @@ fi
 rc=$?
 DUR=$((SECONDS - START))
 
+# ---- model-unavailable fallback (non-resume only): PRE-EXECUTION rejection of
+# CODEX_MODEL retries ONCE with the CLI default, never twice, never persisted
+# (the note below is stdout-only for this run; $OUT itself is untouched). A
+# positive ID needs BOTH a known unknown-model stderr pattern AND the
+# requested model name in the log — ambiguous/timeout/transport errors are
+# left to the existing classifier below.
+MODEL_FALLBACK=0
+if [ "$RESUME" = 0 ] && [ -n "${CODEX_MODEL:-}" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+  MODEL_ERR_RE='unknown model|model not found|not available'
+  if grep -iEq "$MODEL_ERR_RE" "$LOG" 2>/dev/null && grep -qF "$CODEX_MODEL" "$LOG" 2>/dev/null; then
+    echo "⚠ model '$CODEX_MODEL' rejected pre-execution — retrying ONCE with CLI default ..." >&2
+    echo "# ---- model '$CODEX_MODEL' unavailable; retry with CLI default ----" >> "$LOG"
+    rm -f "$OUT"
+    RETRY=(codex exec -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${EFFORT_FLAG[@]}" -o "$OUT" -)
+    START=$SECONDS
+    if command -v timeout >/dev/null 2>&1 && [ "$TIMEOUT" != 0 ]; then
+      timeout "$TIMEOUT" "${RETRY[@]}" < "$BRIEF" >> "$LOG" 2>&1
+    else
+      "${RETRY[@]}" < "$BRIEF" >> "$LOG" 2>&1
+    fi
+    rc=$?
+    DUR=$((SECONDS - START))
+    MODEL_FALLBACK=1
+  fi
+fi
+
 AFTER="$(git_snapshot)"
 CHANGED=0; { [ "$GIT_OK" = 1 ] && [ "$BEFORE" != "$AFTER" ]; } && CHANGED=1
 
@@ -206,11 +239,21 @@ fi
 if [ "$FAILED" = 1 ]; then
   echo "✗ codex_consult FAILED (mode=$MODE, ${DUR}s):" >&2
   printf '%s' "$FAIL_MSG" >&2
+  [ "$MODEL_FALLBACK" = 1 ] && echo "  (note: model '$CODEX_MODEL' was unavailable; retried with CLI default, still failed)" >&2
   echo "  --- last 12 log lines ($LOG) ---" >&2
   tail -12 "$LOG" >&2
   [ "$rc" -ne 0 ] && exit "$rc" || exit 1
 fi
 
+# Persist the fallback disclosure into $OUT itself (not just stdout) so a
+# caller reading the reply FILE programmatically also sees the assurance
+# downgrade — stdout alone is lost to any redirection/capture of this script.
+if [ "$MODEL_FALLBACK" = 1 ]; then
+  FALLBACK_NOTE="note: requested model '$CODEX_MODEL' unavailable; reviewed by CLI default (assurance downgraded)"
+  { printf '%s\n' "$FALLBACK_NOTE"; cat "$OUT"; } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
+fi
+
 echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, effort=${EFFORT:-default}, sandbox=$SANDBOX ==="
+[ "$MODEL_FALLBACK" = 1 ] && echo "note: requested model '$CODEX_MODEL' unavailable; reviewed by CLI default (assurance downgraded)"
 cat "$OUT"
 exit 0

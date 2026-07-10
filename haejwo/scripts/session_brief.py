@@ -59,8 +59,8 @@ def main():
                 f"codex tiers (pass model + reasoning_effort on spawn_agent; "
                 f"'inherit' = omit model): "
                 f"deep-reasoner={mc.get('deep_reasoner', 'inherit')}/high, "
-                f"default-worker={mc.get('default_worker', 'gpt-5.4')}/medium, "
-                f"task-worker={mc.get('task_worker', 'gpt-5.4-mini')}/low"
+                f"default-worker={mc.get('default_worker', 'gpt-5.6-terra')}/medium, "
+                f"task-worker={mc.get('task_worker', 'gpt-5.6-luna')}/low"
             )
             reviewer_label = "claude reviewer"
             fallback = "disabled (fallback: native subagent, same-model)"

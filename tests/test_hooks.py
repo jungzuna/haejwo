@@ -83,7 +83,8 @@ def patch_payload(ops, sid="sess-CX", turn_id="t1"):
             "tool_name": "apply_patch", "cwd": "/repo", "tool_input": {"command": cmd}}
 
 
-def task_payload(subagent_type, model=None, sid="sess-T", agent=None, tool="Task"):
+def task_payload(subagent_type, model=None, sid="sess-T", agent=None, tool="Task",
+                  prompt=None):
     d = {
         "session_id": sid, "prompt_id": "p1", "hook_event_name": "PreToolUse",
         "tool_name": tool, "cwd": "/repo",
@@ -91,6 +92,8 @@ def task_payload(subagent_type, model=None, sid="sess-T", agent=None, tool="Task
     }
     if model:
         d["tool_input"]["model"] = model
+    if prompt is not None:
+        d["tool_input"]["prompt"] = prompt
     if agent:
         d["agent_type"] = agent
         d["agent_id"] = "agent-123"
@@ -181,6 +184,7 @@ def main():
             "verification breadth",                 # effort-by-verification-breadth (2.6.0)
             "never grind",                          # retry stop-condition (2.6.0)
             "fixed per consult session",            # reviewer model pinning (2.6.0)
+            "BEFORE live deployment, commit, merge, or reporting acceptance",  # review timing (2.7.0)
         ]
         for phrase in CANARIES:
             check(f"canary: {phrase!r}", phrase in rules_text)
@@ -434,13 +438,54 @@ def main():
         rc, out = run("delegation_gate.py", "", data)
         check("fail-open: empty stdin -> allow (rc0)", rc == 0 and decision(out) != "deny")
 
+        print("== delegation_gate.py envelope v2 (plan_marker_kind / prompt_bytes) ==")
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM1",
+            prompt="Implement the thing.\nPlan: per the user-approved decision above — do X."),
+            data)
+        check("allow: plan-marker prompt", decision(out) != "deny", str(out))
+
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM2",
+            prompt="Tiny rename.\nNo plan because: mechanical, single symbol."), data)
+        check("allow: no-plan-marker prompt", decision(out) != "deny", str(out))
+
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM3", prompt="Just fix the typo."), data)
+        check("allow: bare prompt (no marker)", decision(out) != "deny", str(out))
+
         obs_file = os.path.join(data, "state", "observations.jsonl")
         obs_recs = [json.loads(l) for l in open(obs_file)]
-        check("envelope: v1 delegation record with null requested_model (deny case)",
-              any(r.get("hook") == "delegation" and r.get("v") == 1
-                  and r.get("requested_model") is None
-                  and r.get("subagent_type") == "general-purpose"
-                  for r in obs_recs))
+
+        def _last(pred):
+            hits = [r for r in obs_recs if pred(r)]
+            return hits[-1] if hits else None
+
+        r_deny = _last(lambda r: r.get("hook") == "delegation" and r.get("decision") == "deny"
+                       and r.get("subagent_type") == "general-purpose"
+                       and r.get("requested_model") is None)
+        check("envelope v2: deny case records decision 'deny'",
+              bool(r_deny) and r_deny.get("v") == 2, str(r_deny))
+
+        r_allow = _last(lambda r: r.get("hook") == "delegation"
+                        and r.get("subagent_type") == "general-purpose"
+                        and r.get("requested_model") == "haiku")
+        check("envelope v2: allow case records decision 'allow'",
+              bool(r_allow) and r_allow.get("decision") == "allow", str(r_allow))
+
+        r_plan = _last(lambda r: r.get("sid") == "sess-PM1")
+        check("envelope v2: 'Plan:' prompt -> plan_marker_kind 'plan'",
+              bool(r_plan) and r_plan.get("plan_marker_kind") == "plan", str(r_plan))
+        check("envelope v2: prompt_bytes > 0 recorded",
+              bool(r_plan) and r_plan.get("prompt_bytes", 0) > 0, str(r_plan))
+
+        r_noplan = _last(lambda r: r.get("sid") == "sess-PM2")
+        check("envelope v2: 'No plan because' prompt -> plan_marker_kind 'no_plan'",
+              bool(r_noplan) and r_noplan.get("plan_marker_kind") == "no_plan", str(r_noplan))
+
+        r_none = _last(lambda r: r.get("sid") == "sess-PM3")
+        check("envelope v2: bare prompt -> plan_marker_kind 'none'",
+              bool(r_none) and r_none.get("plan_marker_kind") == "none", str(r_none))
 
         print("== delegation_gate.py fail-open edge cases ==")
         fo_data = tempfile.mkdtemp(prefix="hjw-test-failopen-")
@@ -463,6 +508,65 @@ def main():
                   rc == 0 and decision(out) != "deny", str(out))
         finally:
             shutil.rmtree(fo_data, ignore_errors=True)
+
+        print("== delegation_gate.py adversarial-review fixes (fail-open envelope, audit/decision parity) ==")
+
+        def _last_fresh(pred):
+            recs = [json.loads(l) for l in open(obs_file)]
+            hits = [r for r in recs if pred(r)]
+            return hits[-1] if hits else None
+
+        # (a) both markers present -> "Plan:" wins (documented precedence)
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM4",
+            prompt="No plan because: quick. Plan: per approved decision — do X."), data)
+        check("allow: both plan markers present", decision(out) != "deny", str(out))
+        r_both = _last_fresh(lambda r: r.get("sid") == "sess-PM4")
+        check("envelope: both markers present -> plan_marker_kind 'plan' (precedence)",
+              bool(r_both) and r_both.get("plan_marker_kind") == "plan", str(r_both))
+
+        # (b) non-string prompt (dict) -> no crash, allow, prompt_bytes == 0
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM5", prompt={"x": 1}), data)
+        check("allow: non-string (dict) prompt -> no crash", rc == 0 and decision(out) != "deny", str(out))
+        r_dict = _last_fresh(lambda r: r.get("sid") == "sess-PM5")
+        check("envelope: non-string prompt -> prompt_bytes == 0",
+              bool(r_dict) and r_dict.get("prompt_bytes") == 0, str(r_dict))
+
+        # (c) lone surrogate in prompt -> no crash, decision recorded
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM6", prompt="bad\ud800"), data)
+        check("allow: prompt with lone surrogate -> no crash", rc == 0 and decision(out) != "deny", str(out))
+        r_surr = _last_fresh(lambda r: r.get("sid") == "sess-PM6")
+        check("envelope: lone-surrogate prompt -> decision recorded",
+              bool(r_surr) and r_surr.get("decision") == "allow", str(r_surr))
+
+        # (d) gate disabled via config -> envelope still written with decision "allow"
+        with open(os.path.join(data, "config.json"), "w") as f:
+            json.dump({"gate": {"delegation_guard": False}}, f)
+        rc, out = run("delegation_gate.py", task_payload("Explore", sid="sess-PM7"), data)
+        check("allow: gate disabled via config -> allow", rc == 0 and decision(out) != "deny", str(out))
+        r_disabled = _last_fresh(lambda r: r.get("sid") == "sess-PM7")
+        check("envelope: gate disabled -> record written with decision 'allow'",
+              bool(r_disabled) and r_disabled.get("decision") == "allow", str(r_disabled))
+        os.remove(os.path.join(data, "config.json"))
+
+        # (e) subagent-exempt payload -> envelope decision "allow"
+        rc, out = run("delegation_gate.py", task_payload(
+            "general-purpose", agent="task-worker", sid="sess-PM8"), data)
+        check("allow: subagent-exempt payload", decision(out) != "deny", str(out))
+        r_subagent = _last_fresh(lambda r: r.get("sid") == "sess-PM8")
+        check("envelope: subagent-exempt payload -> decision 'allow'",
+              bool(r_subagent) and r_subagent.get("decision") == "allow", str(r_subagent))
+
+        # (f) generic + model="inherit" -> envelope requested_model is None (matches decision)
+        rc, out = run("delegation_gate.py", task_payload(
+            "general-purpose", model="inherit", sid="sess-PM9"), data)
+        check("deny: generic + model='inherit'", decision(out) == "deny", str(out))
+        r_inherit = _last_fresh(lambda r: r.get("sid") == "sess-PM9")
+        check("envelope: model='inherit' -> requested_model None, decision 'deny' (record matches decision)",
+              bool(r_inherit) and r_inherit.get("requested_model") is None
+              and r_inherit.get("decision") == "deny", str(r_inherit))
 
         print("== hooks.json hook-target existence ==")
         hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")

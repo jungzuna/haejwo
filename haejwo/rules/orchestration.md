@@ -10,8 +10,9 @@ repo-wide exploration; research; log triage.
 
 **Routing:**
 - Implementation from a clear brief -> `haejwo:default-worker`.
-- Mechanical chores -> `haejwo:task-worker` ONLY when the brief has the exact
-  answer (diff, rename map, template); else default-worker.
+- Bounded mechanical work with clear expected output and deterministic
+  verification, no behavior/risk/API/data-shape judgment ->
+  `haejwo:task-worker`; else default-worker.
 - Isolated deep analysis or same-model verification -> `haejwo:deep-reasoner`
   (fresh context, NOT independent authority — judgment stays with the host).
 - Independent review -> the OTHER vendor's runner:

@@ -19,7 +19,7 @@ PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 SCRIPTS = os.path.join(PLUGIN, "scripts")
 sys.path.insert(0, SCRIPTS)
 from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
-from session_brief import EMERGENCY_CORE, MAX_LEN  # noqa: E402
+from session_brief import CORE_BODY, EMERGENCY_CORE, MAX_LEN, UNCONFIGURED_CORE  # noqa: E402
 
 PASS, FAIL = 0, []
 
@@ -172,7 +172,7 @@ def main():
         CANARIES = [
             "does JUDGMENT",                        # 1. judgment/execution split
             "NEVER require plugin commands",        # 2. zero-command concept
-            "ONLY when the brief has the exact",    # 3. task-worker exact-answer litmus
+            "no behavior/risk/API/data-shape judgment",  # 3. task-worker litmus
             "NOT independent authority",            # 4. deep-reasoner is not independent authority
             "independent review BEFORE",            # 5. review-timing invariant
             "xhigh ONLY",                           # 6. stakes-scaled effort ceiling
@@ -194,8 +194,9 @@ def main():
                 cond = phrase in rules_text
             check(f"canary: {name}", cond)
 
-        # diet budget — target 3000, actual 3152 at 2.9.0; consensus-kept host
-        # contracts cost the overage; re-audit at next rules change
+        # diet budget — target 3000, actual 3190 at 2.10.0 (task-worker litmus
+        # relaxation); consensus-kept host contracts cost the overage;
+        # re-audit at next rules change
         rules_size = os.path.getsize(rules_path)
         check("rules file size within diet budget (<=3300 bytes)",
               rules_size <= 3300, f"size={rules_size}")
@@ -374,6 +375,11 @@ def main():
         rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("unconfigured -> setup nudge", "setup" in ctx and "NOT configured" in ctx)
+        check("unconfigured -> core body present (honest cause split)",
+              CORE_BODY in ctx and UNCONFIGURED_CORE in ctx, ctx)
+        check("unconfigured -> does NOT claim the rules file is unreadable "
+              "(that's the configured-degrade cause, not this one)",
+              "unreadable" not in ctx, ctx)
 
         with open(os.path.join(data, "config.json"), "w") as f:
             json.dump({"configured": True,
@@ -384,6 +390,9 @@ def main():
               "haejwo config" in ctx and "delegate" in ctx.lower())
         check("claude host summary has no codex-tiers leakage",
               "codex tiers" not in ctx and "models:" in ctx and "codex reviewer" in ctx)
+        check("claude host: default deep-reasoner='inherit' renders as inherit(session) + clarifier",
+              "deep-reasoner=inherit(session)" in ctx
+              and "(inherit = omit the model override)" in ctx, ctx)
 
         check("${CLAUDE_PLUGIN_ROOT} resolved: no literal placeholder leaks into injected rules",
               "${CLAUDE_PLUGIN_ROOT}" not in ctx)
@@ -514,6 +523,8 @@ def main():
               rc == 0 and not ctx_normal.startswith(EMERGENCY_CORE), ctx_normal[:80])
 
         print("== hjw_common.DEFAULT_CONFIG ==")
+        check("models.deep_reasoner defaults to inherit (2.10: was opus)",
+              DEFAULT_CONFIG["models"]["deep_reasoner"] == "inherit")
         check("models_codex defaults",
               DEFAULT_CONFIG["models_codex"] == {
                   "deep_reasoner": "inherit",
@@ -635,6 +646,81 @@ def main():
 
         rc, out = run("delegation_gate.py", "", data)
         check("fail-open: empty stdin -> allow (rc0)", rc == 0 and decision(out) != "deny")
+
+        print("== delegation_gate.py host-aware deny wording (codex vs Claude) ==")
+        # codex-host branch: path-sniffed off root|data containing "/.codex/"
+        # (same heuristic session_brief.py:87 uses), so a data dir alone
+        # under a ".codex/" component is enough to flip it.
+        codex_data = os.path.join(data, ".codex", "plugins", "data", "haejwo")
+        os.makedirs(codex_data, exist_ok=True)
+
+        # Full expected deny text (Claude-host wording) — byte-identical
+        # comparison, not a substring check, so a future contract regression
+        # (wording drift, punctuation, ordering) is caught even if the
+        # 'haiku'/'sonnet' fragments themselves survive unchanged.
+        CLAUDE_HOST_DENY_TEXT = (
+            "[haejwo gate] Delegation to generic agent 'general-purpose' without an "
+            "explicit model — it would INHERIT the session model (judgment rates for "
+            "execution). Pass model: 'haiku' (locate) or 'sonnet' (read/summarize), or "
+            "delegate to haejwo:default-worker / haejwo:task-worker instead. Emergency "
+            "override: /haejwo:gate off."
+        )
+
+        # 1. Claude host (existing fixtures/data dir): wording byte-identical
+        #    to the pre-existing assertions above — nothing changes here.
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", sid="sess-HOST1"), data)
+        reason1 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        check("Claude host: deny -> full wording byte-identical to expected contract text",
+              decision(out) == "deny" and reason1 == CLAUDE_HOST_DENY_TEXT,
+              reason1)
+
+        # 2. Codex host + BOTH models_codex tiers explicit (custom pins):
+        #    deny names both the configured models AND the haejwo tiers.
+        with open(os.path.join(codex_data, "config.json"), "w") as f:
+            json.dump({"models_codex": {"task_worker": "gpt-5.6-luna",
+                                         "default_worker": "gpt-5.6-terra"}}, f)
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", sid="sess-HOST2"), codex_data)
+        reason2 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        check("Codex host + explicit pins: still denies, rc0",
+              rc == 0 and decision(out) == "deny", str(out))
+        check("Codex host + explicit pins: names configured models",
+              "'gpt-5.6-luna' (locate)" in reason2
+              and "'gpt-5.6-terra' (read/summarize)" in reason2, reason2)
+        check("Codex host + explicit pins: also names haejwo tiers",
+              "haejwo:default-worker" in reason2 and "haejwo:task-worker" in reason2, reason2)
+        check("Codex host + explicit pins: no Claude-alias leakage",
+              "'haiku'" not in reason2 and "'sonnet'" not in reason2, reason2)
+
+        # 3. Codex host + models_codex all "inherit": no model:'inherit'
+        #    recommendation, but both haejwo tiers still named.
+        with open(os.path.join(codex_data, "config.json"), "w") as f:
+            json.dump({"models_codex": {"task_worker": "inherit",
+                                         "default_worker": "inherit"}}, f)
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", sid="sess-HOST3"), codex_data)
+        reason3 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        check("Codex host + inherit tiers: still denies, rc0",
+              rc == 0 and decision(out) == "deny", str(out))
+        check("Codex host + inherit tiers: no 'Pass model:' recommendation",
+              "Pass model:" not in reason3, reason3)
+        check("Codex host + inherit tiers: names both haejwo tiers",
+              "haejwo:default-worker" in reason3 and "haejwo:task-worker" in reason3, reason3)
+
+        # 4. Codex host + malformed models_codex (a string, not a dict):
+        #    falls back to Claude wording; still denies; exit unchanged.
+        with open(os.path.join(codex_data, "config.json"), "w") as f:
+            json.dump({"models_codex": "not-a-dict"}, f)
+        rc, out = run("delegation_gate.py",
+                      task_payload("general-purpose", sid="sess-HOST4"), codex_data)
+        reason4 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+        check("Codex host + malformed models_codex: still denies, rc0 (exit unchanged)",
+              rc == 0 and decision(out) == "deny", str(out))
+        check("Codex host + malformed models_codex: falls back to full Claude wording, byte-identical",
+              reason4 == CLAUDE_HOST_DENY_TEXT, reason4)
+
+        os.remove(os.path.join(codex_data, "config.json"))
 
         print("== delegation_gate.py envelope v2 (plan_marker_kind / prompt_bytes) ==")
         rc, out = run("delegation_gate.py", task_payload(
@@ -775,6 +861,288 @@ def main():
         for name in script_names:
             check(f"hook target exists: scripts/{name}",
                   os.path.isfile(os.path.join(SCRIPTS, name)))
+
+        print("== runner stub tests (codex_consult.sh / claude_consult.sh) ==")
+        runner_tmp = tempfile.mkdtemp(prefix="hjw-test-runners-")
+        try:
+            repo_dir = os.path.join(runner_tmp, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            subprocess.run(["git", "init", "-q", repo_dir], check=True, capture_output=True)
+
+            codex_script = os.path.join(SCRIPTS, "codex_consult.sh")
+            claude_script = os.path.join(SCRIPTS, "claude_consult.sh")
+            CONTRACT_HEAD = "REVIEWER CONTRACT: analyze and reply only."
+
+            def make_stub(bin_dir, name, capture_dir, model_fallback=False):
+                """Stub codex/claude executable: captures argv (one arg per
+                line) + full stdin per invocation into capture_dir, replies
+                non-empty. --version calls are NOT captured/counted (the
+                runners probe --version for their log header before the real
+                call). If argv contains '-o <path>' the reply is written
+                there (matches real codex's -o contract); else to stdout
+                (matches claude, and codex's --resume path)."""
+                fallback_block = ""
+                if model_fallback:
+                    fallback_block = (
+                        'model=""\n'
+                        'prev=""\n'
+                        'for a in "$@"; do\n'
+                        '  if [ "$prev" = "-m" ]; then model="$a"; fi\n'
+                        '  prev="$a"\n'
+                        'done\n'
+                        'if [ ! -f "$CAP/_ff_done" ]; then\n'
+                        '  touch "$CAP/_ff_done"\n'
+                        '  echo "unknown model: ${model:-unspecified}" >&2\n'
+                        '  exit 1\n'
+                        'fi\n'
+                    )
+                script = (
+                    "#!/usr/bin/env bash\n"
+                    "set +u\n"
+                    'if [ "${1:-}" = "--version" ]; then\n'
+                    '  echo "stub-version 0.0.0"\n'
+                    "  exit 0\n"
+                    "fi\n"
+                    f'CAP="{capture_dir}"\n'
+                    'mkdir -p "$CAP"\n'
+                    'idx_file="$CAP/_idx"\n'
+                    'if [ -f "$idx_file" ]; then idx=$(( $(cat "$idx_file") + 1 )); else idx=1; fi\n'
+                    'echo "$idx" > "$idx_file"\n'
+                    'printf \'%s\\n\' "$@" > "$CAP/call_${idx}.argv"\n'
+                    'cat > "$CAP/call_${idx}.stdin"\n'
+                    'out=""\n'
+                    'prev=""\n'
+                    'for a in "$@"; do\n'
+                    '  if [ "$prev" = "-o" ]; then out="$a"; fi\n'
+                    '  prev="$a"\n'
+                    'done\n'
+                    + fallback_block +
+                    'reply="STUB-REPLY-OK-${idx}"\n'
+                    'if [ -n "$out" ]; then\n'
+                    '  printf \'%s\\n\' "$reply" > "$out"\n'
+                    'else\n'
+                    '  printf \'%s\\n\' "$reply"\n'
+                    'fi\n'
+                    'exit 0\n'
+                )
+                path = os.path.join(bin_dir, name)
+                with open(path, "w") as f:
+                    f.write(script)
+                os.chmod(path, 0o755)
+                return path
+
+            def run_script(script, args, extra_env, stdin_data=""):
+                env = dict(os.environ)
+                env.pop("CODEX_SANDBOX", None)
+                env.pop("CLAUDE_PLUGIN_DATA", None)
+                env.update(extra_env)
+                p = subprocess.run(
+                    ["bash", script] + args, input=stdin_data,
+                    capture_output=True, text=True, timeout=20, cwd=repo_dir, env=env,
+                )
+                return p.returncode, p.stdout, p.stderr
+
+            def read_calls(capture_dir):
+                calls = []
+                i = 1
+                while os.path.isfile(os.path.join(capture_dir, f"call_{i}.stdin")):
+                    argv_path = os.path.join(capture_dir, f"call_{i}.argv")
+                    argv_lines = (open(argv_path).read().splitlines()
+                                  if os.path.isfile(argv_path) else [])
+                    stdin_text = open(os.path.join(capture_dir, f"call_{i}.stdin")).read()
+                    calls.append((argv_lines, stdin_text))
+                    i += 1
+                return calls
+
+            # ---- contract prepend on top of captured stdin: file brief,
+            # stdin brief, --resume (both runners) ----
+            for label, script in (("codex", codex_script), ("claude", claude_script)):
+                bin_dir = os.path.join(runner_tmp, f"bin-{label}-contract")
+                os.makedirs(bin_dir, exist_ok=True)
+                env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
+
+                brief_path = os.path.join(runner_tmp, f"{label}-brief-file.md")
+                with open(brief_path, "w") as f:
+                    f.write("Test brief body.\n")
+
+                cap = os.path.join(runner_tmp, f"cap-{label}-file")
+                make_stub(bin_dir, label, cap)
+                rc, out, err = run_script(script, [brief_path], env)
+                calls = read_calls(cap)
+                check(f"{label} file-brief: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
+                check(f"{label} file-brief: contract at top of captured stdin",
+                      bool(calls) and calls[0][1].startswith(CONTRACT_HEAD), calls[:1])
+
+                cap2 = os.path.join(runner_tmp, f"cap-{label}-stdin")
+                make_stub(bin_dir, label, cap2)
+                rc, out, err = run_script(script, ["-"], env, stdin_data="Stdin brief body.\n")
+                calls2 = read_calls(cap2)
+                check(f"{label} stdin-brief: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
+                check(f"{label} stdin-brief: contract at top of captured stdin",
+                      bool(calls2) and calls2[0][1].startswith(CONTRACT_HEAD), calls2[:1])
+
+                cap3 = os.path.join(runner_tmp, f"cap-{label}-resume")
+                make_stub(bin_dir, label, cap3)
+                rc, out, err = run_script(script, ["--resume", brief_path], env)
+                calls3 = read_calls(cap3)
+                check(f"{label} --resume: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
+                check(f"{label} --resume: contract at top of captured stdin",
+                      bool(calls3) and calls3[0][1].startswith(CONTRACT_HEAD), calls3[:1])
+
+            # ---- codex CODEX_MODEL-unavailable fallback rerun: contract on
+            # BOTH the failing initial call and the retry ----
+            bin_dir = os.path.join(runner_tmp, "bin-codex-fallback")
+            os.makedirs(bin_dir, exist_ok=True)
+            cap = os.path.join(runner_tmp, "cap-codex-fallback")
+            make_stub(bin_dir, "codex", cap, model_fallback=True)
+            env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                   "CODEX_MODEL": "totally-fake-model"}
+            brief_path = os.path.join(runner_tmp, "codex-fallback-brief.md")
+            with open(brief_path, "w") as f:
+                f.write("Fallback test brief.\n")
+            rc, out, err = run_script(codex_script, [brief_path], env)
+            calls = read_calls(cap)
+            check("codex CODEX_MODEL fallback: two calls captured (fail then retry)",
+                  len(calls) == 2, calls)
+            check("codex CODEX_MODEL fallback: run eventually succeeds",
+                  rc == 0, f"rc={rc} out={out} err={err}")
+            if len(calls) == 2:
+                check("codex CODEX_MODEL fallback: 1st (failing) call stdin carries contract",
+                      calls[0][1].startswith(CONTRACT_HEAD), calls[0])
+                check("codex CODEX_MODEL fallback: 2nd (retry) call stdin carries contract",
+                      calls[1][1].startswith(CONTRACT_HEAD), calls[1])
+
+            # ---- --mode implement removed (both runners, both flag forms) ----
+            for label, script in (("codex", codex_script), ("claude", claude_script)):
+                for flag_args in (["--mode", "implement"], ["--mode=implement"]):
+                    rc, out, err = run_script(script, flag_args, {})
+                    combined = out + err
+                    check(f"{label} {' '.join(flag_args)}: exit 2", rc == 2, f"rc={rc}")
+                    check(f"{label} {' '.join(flag_args)}: dedicated removal message",
+                          "removed in 2.10" in combined, combined)
+
+            # ---- codex sandbox precedence: env > config consult_sandbox > read-only ----
+            sandbox_bin_dir = os.path.join(runner_tmp, "bin-codex-sandbox")
+            os.makedirs(sandbox_bin_dir, exist_ok=True)
+
+            def sandbox_used(env_extra, label):
+                cap = os.path.join(runner_tmp, f"cap-sandbox-{label}")
+                make_stub(sandbox_bin_dir, "codex", cap)
+                env = {"PATH": sandbox_bin_dir + os.pathsep + os.environ.get("PATH", "")}
+                env.update(env_extra)
+                brief_path = os.path.join(runner_tmp, f"sandbox-brief-{label}.md")
+                with open(brief_path, "w") as f:
+                    f.write("Sandbox precedence test brief.\n")
+                run_script(codex_script, [brief_path], env)
+                calls = read_calls(cap)
+                argv = calls[0][0] if calls else []
+                sbx = None
+                for i, a in enumerate(argv):
+                    if a == "-s" and i + 1 < len(argv):
+                        sbx = argv[i + 1]
+                return sbx
+
+            sbx = sandbox_used({"CODEX_SANDBOX": "workspace-write"}, "env-wins")
+            check("sandbox precedence: env CODEX_SANDBOX wins", sbx == "workspace-write", sbx)
+
+            cfg_dir = os.path.join(runner_tmp, "plugin-data-danger")
+            os.makedirs(cfg_dir, exist_ok=True)
+            with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+                json.dump({"codex": {"consult_sandbox": "danger-full-access"}}, f)
+            sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir}, "config-danger")
+            check("sandbox precedence: config consult_sandbox used when env unset",
+                  sbx == "danger-full-access", sbx)
+
+            cfg_dir2 = os.path.join(runner_tmp, "plugin-data-invalid")
+            os.makedirs(cfg_dir2, exist_ok=True)
+            with open(os.path.join(cfg_dir2, "config.json"), "w") as f:
+                json.dump({"codex": {"consult_sandbox": "yolo"}}, f)
+            sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir2}, "config-invalid")
+            check("sandbox precedence: invalid config value falls back to read-only",
+                  sbx == "read-only", sbx)
+
+            cfg_dir3 = os.path.join(runner_tmp, "plugin-data-malformed")
+            os.makedirs(cfg_dir3, exist_ok=True)
+            with open(os.path.join(cfg_dir3, "config.json"), "w") as f:
+                f.write("{ not valid json !!!")
+            sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir3}, "config-malformed")
+            check("sandbox precedence: malformed config JSON falls back to read-only",
+                  sbx == "read-only", sbx)
+
+            # regression: CLAUDE_PLUGIN_DATA set (non-empty) but its
+            # config.json is MISSING -> must NOT fall back to the derived
+            # (~/.claude/.../config.json) path, even when that derived path
+            # holds a dangerous value (a stale danger-full-access setting
+            # elsewhere must never get resurrected).
+            stale_home = os.path.join(runner_tmp, "stale-home")
+            stale_cfg_dir = os.path.join(stale_home, ".claude", "plugins", "data", "haejwo-haejwo")
+            os.makedirs(stale_cfg_dir, exist_ok=True)
+            with open(os.path.join(stale_cfg_dir, "config.json"), "w") as f:
+                json.dump({"codex": {"consult_sandbox": "danger-full-access"}}, f)
+            empty_data_dir = os.path.join(runner_tmp, "plugin-data-empty")
+            os.makedirs(empty_data_dir, exist_ok=True)  # no config.json inside
+            sbx = sandbox_used({"HOME": stale_home, "CLAUDE_PLUGIN_DATA": empty_data_dir},
+                                "env-set-file-missing")
+            check("sandbox precedence: CLAUDE_PLUGIN_DATA set but config.json missing -> "
+                  "read-only (NEVER falls back to the derived path / a stale config there)",
+                  sbx == "read-only", sbx)
+
+            # empty $HOME in the derived-path branch (CLAUDE_PLUGIN_DATA unset)
+            # must not crash under `set -u` and must resolve to "no config".
+            sbx = sandbox_used({"HOME": ""}, "home-empty")
+            check("sandbox precedence: empty $HOME in derived-path branch -> read-only, no crash",
+                  sbx == "read-only", sbx)
+
+            # explicit CODEX_SANDBOX allowlist: invalid ENV value is caller
+            # input and deserves a loud error, not a silent downgrade.
+            bad_env_bin_dir = os.path.join(runner_tmp, "bin-codex-badenv")
+            os.makedirs(bad_env_bin_dir, exist_ok=True)
+            cap = os.path.join(runner_tmp, "cap-codex-badenv")
+            make_stub(bad_env_bin_dir, "codex", cap)
+            env = {"PATH": bad_env_bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                   "CODEX_SANDBOX": "yolo"}
+            brief_path = os.path.join(runner_tmp, "badenv-brief.md")
+            with open(brief_path, "w") as f:
+                f.write("Bad CODEX_SANDBOX brief.\n")
+            rc, out, err = run_script(codex_script, [brief_path], env)
+            combined = out + err
+            check("invalid CODEX_SANDBOX env: exit 2 (loud error, not silent downgrade)",
+                  rc == 2, f"rc={rc}")
+            check("invalid CODEX_SANDBOX env: message names all three valid values",
+                  "read-only" in combined and "workspace-write" in combined
+                  and "danger-full-access" in combined, combined)
+            check("invalid CODEX_SANDBOX env: codex never invoked (fails before the call)",
+                  len(read_calls(cap)) == 0, read_calls(cap))
+
+            # ---- claude runner: --disallowedTools present on normal AND resume runs ----
+            disallow_bin_dir = os.path.join(runner_tmp, "bin-claude-disallow")
+            os.makedirs(disallow_bin_dir, exist_ok=True)
+            env = {"PATH": disallow_bin_dir + os.pathsep + os.environ.get("PATH", "")}
+            brief_path = os.path.join(runner_tmp, "claude-disallow-brief.md")
+            with open(brief_path, "w") as f:
+                f.write("disallowedTools test brief.\n")
+
+            cap = os.path.join(runner_tmp, "cap-claude-disallow-normal")
+            make_stub(disallow_bin_dir, "claude", cap)
+            rc, out, err = run_script(claude_script, [brief_path], env)
+            calls = read_calls(cap)
+            argv = calls[0][0] if calls else []
+            check("claude normal run: --disallowedTools flag present",
+                  "--disallowedTools" in argv, argv)
+            check("claude normal run: Edit,Write,NotebookEdit value present",
+                  "Edit,Write,NotebookEdit" in argv, argv)
+
+            cap2 = os.path.join(runner_tmp, "cap-claude-disallow-resume")
+            make_stub(disallow_bin_dir, "claude", cap2)
+            rc, out, err = run_script(claude_script, ["--resume", brief_path], env)
+            calls2 = read_calls(cap2)
+            argv2 = calls2[0][0] if calls2 else []
+            check("claude --resume run: --disallowedTools flag present",
+                  "--disallowedTools" in argv2, argv2)
+            check("claude --resume run: Edit,Write,NotebookEdit value present",
+                  "Edit,Write,NotebookEdit" in argv2, argv2)
+        finally:
+            shutil.rmtree(runner_tmp, ignore_errors=True)
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

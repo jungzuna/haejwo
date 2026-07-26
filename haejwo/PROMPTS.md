@@ -15,7 +15,8 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 - End with the completion contract: what to report, write, or confirm.
 
 ## Agent files (`agents/*.md`)
-- Frontmatter key order: `name`, `description`, `model`, `effort?`, `tools?`.
+- Frontmatter key order: `name`, `description`, `model?`, `effort?`, `tools?` —
+  `model` is optional; omit it to inherit the session model.
 - `description` is the routing signal: role + when to use, one sentence.
 - Body shape: one role paragraph → imperative behavior bullets → a final **`Report back:`** contract with a length cap, ending with `Judgment calls:` (behavioral choices the brief didn't settle, or `none`).
 

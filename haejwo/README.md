@@ -10,8 +10,8 @@ Underneath, it keeps the expensive main model on **judgment** (plan, delegate, d
 
 | Layer | Artifact | What it does |
 |---|---|---|
-| Declaration | SessionStart hook (`session_brief.py`) | Injects the orchestration rules + live config into every session |
-| Roles | `agents/` | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — outside perspective, non-editing contract with post-run change detection) |
+| Declaration | SessionStart hook (`session_brief.py`) | Injects a minimal operating core before setup, and the full orchestration rules + live config once configured |
+| Roles | `agents/` | `deep-reasoner` (session model) · `default-worker` (sonnet) · `task-worker` (haiku) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — outside perspective, non-editing contract with post-run change detection) |
 | Criteria | `rules/orchestration.md` | When the main agent handles directly vs must delegate |
 | **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied** with a delegation instruction; Bash writes to code files are denied outright |
 
@@ -26,7 +26,7 @@ Underneath, it keeps the expensive main model on **judgment** (plan, delegate, d
 - Known bypass gap (accepted): commands that write code dynamically are regex-invisible to the guard; the injected rules forbid them by instruction. This is a delegation aid, not a security boundary.
 
 ## First run
-`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, independent reviewer; probes the other CLI and smoke-tests the reviewer slot (non-editing contract with post-run change detection); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.
+`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, independent reviewer; probes the other CLI and smoke-tests the reviewer slot (non-editing contract with post-run change detection); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. The default `deep-reasoner` tier inherits your session's model — no Opus dependency out of the box; pick the `Balanced` or `Budget` preset if you also want default-worker/task-worker off Sonnet/Haiku.
 
 ## Zero-command by design
 Normal use involves **no haejwo commands at all**. You talk; the host does the rest automatically:
@@ -58,6 +58,8 @@ See the [root README](../README.md) for install (GitHub or local-clone marketpla
 Hooks load at session start — restart the session (or `/reload-plugins` on Claude Code) after install.
 
 **Dual-host parity:** gate (apply_patch-aware, whole-patch atomic deny), bash-guard (codex names its shell tool `Bash` too), rules injection, turn reset (`turn_id`), worker exemption (codex subagents carry the same `agent_type`/`agent_id` fields — measured), and the independent reviewer inverts per host: codex_consult.sh on Claude, **claude_consult.sh on Codex** (principle 9: a different model). Codex-side tiers ride the native `spawn_agent` model/effort parameters — judgment inherits the host model; execution downshifts (`models_codex` in config).
+
+**Reviewer limitation (claude_consult.sh):** direct edit tools (Edit/Write/NotebookEdit) are disabled via `--disallowedTools`, but Bash remains available — `claude -p` has no read-only sandbox. This is covered only by post-run git-snapshot change detection, which is git-tracked-scope only and assumes a single writer, not a security boundary: package installs, MCP/user config changes, and ignored/out-of-repo files are never caught by it.
 
 Optional hardening (README-only, not auto-applied): add `permissions.deny` rules for `Bash(sed:*)` etc. and deny `Read` of the state dir to prevent tampering.
 

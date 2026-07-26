@@ -19,6 +19,7 @@ PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 SCRIPTS = os.path.join(PLUGIN, "scripts")
 sys.path.insert(0, SCRIPTS)
 from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
+from session_brief import EMERGENCY_CORE, MAX_LEN  # noqa: E402
 
 PASS, FAIL = 0, []
 
@@ -162,33 +163,42 @@ def main():
         # Whitespace-normalized so a line wrap inside a phrase can't false-negative.
         rules_path = os.path.join(PLUGIN, "rules", "orchestration.md")
         rules_text = " ".join(open(rules_path, encoding="utf-8-sig").read().split())
+
+        # Selection rule (2.9.0 rules diet): canaries pin only enforced
+        # contracts and acceptance invariants; style/ceremony phrases are NOT
+        # pinned (they may evolve with model generations). A tuple entry is
+        # two fragments that must BOTH appear (used when the source phrase
+        # crosses a line wrap in the diet file).
         CANARIES = [
-            "NEVER require plugin commands",       # zero-command concept
-            "ESCALATE",                             # judgment-heavy escalation
-            "Judgment calls:",                      # discretion disclosure
-            "lives in conversation",                # plan conversation-first
-            "No plan because",                      # plan linkage escape
-            "never a timer loop",                   # honest checkpoint rule
-            "No report theater",                    # reporting proportionality
-            "/haejwo:push auto",                    # push consent registry
-            "never the user",                       # recovery ownership
-            "delegation signal",                    # bash-write rule
-            "xhigh only for architecture forks",    # stakes-scaled effort
-            "judgment inherits the host model (omit model); execution downshifts",  # codex-tier routing
-            "no stated evidence, no acceptance",    # acceptance evidence split
-            "amendment signal",                     # calibration loop
-            "exact answer",                         # haiku litmus (2.5.0)
-            "execution never escalates",            # escalation discipline (2.5.0)
-            "INHERITS the session model",           # inheritance-leak guard (2.5.0)
-            "workers start fresh",                  # context economy (2.5.0)
-            "raise tier once",                      # worker-failure diagnostic (2.6.0)
-            "verification breadth",                 # effort-by-verification-breadth (2.6.0)
-            "never grind",                          # retry stop-condition (2.6.0)
-            "fixed per consult session",            # reviewer model pinning (2.6.0)
-            "BEFORE live deployment, commit, merge, or reporting acceptance",  # review timing (2.7.0)
+            "does JUDGMENT",                        # 1. judgment/execution split
+            "NEVER require plugin commands",        # 2. zero-command concept
+            "ONLY when the brief has the exact",    # 3. task-worker exact-answer litmus
+            "NOT independent authority",            # 4. deep-reasoner is not independent authority
+            "independent review BEFORE",            # 5. review-timing invariant
+            "xhigh ONLY",                           # 6. stakes-scaled effort ceiling
+            "never --resume",                       # 7. escalation = new session
+            "No plan because",                      # 8. plan linkage escape
+            "no acceptance",                        # 9. acceptance evidence split
+            "Judgment calls:",                      # 10. discretion disclosure
+            ("workers NEVER", "push or deploy"),    # 11. outward-action ban
+            "delegation signal",                    # 12. bash-write rule
+            "never grind",                          # 13. retry stop-condition
         ]
+        assert len(CANARIES) == 13, "rules-diet canary set must stay at exactly 13"
         for phrase in CANARIES:
-            check(f"canary: {phrase!r}", phrase in rules_text)
+            if isinstance(phrase, tuple):
+                name = " AND ".join(repr(p) for p in phrase)
+                cond = all(p in rules_text for p in phrase)
+            else:
+                name = repr(phrase)
+                cond = phrase in rules_text
+            check(f"canary: {name}", cond)
+
+        # diet budget — target 3000, actual 3152 at 2.9.0; consensus-kept host
+        # contracts cost the overage; re-audit at next rules change
+        rules_size = os.path.getsize(rules_path)
+        check("rules file size within diet budget (<=3300 bytes)",
+              rules_size <= 3300, f"size={rules_size}")
 
         print("== turn_reset.py ==")
         rc, _ = run("turn_reset.py",
@@ -470,6 +480,38 @@ def main():
                   and "codex tiers" in ctx_cx, ctx_cx[:200])
         finally:
             shutil.rmtree(codex_root_base, ignore_errors=True)
+
+        # (e) oversized rules file: explicit degrade instead of a silent
+        # mid-text truncation. Swap in the trusted EMERGENCY_CORE but keep
+        # the FULL config summary — never cut the summary either.
+        oversized_root_base = tempfile.mkdtemp(prefix="hjw-test-oversized-")
+        try:
+            oversized_root = os.path.join(oversized_root_base, "haejwo")
+            os.makedirs(os.path.join(oversized_root, "rules"), exist_ok=True)
+            with open(os.path.join(oversized_root, "rules", "orchestration.md"),
+                      "w", encoding="utf-8") as f:
+                f.write("x" * (MAX_LEN + 1000))
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                          data, root=oversized_root)
+            ctx_over = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("oversized rules file -> exit 0, no crash", rc == 0)
+            check("oversized rules file -> degrades to EMERGENCY_CORE (no mid-text cut)",
+                  ctx_over.startswith(EMERGENCY_CORE), ctx_over[:200])
+            check("oversized rules file -> full config summary preserved at the tail",
+                  ctx_over.rstrip().endswith(
+                      "codex reviewer: disabled (fallback: deep-reasoner)"),
+                  ctx_over[-200:])
+            check("oversized rules file -> degraded output well under MAX_LEN",
+                  len(ctx_over) < MAX_LEN, f"len={len(ctx_over)}")
+        finally:
+            shutil.rmtree(oversized_root_base, ignore_errors=True)
+
+        # normal (non-oversized) path stays unaffected: the real rules file
+        # degrades neither via truncation nor EMERGENCY_CORE.
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)
+        ctx_normal = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("normal path: real rules file does NOT trigger the degrade",
+              rc == 0 and not ctx_normal.startswith(EMERGENCY_CORE), ctx_normal[:80])
 
         print("== hjw_common.DEFAULT_CONFIG ==")
         check("models_codex defaults",

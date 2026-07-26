@@ -19,6 +19,19 @@ MAX_LEN = 5000
 
 PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
 
+# Emergency core, not a shadow ruleset: reused whenever the FULL rules text
+# can't be trusted this session — either the rules file is unreadable (broken
+# install) or it's too large to fit the injection budget (MAX_LEN). Either
+# way we degrade EXPLICITLY to this trusted minimum rather than truncating
+# text mid-sentence.
+EMERGENCY_CORE = (
+    "[haejwo] emergency core (rules file unreadable or over budget): "
+    "judgment stays with the host; delegate implementation "
+    "(haejwo:default-worker / haejwo:task-worker); gate limits the "
+    "host's distinct code files per turn (deny = delegate); worker "
+    "reports end with `Judgment calls:`; push/deploy asks first."
+)
+
 
 def resolve_plugin_root(text, root):
     """Substitute the literal PLACEHOLDER in injected rules text with the
@@ -60,15 +73,7 @@ def main():
                 rules = f.read().strip()
             rules = resolve_plugin_root(rules, root)
         except Exception:
-            # Emergency core, not a shadow ruleset: a broken install
-            # degrades to the load-bearing rules instead of silence.
-            rules = (
-                "[haejwo] rules file unreadable — emergency core: judgment "
-                "stays with the host; delegate implementation "
-                "(haejwo:default-worker / haejwo:task-worker); gate limits the "
-                "host's distinct code files per turn (deny = delegate); worker "
-                "reports end with `Judgment calls:`; push/deploy asks first."
-            )
+            rules = EMERGENCY_CORE
         g = cfg["gate"]
         # Host detection by plugin path: codex passes compat env/argv rooted
         # under /.codex/plugins (measured) — no extra probe needed.
@@ -101,11 +106,17 @@ def main():
             f"{'enabled' if cfg['codex'].get('enabled') else fallback}"
         )
         context = (rules + "\n\n" + summary).strip()
+        if len(context) > MAX_LEN:
+            # Explicit degrade, never a mid-text cut: the full rules text
+            # doesn't fit this session's budget (e.g. an oversized or
+            # corrupted rules file) — swap in the trusted emergency core and
+            # keep the FULL config summary, which is short and load-bearing.
+            context = (EMERGENCY_CORE + "\n\n" + summary).strip()
 
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": context[:MAX_LEN],
+            "additionalContext": context,
         }
     }))
     sys.exit(0)

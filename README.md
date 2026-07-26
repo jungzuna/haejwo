@@ -85,7 +85,7 @@ One repo, one `hooks.json`, one python core — every codex behavior was **measu
 | Doc | What's inside |
 | --- | --- |
 | [`haejwo/README.md`](haejwo/README.md) | Deep dive: gate semantics, first run, commands, reasoning policy, verification |
-| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | The constitution — 12 principles with origin cases, precedence order, amendment rule |
+| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | The constitution — 13 principles with origin cases, precedence order, amendment rule |
 | [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | Prompt & style law for every LLM-facing string (deny messages are a tested contract) |
 
 ## Non-goals

@@ -79,7 +79,7 @@ repo 하나, `hooks.json` 하나, python 코어 하나 — codex 쪽 동작은 �
 | 문서 | 내용 |
 | --- | --- |
 | [`haejwo/README.md`](haejwo/README.md) | 딥다이브: 게이트 동작 원리, 첫 실행, 명령어, 추론 정책, 검증 |
-| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | 헌법 — 원칙 12개와 그 유래, 충돌할 때의 우선순위, 개정 규칙 |
+| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | 헌법 — 원칙 13개와 그 유래, 충돌할 때의 우선순위, 개정 규칙 |
 | [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | LLM이 읽고 쓰는 모든 문구의 스타일 규정 (deny 문구는 테스트로 보증되는 계약) |
 
 ## 검증

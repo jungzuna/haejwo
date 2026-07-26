@@ -17,6 +17,25 @@ from hjw_common import load_config, paths, read_payload  # noqa: E402
 # tripwire against silent truncation, with headroom for a few more norms.
 MAX_LEN = 5000
 
+PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
+
+
+def resolve_plugin_root(text, root):
+    """Substitute the literal PLACEHOLDER in injected rules text with the
+    CURRENTLY RUNNING hook install's resolved path (this invocation's
+    root only — not a claim that it tracks the latest install).
+
+    Only substitutes when root is usable: non-empty, absolute, and an
+    existing directory. Otherwise the text is returned unchanged (the
+    placeholder stays) — fail-open, never raises.
+    """
+    try:
+        if root and os.path.isabs(root) and os.path.isdir(root):
+            return text.replace(PLACEHOLDER, root.rstrip("/"))
+    except Exception:
+        pass
+    return text
+
 
 def main():
     read_payload()  # consume stdin; content unused
@@ -39,6 +58,7 @@ def main():
             with open(os.path.join(root, "rules", "orchestration.md"),
                       encoding="utf-8-sig") as f:
                 rules = f.read().strip()
+            rules = resolve_plugin_root(rules, root)
         except Exception:
             # Emergency core, not a shadow ruleset: a broken install
             # degrades to the load-bearing rules instead of silence.

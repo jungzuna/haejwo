@@ -144,6 +144,11 @@ def prune_state(data_dir, max_age_days=7):
         sdir = os.path.join(data_dir, "state")
         cutoff = time.time() - max_age_days * 86400
         for name in os.listdir(sdir):
+            # observations.jsonl / .jsonl.1 are size-bounded by observe()'s
+            # own rotation, not age-bounded here; .1 is retained P13 audit
+            # evidence and pruning it by age would defeat the rotation.
+            if name in ("observations.jsonl", "observations.jsonl.1"):
+                continue
             p = os.path.join(sdir, name)
             if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
                 os.unlink(p)
@@ -156,16 +161,30 @@ def is_subagent(payload):
     return bool(payload.get("agent_id") or payload.get("agent_type"))
 
 
+_OBSERVATIONS_LOCK_ID = "__observations__"  # dedicated lock name, not a session id
+
+
 def observe(data_dir, record):
-    """Best-effort empirical log (e.g. to answer: do hooks fire in subagents?)."""
+    """Best-effort empirical log (e.g. to answer: do hooks fire in subagents?).
+
+    observations.jsonl rotates to observations.jsonl.1 (overwriting any
+    previous .1) once it exceeds 200KB, instead of being unlinked, so the
+    prior generation survives as P13 audit evidence. Bound stays ~400KB
+    total (current file + one prior generation).
+    """
     try:
-        path = os.path.join(data_dir, "state", "observations.jsonl")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path) and os.path.getsize(path) > 200_000:
-            os.unlink(path)
-        record["ts"] = round(time.time(), 1)
-        with open(path, "a") as f:
-            f.write(json.dumps(record) + "\n")
+        sdir = os.path.join(data_dir, "state")
+        os.makedirs(sdir, exist_ok=True)
+        path = os.path.join(sdir, "observations.jsonl")
+        with state_lock(data_dir, _OBSERVATIONS_LOCK_ID):
+            try:
+                if os.path.exists(path) and os.path.getsize(path) > 200_000:
+                    os.replace(path, path + ".1")
+            except Exception:
+                pass  # rotation is best-effort; still append the record below
+            record["ts"] = round(time.time(), 1)
+            with open(path, "a") as f:
+                f.write(json.dumps(record) + "\n")
     except Exception:
         pass
 

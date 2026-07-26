@@ -19,18 +19,24 @@ MAX_LEN = 5000
 
 PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
 
-# Emergency core, not a shadow ruleset: reused whenever the FULL rules text
-# can't be trusted this session — either the rules file is unreadable (broken
-# install) or it's too large to fit the injection budget (MAX_LEN). Either
-# way we degrade EXPLICITLY to this trusted minimum rather than truncating
-# text mid-sentence.
-EMERGENCY_CORE = (
-    "[haejwo] emergency core (rules file unreadable or over budget): "
+# Emergency core, not a shadow ruleset: the same trusted minimum text is
+# reused for two DIFFERENT causes, each with its own honest prefix, so the
+# model never confuses "not configured yet" with "configuration is broken":
+#  - configured session, but the FULL rules text can't be trusted this
+#    session (rules file unreadable / broken install, or too large to fit
+#    MAX_LEN) -> EMERGENCY_CORE (degrade prefix).
+#  - session never configured at all -> UNCONFIGURED_CORE (unconfigured
+#    prefix), appended after the setup nudge.
+# Either way we degrade EXPLICITLY to this trusted minimum rather than
+# truncating text mid-sentence.
+CORE_BODY = (
     "judgment stays with the host; delegate implementation "
     "(haejwo:default-worker / haejwo:task-worker); gate limits the "
     "host's distinct code files per turn (deny = delegate); worker "
     "reports end with `Judgment calls:`; push/deploy asks first."
 )
+EMERGENCY_CORE = "[haejwo] emergency core (rules file unreadable or over budget): " + CORE_BODY
+UNCONFIGURED_CORE = "[haejwo] not configured — minimal operating core active: " + CORE_BODY
 
 
 def resolve_plugin_root(text, root):
@@ -56,7 +62,7 @@ def main():
     cfg = load_config(data)
 
     if not cfg.get("configured"):
-        context = (
+        nudge = (
             "[haejwo] Installed but NOT configured yet (first use). Offer ONCE to "
             "configure right now, and if the user agrees RUN THE SETUP FLOW YOURSELF "
             "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
@@ -64,8 +70,9 @@ def main():
             "to type a command). Until then safe defaults are "
             "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
             "bash-guard ON, subagents exempt. Delegation targets: haejwo:deep-reasoner "
-            "(opus), haejwo:default-worker (sonnet), haejwo:task-worker (haiku)."
+            "(session model), haejwo:default-worker (sonnet), haejwo:task-worker (haiku)."
         )
+        context = (nudge + "\n\n" + UNCONFIGURED_CORE).strip()
     else:
         try:
             with open(os.path.join(root, "rules", "orchestration.md"),
@@ -91,11 +98,18 @@ def main():
             fallback = "disabled (fallback: native subagent, same-model)"
         else:
             m = cfg["models"]
+
+            def _tier(v):
+                return "inherit(session)" if v == "inherit" else v
+
             tiers = (
-                f"models: deep-reasoner={m['deep_reasoner']}, "
-                f"default-worker={m['default_worker']}, task-worker={m['task_worker']} "
+                f"models: deep-reasoner={_tier(m['deep_reasoner'])}, "
+                f"default-worker={_tier(m['default_worker'])}, "
+                f"task-worker={_tier(m['task_worker'])} "
                 f"(pass as Agent-tool model override if it differs from the agent default)"
             )
+            if "inherit" in (m['deep_reasoner'], m['default_worker'], m['task_worker']):
+                tiers += " (inherit = omit the model override)"
             reviewer_label = "codex reviewer"
             fallback = "disabled (fallback: deep-reasoner)"
         summary = (

@@ -68,6 +68,37 @@ def _normalize_model(model):
     return model
 
 
+CLAUDE_NEXT_ACTION = (
+    "Pass model: 'haiku' (locate) or 'sonnet' (read/summarize), or "
+    "delegate to haejwo:default-worker / haejwo:task-worker instead."
+)
+
+
+def _codex_next_action(cfg):
+    """Build the codex-host "next action" deny clause from the configured
+    models_codex tiers. Uses _normalize_model so "explicit" means the same
+    thing here as everywhere else in this file. If BOTH tiers are explicit,
+    name them directly (they're real model ids the host can pass). If
+    EITHER is non-explicit (unset/blank/"inherit"), naming it would just
+    recommend model:'inherit' — which this very gate would re-deny — so the
+    model suggestion is dropped and only the haejwo tiers are recommended.
+    Raises (KeyError/AttributeError/...) on a malformed models_codex value;
+    the caller catches that and falls back to CLAUDE_NEXT_ACTION."""
+    mc = cfg["models_codex"]
+    task_worker = _normalize_model(mc.get("task_worker"))
+    default_worker = _normalize_model(mc.get("default_worker"))
+    if task_worker and default_worker:
+        return (
+            f"Pass model: '{task_worker}' (locate) or '{default_worker}' "
+            f"(read/summarize), or delegate to haejwo:default-worker / "
+            f"haejwo:task-worker instead."
+        )
+    return (
+        "Delegate to haejwo:default-worker / haejwo:task-worker instead "
+        "(configured tiers inherit — never pass model:'inherit')."
+    )
+
+
 def _plan_marker_kind(prompt):
     """Never raises: a str() guard means a non-string prompt (None, dict,
     number, ...) short-circuits to "none" rather than being stringified and
@@ -123,12 +154,23 @@ def main():
             if cfg["gate"]["enabled"] and cfg["gate"]["delegation_guard"]:
                 if subagent_type in KNOWN_GENERIC and requested_model is None:
                     decision = "deny"
+                    # Host detection by plugin path: codex passes compat env/argv
+                    # rooted under /.codex/plugins (measured heuristic, same test
+                    # session_brief.py:87 uses to pick codex vs Claude wording).
+                    on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
+                    next_action = CLAUDE_NEXT_ACTION
+                    if on_codex:
+                        try:
+                            next_action = _codex_next_action(cfg)
+                        except Exception:
+                            # Fail open to the Claude-host wording, NOT to
+                            # "allow" — this is still a deny, just with the
+                            # generic (tested) next-action text.
+                            next_action = CLAUDE_NEXT_ACTION
                     deny_reason = (
                         f"[haejwo gate] Delegation to generic agent '{subagent_type}' without an "
                         f"explicit model — it would INHERIT the session model (judgment rates for "
-                        f"execution). Pass model: 'haiku' (locate) or 'sonnet' (read/summarize), or "
-                        f"delegate to haejwo:default-worker / haejwo:task-worker instead. Emergency "
-                        f"override: /haejwo:gate off."
+                        f"execution). {next_action} Emergency override: /haejwo:gate off."
                     )
     except Exception:
         # Any ambiguity in the decision path fails open — still record it.

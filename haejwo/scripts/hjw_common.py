@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
     # NOT by substring — a repo's own tmp/ subdir still counts as code.
     "exempt_dir_components": [".git", "node_modules", ".claude", ".codex"],
     "models": {
-        "deep_reasoner": "opus",
+        "deep_reasoner": "inherit",
         "default_worker": "sonnet",
         "task_worker": "haiku",
     },

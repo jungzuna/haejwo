@@ -37,7 +37,7 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 
 Hooks load at session start, so restart the session (or run `/reload-plugins` on Claude Code) after install. `/haejwo:setup` is optional — it configures model tiers, edit budget, and the reviewer once and persists; safe defaults are already active before you run it, and on first use haejwo offers it automatically.
 
-**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). **No Opus access?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset — every role stays within models your account actually has.
+**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). The default `deep-reasoner` tier inherits your session's model — no separate Opus dependency out of the box. **Want default-worker/task-worker off Sonnet/Haiku too?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset.
 
 Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 
@@ -45,7 +45,7 @@ Local development install: clone, then `/plugin marketplace add <clone-path>` / 
 
 | Feature | What it does |
 | --- | --- |
-| **Zero-config orchestration** | SessionStart injects the rules and live config automatically. Safe defaults are active immediately: gate ON, 2 files/turn, bash-guard ON |
+| **Zero-config orchestration** | SessionStart injects a minimal operating core before setup, and the full rules + live config once configured. Safe defaults are active immediately either way: gate ON, 2 files/turn, bash-guard ON |
 | **Judgment-first planning** | Feature-scale work starts with plan consensus: the host debates planning, analysis, and review decisions before implementation |
 | **Cross-vendor review when available** | With both CLIs installed, the reviewer is the other company's model — codex on Claude Code, claude on Codex |
 | **Cheap execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to cheaper worker tiers (`spawn_agent` model mapping on Codex) |
@@ -59,7 +59,7 @@ Normal use involves **zero haejwo commands** — commands exist only for setting
 | | Claude Code only | Codex only | Both CLIs |
 | --- | --- | --- | --- |
 | Gate + rules + plan-first + push consent | ✓ | ✓ | ✓ |
-| Model tiers (cheap execution, expensive judgment) | ✓ opus/sonnet/haiku | ✓ via `spawn_agent` model mapping (judgment inherits; execution downshifts) | ✓ |
+| Model tiers (cheap execution, expensive judgment) | ✓ session model/sonnet/haiku (judgment inherits; execution downshifts) | ✓ via `spawn_agent` model mapping (judgment inherits; execution downshifts) | ✓ |
 | **Cross-vendor adversarial review** | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.

@@ -1,7 +1,6 @@
 ---
 name: deep-reasoner
 description: Heavy reasoning specialist — architecture decisions, tricky debugging analysis, tradeoff evaluation, design review. Use PROACTIVELY when the problem needs deep thought rather than typing. Read-only by design; it reasons, workers implement.
-model: opus
 effort: high
 tools: Read, Glob, Grep, Bash
 ---

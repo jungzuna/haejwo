@@ -31,7 +31,7 @@ codex plugin add haejwo@haejwo
 
 훅은 세션이 시작될 때 로드되니, 설치 후 세션을 재시작하세요(Claude Code는 `/reload-plugins`). `/haejwo:setup`은 선택입니다 — 모델 티어·편집 예산·리뷰어를 한 번 설정해 영구 저장하는 것뿐이고, 실행 전에도 안전 기본값이 이미 돌아가며 첫 사용 때 haejwo가 알아서 한 번 권합니다.
 
-**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). **Opus 접근이 없다면** `/haejwo:setup`에서 `Balanced`나 `Budget` 프리셋을 고르세요 — 모든 역할이 계정에 실제로 있는 모델 안에서 돕니다.
+**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). 기본 `deep-reasoner` 티어는 세션 모델을 그대로 물려받으므로 별도의 Opus 의존성이 없습니다. **default-worker/task-worker도 Sonnet/Haiku로 내리고 싶다면** `/haejwo:setup`에서 `Balanced`나 `Budget` 프리셋을 고르세요.
 
 로컬 개발용: 클론한 뒤 `/plugin marketplace add <클론 경로>` / `codex plugin marketplace add <클론 경로>`.
 
@@ -39,7 +39,7 @@ codex plugin add haejwo@haejwo
 
 | 기능 | 하는 일 |
 | --- | --- |
-| **무설정 오케스트레이션** | 세션이 시작되면 규칙과 현재 설정이 자동으로 주입됩니다. 안전 기본값 즉시 가동 — 게이트 ON, 턴당 2파일, bash-guard ON |
+| **무설정 오케스트레이션** | 세션이 시작되면 설정 전에는 최소 운영 코어를, 설정 후에는 전체 규칙과 현재 설정을 자동으로 주입합니다. 어느 쪽이든 안전 기본값은 즉시 가동 — 게이트 ON, 턴당 2파일, bash-guard ON |
 | **판단-우선 계획** | feature급 작업은 코드보다 합의가 먼저 — 기획·분석·검토의 결정들을 리뷰어와 토론해 정리한 뒤에야 구현으로 넘어갑니다 |
 | **교차-벤더 리뷰** (가능할 때) | 두 CLI가 다 있으면 리뷰어는 언제나 상대 회사의 모델 — Claude Code에선 codex가, Codex에선 claude가 검토합니다 |
 | **싼 실행 티어** | 판단은 호스트가 맡습니다 — 호스트는 **세션에서 고른 그 모델 그대로**이며, haejwo가 절대 바꾸지 않습니다. 구현과 잡무만 저렴한 워커 티어로 내려갑니다(Codex에선 `spawn_agent` 모델 매핑) |
@@ -53,7 +53,7 @@ codex plugin add haejwo@haejwo
 | | Claude Code만 | Codex만 | 둘 다 |
 | --- | --- | --- | --- |
 | 게이트 + 규칙 + plan-first + push 동의 | ✓ | ✓ | ✓ |
-| 모델 티어 (실행은 싸게, 판단은 비싸게) | ✓ opus/sonnet/haiku | ✓ `spawn_agent` 모델 매핑 (판단은 상속, 실행만 다운시프트) | ✓ |
+| 모델 티어 (실행은 싸게, 판단은 비싸게) | ✓ 세션 모델/sonnet/haiku (판단은 상속, 실행만 다운시프트) | ✓ `spawn_agent` 모델 매핑 (판단은 상속, 실행만 다운시프트) | ✓ |
 | **교차-벤더 적대적 리뷰** | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트 (독립성 약함) | ✓ codex↔claude |
 
 다른 쪽 CLI는 **다른 회사 모델의 리뷰**가 필요할 때만 설치하면 됩니다 — 두 번째 CLI가 사주는 게 정확히 그것이고, Claude Code를 추가하면 모델 티어도 따라옵니다. 같은 모델끼리의 대체 리뷰도 돌긴 하지만, 자기 검토가 놓치는 걸 잡는 건 결국 다른 모델입니다.

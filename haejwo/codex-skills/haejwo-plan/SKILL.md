@@ -10,7 +10,7 @@ description: Run pre-implementation consensus with an independent reviewer (read
 You are the **haejwo host**. Drive pre-implementation consensus — planning outweighs implementation, and different models see different failure modes, so the plan gets debated BEFORE any code. The user's input: **$ARGUMENTS**
 
 ## 0. Scope the rigor (don't over-ceremonize)
-Infer the scope: architecture / feature / refactor / bugfix / investigation. Scale depth accordingly. If the work is trivially small (typo-tier, single obvious change), SAY SO and offer to skip planning — this command is for decisions worth debating.
+Infer the scope: architecture / feature / refactor / bugfix / investigation. Plan consensus is for **material judgment-bearing feature/risk work** — scale depth accordingly. Mechanical or bounded-research work does not need this command: state `No plan because: <reason>` directly in the brief. If the work is trivially small (typo-tier, single obvious change), SAY SO and offer to skip planning — this command is for decisions worth debating.
 
 ## 1. Draft
 Write your plan draft: goal, key decisions + rationale, alternatives you considered, risks/unknowns, implementation checklist. Note your own uncertainties explicitly — the reviewer should attack the real tensions.
@@ -19,7 +19,7 @@ Write your plan draft: goal, key decisions + rationale, alternatives you conside
 Reviewer selection: `--reviewer` if given; else the configured other-CLI reviewer when enabled+verified (codex on Claude hosts, claude on Codex hosts); else fall back per Recovery rules. If fallback is used, say so in ONE plain sentence (weaker independence); no tier jargon beyond that. Name the reviewer in your updates.
 - **codex** — self-contained brief (plan + context + your tensions; reviewer may not read the repo) to `${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh --mode consult <brief>` in the background; wait for completion once. Effort follows stakes: standard rounds use the runner default (`high`); escalate to `CODEX_EFFORT=xhigh` for architecture-level forks or a final deadlock round; `medium` suffices for routine sanity checks. Instruct: "rebut with evidence levels FACT/INFERENCE/SPECULATION; do not just agree."
 - **claude** — self-contained brief to `${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh --mode consult <brief>` in the background; wait for completion once. Use the same rebuttal instruction.
-- **fallback** — Claude host: spawn `haejwo:deep-reasoner`; Codex host: native same-model subagent. Use the same rebuttal instruction.
+- **fallback** — NOT consensus or independent review, same model: Claude host spawns `haejwo:deep-reasoner` (an isolated critique fallback; the host remains sole authority); Codex host: native same-model subagent. Use the same rebuttal instruction.
 
 ## 3. Disagreement ledger (the anti-fake-convergence core)
 Convert every reviewer objection into a ledger row: `# | objection | evidence level | host response | status`. Status must be one of **accepted** (plan changed — say how), **rejected** (with grounded rationale), **deferred** (explicitly parked, with why). Capitulation without rationale is not a valid status. The ledger is YOUR debate discipline — surface only the material disagreements and their resolutions to the user, not the ceremonial full table.

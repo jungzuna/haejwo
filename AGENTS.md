@@ -3,7 +3,7 @@
 If you are a coding agent working on this repo, read these BEFORE changing
 anything:
 
-1. `haejwo/PHILOSOPHY.md` — the constitution: 12 principles with origin cases,
+1. `haejwo/PHILOSOPHY.md` — the constitution: 13 principles with origin cases,
    the precedence order for conflicts, and the amendment rule.
 2. `haejwo/PROMPTS.md` — style law for every LLM-facing string. Deny messages
    are a TESTED contract: changing them requires updating `tests/test_hooks.py`.

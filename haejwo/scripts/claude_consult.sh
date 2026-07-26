@@ -14,7 +14,8 @@
 #
 # Modes (safety gates — enforced via git snapshot, since `claude -p` runs
 # with the invoking user's permissions and has no read-only sandbox):
-#   consult   (default) read-only advice. FAILS if the worktree changed.
+#   consult   (default) non-editing contract with post-run change detection —
+#             FAILS if the worktree changed.
 #   implement Claude edits files. FAILS on zero changes (ALLOW_EMPTY_DIFF=1
 #             allows an intentional no-op).
 #   --resume  continue the most recent Claude session in this directory
@@ -35,7 +36,7 @@ Usage:
   echo "..." | claude_consult.sh --mode consult -
 
 Modes:
-  consult   (default) read-only; FAILS if the run changed the worktree.
+  consult   (default) non-editing contract with post-run change detection; FAILS if the run changed the worktree.
   implement Claude edits files; FAILS on zero changes (ALLOW_EMPTY_DIFF=1 allows no-op).
   --resume  continue the most recent session (multi-round memory).
 

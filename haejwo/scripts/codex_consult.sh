@@ -16,8 +16,9 @@
 #   echo "..." | codex_consult.sh --mode consult -   # stdin brief (deleted on exit)
 #
 # Modes (safety gates):
-#   consult   (default) read-only advice. FAILS if the worktree changed after
-#             the run (danger-full-access cannot block edits — enforce in code).
+#   consult   (default) non-editing contract with post-run change detection —
+#             FAILS if the worktree changed after the run (danger-full-access
+#             cannot block edits — enforce in code).
 #   implement Codex edits files. FAILS on zero changes (ALLOW_EMPTY_DIFF=1 allows
 #             an intentional no-op).
 #   --resume  continue the LAST codex session (model/effort/sandbox inherited;
@@ -55,7 +56,7 @@ Usage:
   echo "..." | codex_consult.sh --mode consult -
 
 Modes:
-  consult   (default) read-only; FAILS if the run changed the worktree.
+  consult   (default) non-editing contract with post-run change detection; FAILS if the run changed the worktree.
   implement Codex edits files; FAILS on zero changes (ALLOW_EMPTY_DIFF=1 allows no-op).
   --resume  continue the last codex session (multi-round memory).
 

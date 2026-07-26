@@ -11,7 +11,7 @@ Underneath, it keeps the expensive main model on **judgment** (plan, delegate, d
 | Layer | Artifact | What it does |
 |---|---|---|
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the orchestration rules + live config into every session |
-| Roles | `agents/` | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — read-only outside perspective) |
+| Roles | `agents/` | `deep-reasoner` (opus) · `default-worker` (sonnet) · `task-worker` (haiku) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — outside perspective, non-editing contract with post-run change detection) |
 | Criteria | `rules/orchestration.md` | When the main agent handles directly vs must delegate |
 | **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied** with a delegation instruction; Bash writes to code files are denied outright |
 
@@ -26,7 +26,7 @@ Underneath, it keeps the expensive main model on **judgment** (plan, delegate, d
 - Known bypass gap (accepted): commands that write code dynamically are regex-invisible to the guard; the injected rules forbid them by instruction. This is a delegation aid, not a security boundary.
 
 ## First run
-`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, independent reviewer; probes the other CLI and smoke-tests the reviewer slot read-only; persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.
+`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices (AskUserQuestion) for model tiers, edit budget, bash-guard, independent reviewer; probes the other CLI and smoke-tests the reviewer slot (non-editing contract with post-run change detection); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives plugin updates — asked once, never again). Safe defaults are active even before setup: gate ON, 2 files/turn, bash-guard ON. If Opus isn't available on the account, pick the `Balanced` or `Budget` preset — every role stays within reachable models.
 
 ## Zero-command by design
 Normal use involves **no haejwo commands at all**. You talk; the host does the rest automatically:
@@ -62,7 +62,7 @@ Hooks load at session start — restart the session (or `/reload-plugins` on Cla
 Optional hardening (README-only, not auto-applied): add `permissions.deny` rules for `Bash(sed:*)` etc. and deny `Read` of the state dir to prevent tampering.
 
 ## Conventions
-The constitution lives in [`PHILOSOPHY.md`](PHILOSOPHY.md) — 12 principles with their origin cases, the precedence order for conflicts, and the docs map. Read it before changing ANYTHING. Prompt & style policy lives in [`PROMPTS.md`](PROMPTS.md) — every prompt surface (commands, agents, rules, hook-emitted messages, script text) follows it; deny-message strings are a tested contract.
+The constitution lives in [`PHILOSOPHY.md`](PHILOSOPHY.md) — 13 principles with their origin cases, the precedence order for conflicts, and the docs map. Read it before changing ANYTHING. Prompt & style policy lives in [`PROMPTS.md`](PROMPTS.md) — every prompt surface (commands, agents, rules, hook-emitted messages, script text) follows it; deny-message strings are a tested contract.
 
 ## Verification
 `scripts/` are plain python3 (stdlib only). Synthetic tests pipe hook-payload JSON into each script and assert allow/deny/reset behavior; the live proof is: 3 Edit calls on 3 code files in one turn ⇒ 3rd denied with the delegation message, and `/haejwo:status` shows whether hooks fire inside subagents on this CLI version.

@@ -12,23 +12,24 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 SCRIPTS = os.path.join(PLUGIN, "scripts")
 sys.path.insert(0, SCRIPTS)
-from hjw_common import DEFAULT_CONFIG  # noqa: E402
+from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
 
 PASS, FAIL = 0, []
 
 
-def run(script, payload, data_dir, env_extra=None):
+def run(script, payload, data_dir, env_extra=None, root=None):
     env = dict(os.environ)
     env.pop("HAEJWO_GATE", None)
     if env_extra:
         env.update(env_extra)
     p = subprocess.run(
-        ["python3", os.path.join(SCRIPTS, script), PLUGIN, data_dir],
+        ["python3", os.path.join(SCRIPTS, script), PLUGIN if root is None else root, data_dir],
         input=json.dumps(payload) if isinstance(payload, dict) else payload,
         capture_output=True, text=True, timeout=15, env=env,
     )
@@ -374,6 +375,11 @@ def main():
         check("claude host summary has no codex-tiers leakage",
               "codex tiers" not in ctx and "models:" in ctx and "codex reviewer" in ctx)
 
+        check("${CLAUDE_PLUGIN_ROOT} resolved: no literal placeholder leaks into injected rules",
+              "${CLAUDE_PLUGIN_ROOT}" not in ctx)
+        check("${CLAUDE_PLUGIN_ROOT} resolved: consult path resolved to the real plugin root",
+              f"{PLUGIN.rstrip('/')}/scripts/" in ctx, ctx[:200])
+
         # codex-host branch: host is path-sniffed off the DATA argv (root|data
         # containing "/.codex/"), so a data dir alone is enough to flip it.
         codex_data = os.path.join(data, ".codex", "plugins", "data", "haejwo")
@@ -386,6 +392,85 @@ def main():
               "codex tiers" in ctx and "claude reviewer" in ctx
               and "spawn_agent" in ctx and "gpt-5.6-luna" in ctx, ctx)
 
+        print("== session_brief.py: ${CLAUDE_PLUGIN_ROOT} resolution edge cases ==")
+
+        # (b1) relative root: rules load succeeds (open() resolves relative to
+        # CWD), but substitution requires an ABSOLUTE root -> placeholder survives.
+        rel_root = os.path.relpath(PLUGIN, os.getcwd())
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data, root=rel_root)
+        ctx_rel = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("relative root -> placeholder preserved (not absolute, no substitution), exit 0",
+              rc == 0 and "${CLAUDE_PLUGIN_ROOT}" in ctx_rel, ctx_rel[:200])
+
+        # (b2) nonexistent absolute root: rules file can't even be opened ->
+        # emergency-core fallback (which has no placeholder to begin with);
+        # must still exit 0 and never crash.
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data,
+                      root="/nonexistent/haejwo/root/xyz-does-not-exist")
+        ctx_missing = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("nonexistent absolute root -> emergency-core fallback, exit 0, no crash",
+              rc == 0 and "emergency core" in ctx_missing and "${CLAUDE_PLUGIN_ROOT}" not in ctx_missing,
+              ctx_missing[:200])
+
+        # (c) non-truncation: a realistically long absolute root + long model
+        # names must not push the config-summary tail (reviewer segment) past
+        # the 5000-char cap (session_brief.py:15,83).
+        long_root_base = tempfile.mkdtemp(prefix="hjw-test-longroot-")
+        long_root = os.path.join(long_root_base, "home", "user", ".claude", "plugins",
+                                  "marketplaces", "jungzuna-haejwo", "haejwo")
+        try:
+            os.makedirs(os.path.join(long_root, "rules"), exist_ok=True)
+            real_rules = open(os.path.join(PLUGIN, "rules", "orchestration.md"),
+                              encoding="utf-8-sig").read()
+            with open(os.path.join(long_root, "rules", "orchestration.md"),
+                      "w", encoding="utf-8") as f:
+                f.write(real_rules)
+
+            long_data = tempfile.mkdtemp(prefix="hjw-test-longdata-")
+            try:
+                long_model = "claude-sonnet-4-5-20250929"
+                with open(os.path.join(long_data, "config.json"), "w") as f:
+                    json.dump({
+                        "configured": True,
+                        "gate": {"enabled": True, "max_files_per_turn": 2, "bash_guard": True},
+                        "models": {"deep_reasoner": long_model, "default_worker": long_model,
+                                   "task_worker": long_model},
+                    }, f)
+                rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, long_data,
+                              root=long_root)
+                ctx_long = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+                check("long root + long model names: substitution still applied",
+                      "${CLAUDE_PLUGIN_ROOT}" not in ctx_long)
+                check("long root + long model names: config-summary tail (reviewer segment) "
+                      "survives — not truncated away",
+                      ctx_long.rstrip().endswith(
+                          "codex reviewer: disabled (fallback: deep-reasoner)"),
+                      ctx_long[-200:])
+            finally:
+                shutil.rmtree(long_data, ignore_errors=True)
+        finally:
+            shutil.rmtree(long_root_base, ignore_errors=True)
+
+        # (d) codex-host branch: root ITSELF (not just data) containing
+        # "/.codex/" must also get substitution.
+        codex_root_base = tempfile.mkdtemp(prefix="hjw-test-codexroot-")
+        try:
+            codex_root = os.path.join(codex_root_base, ".codex", "plugins", "haejwo")
+            os.makedirs(os.path.join(codex_root, "rules"), exist_ok=True)
+            with open(os.path.join(codex_root, "rules", "orchestration.md"),
+                      "w", encoding="utf-8") as f:
+                f.write(open(os.path.join(PLUGIN, "rules", "orchestration.md"),
+                             encoding="utf-8-sig").read())
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, codex_data,
+                          root=codex_root)
+            ctx_cx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("codex-host root (contains /.codex/) still gets ${CLAUDE_PLUGIN_ROOT} substitution",
+                  "${CLAUDE_PLUGIN_ROOT}" not in ctx_cx
+                  and f"{codex_root.rstrip('/')}/scripts/" in ctx_cx
+                  and "codex tiers" in ctx_cx, ctx_cx[:200])
+        finally:
+            shutil.rmtree(codex_root_base, ignore_errors=True)
+
         print("== hjw_common.DEFAULT_CONFIG ==")
         check("models_codex defaults",
               DEFAULT_CONFIG["models_codex"] == {
@@ -395,6 +480,77 @@ def main():
               })
         check("gate.delegation_guard defaults True",
               DEFAULT_CONFIG["gate"]["delegation_guard"] is True)
+
+        print("== hjw_common.observe() 1-generation rotation ==")
+        rot_data = tempfile.mkdtemp(prefix="hjw-test-rotate-")
+        try:
+            sdir = os.path.join(rot_data, "state")
+            os.makedirs(sdir, exist_ok=True)
+            obs_path = os.path.join(sdir, "observations.jsonl")
+            old1_path = obs_path + ".1"
+            # a stale prior .1 must be OVERWRITTEN by the next rotation, not appended to
+            with open(old1_path, "w") as f:
+                f.write('{"marker": "stale-generation"}\n')
+            with open(obs_path, "w") as f:
+                f.write("z" * 200_001 + "\n")
+            observe(rot_data, {"hook": "test", "marker": "after-rotate"})
+            check("rotation: .1 archive created at threshold", os.path.isfile(old1_path))
+            check("rotation: .1 overwrites any previous .1 (old content gone)",
+                  "stale-generation" not in open(old1_path).read())
+            check("rotation: .1 archive holds the rotated-out oversized content",
+                  os.path.getsize(old1_path) > 200_000)
+            check("rotation: current file restarts small",
+                  os.path.getsize(obs_path) < 1000)
+            check("rotation: current record still appended after rotate",
+                  "after-rotate" in open(obs_path).read())
+        finally:
+            shutil.rmtree(rot_data, ignore_errors=True)
+
+        rot_fail_data = tempfile.mkdtemp(prefix="hjw-test-rotate-fail-")
+        try:
+            sdir = os.path.join(rot_fail_data, "state")
+            os.makedirs(sdir, exist_ok=True)
+            obs_path = os.path.join(sdir, "observations.jsonl")
+            with open(obs_path, "w") as f:
+                f.write("z" * 200_001 + "\n")
+            # force os.replace(...) to fail: the rotation target is an existing
+            # directory, so os.replace(file, dir) raises -> rotation must be
+            # swallowed separately and the append must still be attempted.
+            os.makedirs(obs_path + ".1", exist_ok=True)
+            observe(rot_fail_data, {"hook": "test", "marker": "rotate-failed-but-appended"})
+            check("rotation failure path: record still appended (fail-open)",
+                  "rotate-failed-but-appended" in open(obs_path).read())
+        finally:
+            shutil.rmtree(rot_fail_data, ignore_errors=True)
+
+        print("== hjw_common.prune_state() observation exemption ==")
+        prune_data = tempfile.mkdtemp(prefix="hjw-test-prune-")
+        try:
+            sdir = os.path.join(prune_data, "state")
+            os.makedirs(sdir, exist_ok=True)
+            obs_path = os.path.join(sdir, "observations.jsonl")
+            obs1_path = obs_path + ".1"
+            stale_path = os.path.join(sdir, "stale-session.json")
+            fresh_path = os.path.join(sdir, "fresh-session.json")
+            for p in (obs_path, obs1_path, stale_path, fresh_path):
+                with open(p, "w") as f:
+                    f.write("{}")
+            old_time = time.time() - 8 * 86400  # 8 days: past the 7-day cutoff
+            os.utime(obs_path, (old_time, old_time))
+            os.utime(obs1_path, (old_time, old_time))
+            os.utime(stale_path, (old_time, old_time))
+            # fresh_path keeps its just-created mtime
+            prune_state(prune_data)
+            check("prune_state: observations.jsonl survives despite stale mtime (size-bounded, not age-bounded)",
+                  os.path.isfile(obs_path))
+            check("prune_state: observations.jsonl.1 survives despite stale mtime (P13 audit evidence)",
+                  os.path.isfile(obs1_path))
+            check("prune_state: stale session state file IS pruned",
+                  not os.path.isfile(stale_path))
+            check("prune_state: fresh session state file survives",
+                  os.path.isfile(fresh_path))
+        finally:
+            shutil.rmtree(prune_data, ignore_errors=True)
 
         print("== delegation_gate.py ==")
         rc, out = run("delegation_gate.py", task_payload("general-purpose"), data)

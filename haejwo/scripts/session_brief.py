@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from hjw_common import load_config, paths, read_payload  # noqa: E402
+from hjw_common import DEFAULT_CONFIG, load_config, paths, read_payload  # noqa: E402
 
 # Self-imposed injection budget (not a platform limit). Keep rules DISCIPLINED
 # regardless — injected context costs tokens every session; the cap is a
@@ -61,7 +61,25 @@ def main():
     root, data = paths(sys.argv)
     cfg = load_config(data)
 
+    # Host detection by plugin path: codex passes compat env/argv rooted under
+    # /.codex/plugins (measured) — no extra probe needed. Detected BEFORE the
+    # configured branch: the unconfigured nudge names the tiers too, and on
+    # Codex it must never advertise Claude aliases (origin 2026-09-14: a fresh
+    # Codex session was told to use sonnet/haiku, which it cannot pass).
+    on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
+
     if not cfg.get("configured"):
+        defaults = DEFAULT_CONFIG["models_codex" if on_codex else "models"]
+        inherited = "host model" if on_codex else "session model"
+
+        def _default_tier(v):
+            return inherited if v == "inherit" else v
+
+        targets = (
+            f"haejwo:deep-reasoner ({_default_tier(defaults['deep_reasoner'])}), "
+            f"haejwo:default-worker ({_default_tier(defaults['default_worker'])}), "
+            f"haejwo:task-worker ({_default_tier(defaults['task_worker'])})."
+        )
         nudge = (
             "[haejwo] Installed but NOT configured yet (first use). Offer ONCE to "
             "configure right now, and if the user agrees RUN THE SETUP FLOW YOURSELF "
@@ -69,8 +87,7 @@ def main():
             "skill in Codex; the user only answers 4 quick choices and never needs "
             "to type a command). Until then safe defaults are "
             "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
-            "bash-guard ON, subagents exempt. Delegation targets: haejwo:deep-reasoner "
-            "(session model), haejwo:default-worker (sonnet), haejwo:task-worker (haiku)."
+            "bash-guard ON, subagents exempt. Delegation targets: " + targets
         )
         context = (nudge + "\n\n" + UNCONFIGURED_CORE).strip()
     else:
@@ -82,9 +99,6 @@ def main():
         except Exception:
             rules = EMERGENCY_CORE
         g = cfg["gate"]
-        # Host detection by plugin path: codex passes compat env/argv rooted
-        # under /.codex/plugins (measured) — no extra probe needed.
-        on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
         if on_codex:
             mc = cfg.get("models_codex", {})
             tiers = (
@@ -99,17 +113,26 @@ def main():
         else:
             m = cfg["models"]
 
-            def _tier(v):
-                return "inherit(session)" if v == "inherit" else v
+            def _tier(v, worker=False):
+                # "inherit" means two DIFFERENT things on Claude: the
+                # deep-reasoner inherits the SESSION model (Agent-tool
+                # default), while a worker tier falls back to its own agent
+                # file's `model:` default. Render each honestly.
+                if v != "inherit":
+                    return v
+                return "agent-file default" if worker else "inherit(session)"
 
             tiers = (
                 f"models: deep-reasoner={_tier(m['deep_reasoner'])}, "
-                f"default-worker={_tier(m['default_worker'])}, "
-                f"task-worker={_tier(m['task_worker'])} "
+                f"default-worker={_tier(m['default_worker'], True)}, "
+                f"task-worker={_tier(m['task_worker'], True)} "
                 f"(pass as Agent-tool model override if it differs from the agent default)"
             )
-            if "inherit" in (m['deep_reasoner'], m['default_worker'], m['task_worker']):
+            if m['deep_reasoner'] == "inherit":
                 tiers += " (inherit = omit the model override)"
+            if "inherit" in (m['default_worker'], m['task_worker']):
+                tiers += (" On Claude, omitting the model override uses each agent "
+                          "file's default; pass an explicit model to override it.")
             reviewer_label = "codex reviewer"
             fallback = "disabled (fallback: deep-reasoner)"
         summary = (

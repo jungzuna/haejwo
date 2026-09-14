@@ -5,6 +5,7 @@ Pipes realistic hook JSON payloads into the actual scripts (subprocess, the
 real CLI contract) and asserts allow/deny/reset behavior. No Claude Code
 required. Run: python3 tests/test_hooks.py
 """
+import fcntl
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +22,7 @@ SCRIPTS = os.path.join(PLUGIN, "scripts")
 sys.path.insert(0, SCRIPTS)
 from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
 from session_brief import CORE_BODY, EMERGENCY_CORE, MAX_LEN, UNCONFIGURED_CORE  # noqa: E402
+from delegation_gate import CLAUDE_TIER_ONLY, CODEX_TIER_ONLY  # noqa: E402
 
 PASS, FAIL = 0, []
 
@@ -234,23 +237,144 @@ def main():
         rc, out = run("gate.py", edit_payload("/repo/s/x3.py", sid="sess-E"), data)
         check("stale (>2h) state auto-resets -> allow", decision(out) != "deny")
 
-        # Concurrent edits can't slip under the budget (flock serializes)
+        # Concurrent edits can't slip under the budget (flock serializes).
+        # REAL concurrency: the four children are spawned first and their
+        # stdins are released together by a Barrier, so they actually race the
+        # read-check-write. (The previous version wrote+communicated one child
+        # at a time, which serialized the race away and proved nothing.)
         procs = []
         for i in range(4):
             p = subprocess.Popen(
                 ["python3", os.path.join(SCRIPTS, "gate.py"), PLUGIN, data],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             procs.append((p, json.dumps(edit_payload(f"/repo/r/r{i}.py", sid="sess-R"))))
-        outs = []
-        for p, payload_s in procs:
-            stdout, _ = p.communicate(payload_s, timeout=20)
+
+        barrier = threading.Barrier(len(procs))
+
+        def feed(proc, payload_s):
+            try:
+                barrier.wait(timeout=10)
+            except Exception:
+                pass
+            try:
+                proc.stdin.write(payload_s)
+                proc.stdin.flush()
+            except Exception:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()  # promptly: the hook reads to EOF
+                    # so the later communicate() doesn't flush a closed pipe
+                    proc.stdin = None
+                except Exception:
+                    pass
+
+        feeders = [threading.Thread(target=feed, args=(p, s_), daemon=True)
+                   for p, s_ in procs]
+        for t in feeders:
+            t.start()
+        for t in feeders:
+            t.join(timeout=20)
+        outs, rcs = [], []
+        for proc, _ in procs:
+            try:
+                stdout, _unused = proc.communicate(timeout=20)
+            except Exception:
+                stdout = ""
+                proc.kill()  # stdin is already closed: kill+wait, never communicate
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            rcs.append(proc.returncode)
             try:
                 outs.append(json.loads(stdout.strip().splitlines()[-1]))
             except Exception:
                 outs.append({})
         denies = sum(1 for o in outs if decision(o) == "deny")
-        check("4 concurrent edits -> exactly 2 denied (no race undercount)",
+        check("4 CONCURRENT edits -> exactly 2 denied (no race undercount)",
               denies == 2, f"denies={denies}")
+        check("4 concurrent edits -> every hook exits 0 (never bricks)",
+              rcs == [0, 0, 0, 0], f"rcs={rcs}")
+        # The invariant that actually matters: what the hooks TOLD the host it
+        # could edit is exactly what the counter recorded — no allowed path
+        # goes uncounted, no denied path gets counted.
+        allowed_paths = {os.path.realpath(f"/repo/r/r{i}.py")
+                         for i, o in enumerate(outs) if decision(o) != "deny"}
+        race_state = json.load(open(os.path.join(data, "state", "sess-R.json")))
+        check("4 concurrent edits -> allowed responses == paths in state",
+              allowed_paths == set(race_state.get("files", []))
+              and len(allowed_paths) == 2,
+              f"allowed={sorted(allowed_paths)} state={race_state}")
+        print("  note: the barrier makes overlap LIKELY, not certain — "
+              "critical-section overlap here is inferred, not proven "
+              "(the held-lock fixture below proves the lock itself binds)")
+
+        # The lock is load-bearing, not decorative: hold it from the TEST and
+        # prove the child blocks (no state written) until it is released.
+        hl_sid = "sess-HL"
+        hl_lock = os.path.join(data, "state", hl_sid + ".json.lock")
+        hl_state = os.path.join(data, "state", hl_sid + ".json")
+        os.makedirs(os.path.dirname(hl_lock), exist_ok=True)
+        holder = open(hl_lock, "w")
+        child = None
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            child = subprocess.Popen(
+                ["python3", os.path.join(SCRIPTS, "gate.py"), PLUGIN, data],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            child.stdin.write(json.dumps(edit_payload("/repo/hl/a.py", sid=hl_sid)))
+            child.stdin.flush()
+            child.stdin.close()
+            fd_dir = "/proc/%d/fd" % child.pid
+            if not os.path.isdir(fd_dir):
+                print("  skipped (no /proc) held-lock fixture")
+            else:
+                real_lock = os.path.realpath(hl_lock)
+                deadline = time.time() + 10  # slow/loaded CI: readiness, not timing
+                opened = False
+                while time.time() < deadline and not opened:
+                    try:
+                        for fd in os.listdir(fd_dir):
+                            if os.path.realpath(os.path.join(fd_dir, fd)) == real_lock:
+                                opened = True
+                                break
+                    except Exception:
+                        pass
+                    if not opened:
+                        time.sleep(0.05)
+                check("held lock: child opened the session lock file (waiting on it)",
+                      opened, fd_dir)
+                blocked_until = time.time() + 0.5
+                blocked = True
+                while time.time() < blocked_until:
+                    if os.path.exists(hl_state):
+                        blocked = False
+                        break
+                    time.sleep(0.05)
+                check("held lock: no state written while another holder has the lock",
+                      blocked)
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                try:
+                    hl_rc = child.wait(timeout=5)
+                except Exception:
+                    hl_rc = None
+                check("held lock: child completes once released (exit 0)", hl_rc == 0,
+                      f"rc={hl_rc}")
+                check("held lock: state written after release", os.path.exists(hl_state))
+        finally:
+            try:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            holder.close()
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                try:
+                    child.wait(timeout=5)  # stdin closed: never communicate()
+                except Exception:
+                    pass
 
         print("== bash_guard.py ==")
         cases_deny = [
@@ -282,6 +406,243 @@ def main():
         rc, out = run("bash_guard.py",
                       bash_payload("sed -i 's/a/b/' src/app.py", agent="task-worker"), data)
         check("SUBAGENT bash write -> allow (exempt)", decision(out) != "deny")
+
+        print("== bash_guard.py unresolved targets (A9) ==")
+        # A write target the hook cannot resolve (shell expansion / backtick)
+        # is exempted PER TOKEN — the hook has no shell env to expand it, and
+        # field data showed those denies were scratch writes the Write tool
+        # then performed freely anyway.
+        a9_data = tempfile.mkdtemp(prefix="hjw-test-a9-")
+        try:
+            def a9_recs():
+                return [json.loads(l) for l in
+                        open(os.path.join(a9_data, "state", "observations.jsonl"))]
+
+            def a9_last(sid):
+                hits = [r for r in a9_recs() if r.get("sid") == sid]
+                return hits[-1] if hits else None
+
+            a9_cases = [
+                ("cat > $SP/probe.py", "sess-A9a", "allow", "unresolved-target",
+                 "$SP/probe.py", "redirect target with $VAR"),
+                ("echo x > '$SP/a.py'", "sess-A9b", "allow", "unresolved-target",
+                 "'$SP/a.py'", "single-quoted $VAR (documented broader exemption)"),
+                ("cat > `mktemp`.py", "sess-A9c", "allow", "unresolved-target",
+                 "`mktemp`.py", "backtick target"),
+                ("sed -i s/a/b/ $SP/x.py", "sess-A9d", "allow", "unresolved-target",
+                 "$SP/x.py", "in-place editor on an unresolved token"),
+                ("printf x > $SP/a.py; echo y > src/real.py", "sess-A9e", "deny",
+                 "redirect", "src/real.py", "literal target wins over unresolved"),
+                # the only code-ish word here is the QUOTED glob, which is
+                # classified raw (quoted literals are a kept gap), so the deny
+                # comes from the fan-out branch
+                ("find . -name '*.py' -exec sed -i s/a/b/ {} +", "sess-A9f", "deny",
+                 "fanout", None, "fan-out in-place edit still denies"),
+                ("git ls-files | xargs sed -i 's/old/new/'", "sess-A9g", "deny",
+                 "fanout", None, "xargs fan-out with no visible token"),
+                # provenance: classify the shell WORD, not a stripped token
+                # whitespace INSIDE $( ) / backticks does not split the word,
+                # so the whole target is recorded verbatim
+                ('sed -i s/a/b/ "$(printf /repo)/x.py"', "sess-A9h", "allow",
+                 "unresolved-target", '"$(printf /repo)/x.py"',
+                 "command substitution inside quotes -> whole word recorded"),
+                ("sed -i s/a/b/ $(printf /repo)/x.py", "sess-A9p", "allow",
+                 "unresolved-target", "$(printf /repo)/x.py",
+                 "bare command substitution -> whole word recorded"),
+                ("echo x > `pwd`/a.py", "sess-A9q", "allow", "unresolved-target",
+                 "`pwd`/a.py", "backtick redirect target"),
+                ("echo x > `printf /repo`/a.py", "sess-A9r", "allow",
+                 "unresolved-target", "`printf /repo`/a.py",
+                 "backtick span with whitespace stays one word"),
+                # L3: quoted literal targets keep their 2.10 behavior (allow) —
+                # a known gap kept deliberately, no field evidence to tighten
+                ("echo x > 'src/app.py'", "sess-A9s", "allow", "ok", None,
+                 "quoted literal redirect target (kept gap)"),
+                ("sed -i s/a/b/ 'src/app.py'", "sess-A9t", "allow", "ok", None,
+                 "quoted literal in-place target (kept gap)"),
+                ('echo x > "a b.py"', "sess-A9i", "allow", "unresolved-target",
+                 '"a', "quote opened but not closed in this word"),
+                ("echo x > src/real.py", "sess-A9j", "deny", "redirect",
+                 "src/real.py", "literal redirect still denies"),
+                ('sed -i s/a/b/ $SP/x.py src/real.py', "sess-A9k", "deny",
+                 "inplace", "src/real.py",
+                 "mixed unresolved + literal in one command -> deny"),
+            ]
+            for cmd, sid, want, via, target, name in a9_cases:
+                rc, out = run("bash_guard.py", bash_payload(cmd, sid=sid), a9_data)
+                got = "deny" if decision(out) == "deny" else "allow"
+                check(f"A9 {want}: {name}", rc == 0 and got == want, str(out))
+                rec = a9_last(sid)
+                check(f"A9 record: {name} -> via {via}",
+                      bool(rec) and rec.get("v") == 2 and rec.get("decision") == want
+                      and rec.get("via") == via, str(rec))
+                if target is not None:
+                    check(f"A9 record: {name} -> raw target preserved",
+                          bool(rec) and rec.get("target") == target, str(rec))
+        finally:
+            shutil.rmtree(a9_data, ignore_errors=True)
+
+        print("== gate.py / bash_guard.py decision telemetry (A10) ==")
+        a10_data = tempfile.mkdtemp(prefix="hjw-test-a10-")
+        try:
+            def a10_last(sid, hook):
+                recs = [json.loads(l) for l in
+                        open(os.path.join(a10_data, "state", "observations.jsonl"))]
+                hits = [r for r in recs
+                        if r.get("sid") == sid and r.get("hook") == hook]
+                return hits[-1] if hits else None
+
+            run("gate.py", edit_payload("/repo/t/a.py", sid="sess-TEL"), a10_data)
+            r_ok = a10_last("sess-TEL", "gate")
+            check("A10 gate: 1st file -> v2 allow via 'ok'",
+                  bool(r_ok) and r_ok.get("v") == 2 and r_ok.get("decision") == "allow"
+                  and r_ok.get("via") == "ok", str(r_ok))
+
+            run("gate.py", edit_payload("/repo/t/b.py", sid="sess-TEL"), a10_data)
+            r_full = a10_last("sess-TEL", "gate")
+            check("A10 gate: budget-filling file -> via 'budget-full'",
+                  bool(r_full) and r_full.get("via") == "budget-full", str(r_full))
+
+            run("gate.py", edit_payload("/repo/t/a.py", sid="sess-TEL"), a10_data)
+            r_free = a10_last("sess-TEL", "gate")
+            check("A10 gate: re-edit -> via 'free-reedit'",
+                  bool(r_free) and r_free.get("via") == "free-reedit", str(r_free))
+
+            rc, out = run("gate.py", edit_payload("/repo/t/c.py", sid="sess-TEL"), a10_data)
+            r_deny = a10_last("sess-TEL", "gate")
+            check("A10 gate: over-budget file -> deny via 'budget' + offending list",
+                  decision(out) == "deny" and bool(r_deny)
+                  and r_deny.get("decision") == "deny" and r_deny.get("via") == "budget"
+                  and r_deny.get("offending") == ["/repo/t/c.py"], str(r_deny))
+
+            run("gate.py", edit_payload("/repo/t/notes.md", sid="sess-TEL"), a10_data)
+            check("A10 gate: non-code file -> via 'non-code'",
+                  (a10_last("sess-TEL", "gate") or {}).get("via") == "non-code")
+
+            run("gate.py", edit_payload("/repo/t/d.py", sid="sess-TEX", agent="default-worker"),
+                a10_data)
+            check("A10 gate: subagent -> via 'subagent-exempt'",
+                  (a10_last("sess-TEX", "gate") or {}).get("via") == "subagent-exempt")
+
+            run("gate.py", edit_payload("/repo/t/e.py", sid="sess-TEV"), a10_data,
+                env_extra={"HAEJWO_GATE": "off"})
+            check("A10 gate: HAEJWO_GATE=off -> via 'env-off'",
+                  (a10_last("sess-TEV", "gate") or {}).get("via") == "env-off")
+
+            with open(os.path.join(a10_data, "config.json"), "w") as f:
+                json.dump({"gate": {"enabled": False}}, f)
+            run("gate.py", edit_payload("/repo/t/f.py", sid="sess-TEG"), a10_data)
+            check("A10 gate: gate disabled in config -> via 'gate-off'",
+                  (a10_last("sess-TEG", "gate") or {}).get("via") == "gate-off")
+            run("bash_guard.py", bash_payload("sed -i 's/a/b/' src/app.py", sid="sess-TBG"),
+                a10_data)
+            check("A10 bash_guard: gate disabled in config -> via 'gate-off'",
+                  (a10_last("sess-TBG", "bash_guard") or {}).get("via") == "gate-off")
+            os.remove(os.path.join(a10_data, "config.json"))
+
+            rc, out = run("bash_guard.py",
+                          bash_payload("sed -i 's/a/b/' src/app.py", sid="sess-TB1"), a10_data)
+            r_bd = a10_last("sess-TB1", "bash_guard")
+            check("A10 bash_guard: in-place deny -> v2 + via 'inplace' + target",
+                  decision(out) == "deny" and bool(r_bd) and r_bd.get("v") == 2
+                  and r_bd.get("decision") == "deny" and r_bd.get("via") == "inplace"
+                  and r_bd.get("target") == "src/app.py", str(r_bd))
+
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-TB2"), a10_data)
+            r_br = a10_last("sess-TB2", "bash_guard")
+            check("A10 bash_guard: redirect deny -> via 'redirect' + target",
+                  decision(out) == "deny" and bool(r_br)
+                  and r_br.get("via") == "redirect"
+                  and r_br.get("target") == "src/app.py", str(r_br))
+
+            rc, out = run("bash_guard.py", bash_payload("cat src/app.py", sid="sess-TB3"),
+                          a10_data)
+            check("A10 bash_guard: plain read -> allow via 'ok'",
+                  decision(out) != "deny"
+                  and (a10_last("sess-TB3", "bash_guard") or {}).get("via") == "ok")
+
+            def a10_count(sid, hook):
+                recs = [json.loads(l) for l in
+                        open(os.path.join(a10_data, "state", "observations.jsonl"))]
+                return sum(1 for r in recs
+                           if r.get("sid") == sid and r.get("hook") == hook)
+
+            run("gate.py", edit_payload("/repo/t/once.py", sid="sess-ONE1"), a10_data)
+            check("A10 gate: exactly ONE observation record per invocation",
+                  a10_count("sess-ONE1", "gate") == 1, a10_count("sess-ONE1", "gate"))
+            run("bash_guard.py", bash_payload("echo hi", sid="sess-ONE2"), a10_data)
+            check("A10 bash_guard: exactly ONE observation record per invocation",
+                  a10_count("sess-ONE2", "bash_guard") == 1,
+                  a10_count("sess-ONE2", "bash_guard"))
+            rc, out = run("delegation_gate.py",
+                          task_payload("haejwo:default-worker", sid="sess-ONE3"), a10_data)
+            check("A10 delegation: exactly ONE observation record per invocation",
+                  a10_count("sess-ONE3", "delegation") == 1,
+                  a10_count("sess-ONE3", "delegation"))
+        finally:
+            shutil.rmtree(a10_data, ignore_errors=True)
+
+        # K5: telemetry is never load-bearing — a HELD observations lock must
+        # not make the host wait for a gate decision.
+        obs_lock_data = tempfile.mkdtemp(prefix="hjw-test-obslock-")
+        try:
+            obs_sdir = os.path.join(obs_lock_data, "state")
+            os.makedirs(obs_sdir, exist_ok=True)
+            obs_lock_path = os.path.join(obs_sdir, "__observations__.json.lock")
+            obs_holder = open(obs_lock_path, "w")
+            try:
+                fcntl.flock(obs_holder, fcntl.LOCK_EX)
+                t0 = time.time()
+                rc, out = run("gate.py", edit_payload("/repo/ol/a.py", sid="sess-OL"),
+                              obs_lock_data)
+                elapsed = time.time() - t0
+                check("A10 held observations lock: decision still emitted, fast",
+                      rc == 0 and decision(out) != "deny" and elapsed < 1.5,
+                      f"rc={rc} elapsed={elapsed:.2f}s")
+                obs_path = os.path.join(obs_sdir, "observations.jsonl")
+                wrote = False
+                if os.path.isfile(obs_path):
+                    wrote = any(json.loads(l).get("sid") == "sess-OL"
+                                for l in open(obs_path) if l.strip())
+                check("A10 held observations lock: record still appended (unlocked "
+                      "best-effort)", wrote, obs_path)
+            finally:
+                try:
+                    fcntl.flock(obs_holder, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                obs_holder.close()
+        finally:
+            shutil.rmtree(obs_lock_data, ignore_errors=True)
+
+        # Observation failure must never change the decision: make
+        # observations.jsonl a DIRECTORY so every observe() write raises.
+        obs_fail_data = tempfile.mkdtemp(prefix="hjw-test-obsfail-")
+        try:
+            os.makedirs(os.path.join(obs_fail_data, "state", "observations.jsonl"),
+                        exist_ok=True)
+            for i, path_ in enumerate(["/repo/of/a.py", "/repo/of/b.py"]):
+                rc, out = run("gate.py", edit_payload(path_, sid="sess-OF"), obs_fail_data)
+                check(f"A10 obs-failure: gate file {i + 1} still allowed", rc == 0
+                      and decision(out) != "deny", str(out))
+            rc, out = run("gate.py", edit_payload("/repo/of/c.py", sid="sess-OF"),
+                          obs_fail_data)
+            check("A10 obs-failure: gate still DENIES over budget (decision unaffected)",
+                  rc == 0 and decision(out) == "deny", str(out))
+            rc, out = run("bash_guard.py",
+                          bash_payload("sed -i 's/a/b/' src/app.py", sid="sess-OF"),
+                          obs_fail_data)
+            check("A10 obs-failure: bash_guard still DENIES (decision unaffected)",
+                  rc == 0 and decision(out) == "deny", str(out))
+
+            mal = edit_payload("/repo/of/d.py", sid="sess-MAL")
+            mal["tool_input"] = "not-a-dict"
+            rc, out = run("gate.py", mal, obs_fail_data)
+            check("A10 malformed tool_input -> allow rc0 (fail open)",
+                  rc == 0 and decision(out) != "deny", str(out))
+        finally:
+            shutil.rmtree(obs_fail_data, ignore_errors=True)
 
         print("== codex host adapter (apply_patch) ==")
         # a. single Add counts like Claude's file_path; budget applies the same way
@@ -522,6 +883,70 @@ def main():
         check("normal path: real rules file does NOT trigger the degrade",
               rc == 0 and not ctx_normal.startswith(EMERGENCY_CORE), ctx_normal[:80])
 
+        print("== session_brief.py host-correct nudge + inherit rendering (A6/E8) ==")
+        # The unconfigured nudge names the DEFAULT tiers of the host it is
+        # actually running on: a Codex session cannot pass Claude aliases.
+        a6_claude = tempfile.mkdtemp(prefix="hjw-test-a6c-")
+        a6_codex_base = tempfile.mkdtemp(prefix="hjw-test-a6x-")
+        try:
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_claude)
+            ctx_c = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("A6 Claude nudge unchanged: session model + sonnet + haiku",
+                  rc == 0 and "NOT configured" in ctx_c
+                  and "haejwo:deep-reasoner (session model), haejwo:default-worker "
+                      "(sonnet), haejwo:task-worker (haiku)." in ctx_c, ctx_c)
+
+            a6_codex = os.path.join(a6_codex_base, ".codex", "plugins", "data", "haejwo")
+            os.makedirs(a6_codex, exist_ok=True)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_codex)
+            ctx_x = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("A6 Codex nudge names the codex tiers (terra/luna, host model)",
+                  rc == 0 and "NOT configured" in ctx_x
+                  and "haejwo:deep-reasoner (host model), haejwo:default-worker "
+                      "(gpt-5.6-terra), haejwo:task-worker (gpt-5.6-luna)." in ctx_x, ctx_x)
+            check("A6 Codex nudge: no Claude aliases leak",
+                  "sonnet" not in ctx_x and "haiku" not in ctx_x, ctx_x)
+
+            # E8a: on Claude a worker tier's "inherit" means the AGENT FILE's
+            # default, not the session model — render it as such and say so.
+            with open(os.path.join(a6_claude, "config.json"), "w") as f:
+                json.dump({"configured": True,
+                           "gate": {"enabled": True, "max_files_per_turn": 2,
+                                    "bash_guard": True},
+                           "models": {"deep_reasoner": "opus",
+                                      "default_worker": "inherit",
+                                      "task_worker": "haiku"}}, f)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_claude)
+            ctx_i = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("E8a worker 'inherit' renders as 'agent-file default'",
+                  "default-worker=agent-file default" in ctx_i, ctx_i)
+            check("E8a worker 'inherit' adds the explanatory sentence",
+                  "On Claude, omitting the model override uses each agent file's "
+                  "default; pass an explicit model to override it." in ctx_i, ctx_i)
+            check("E8a deep_reasoner explicit -> no '(inherit = omit...)' clarifier",
+                  "(inherit = omit the model override)" not in ctx_i, ctx_i)
+            check("E8a inherit rendering stays under MAX_LEN (reviewer tail survives)",
+                  len(ctx_i) < MAX_LEN and ctx_i.rstrip().endswith(
+                      "codex reviewer: disabled (fallback: deep-reasoner)"),
+                  f"len={len(ctx_i)} tail={ctx_i[-120:]}")
+
+            with open(os.path.join(a6_claude, "config.json"), "w") as f:
+                json.dump({"configured": True,
+                           "gate": {"enabled": True, "max_files_per_turn": 2,
+                                    "bash_guard": True},
+                           "models": {"deep_reasoner": "opus",
+                                      "default_worker": "sonnet",
+                                      "task_worker": "haiku"}}, f)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_claude)
+            ctx_e = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("E8a all tiers explicit -> neither 'agent-file default' nor the sentence",
+                  "agent-file default" not in ctx_e
+                  and "On Claude, omitting the model override" not in ctx_e
+                  and "(inherit = omit the model override)" not in ctx_e, ctx_e)
+        finally:
+            shutil.rmtree(a6_claude, ignore_errors=True)
+            shutil.rmtree(a6_codex_base, ignore_errors=True)
+
         print("== hjw_common.DEFAULT_CONFIG ==")
         check("models.deep_reasoner defaults to inherit (2.10: was opus)",
               DEFAULT_CONFIG["models"]["deep_reasoner"] == "inherit")
@@ -709,7 +1134,9 @@ def main():
               "haejwo:default-worker" in reason3 and "haejwo:task-worker" in reason3, reason3)
 
         # 4. Codex host + malformed models_codex (a string, not a dict):
-        #    falls back to Claude wording; still denies; exit unchanged.
+        #    falls back to the CODEX tier-only wording (2.11.0: it used to
+        #    fall back to the Claude wording, which recommended Claude
+        #    aliases a Codex host cannot pass); still denies; exit unchanged.
         with open(os.path.join(codex_data, "config.json"), "w") as f:
             json.dump({"models_codex": "not-a-dict"}, f)
         rc, out = run("delegation_gate.py",
@@ -717,10 +1144,67 @@ def main():
         reason4 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
         check("Codex host + malformed models_codex: still denies, rc0 (exit unchanged)",
               rc == 0 and decision(out) == "deny", str(out))
-        check("Codex host + malformed models_codex: falls back to full Claude wording, byte-identical",
-              reason4 == CLAUDE_HOST_DENY_TEXT, reason4)
+        check("Codex host + malformed models_codex: falls back to CODEX tier-only wording",
+              CODEX_TIER_ONLY in reason4 and "'haiku'" not in reason4
+              and "'sonnet'" not in reason4, reason4)
 
         os.remove(os.path.join(codex_data, "config.json"))
+
+        print("== delegation_gate.py steering from configured tiers (A12) ==")
+        # The deny's next-action must name the models the USER configured,
+        # not hard-coded aliases. Default config == the long-tested wording
+        # (asserted byte-identically as case 1 above).
+        a12_data = tempfile.mkdtemp(prefix="hjw-test-a12-")
+        try:
+            def a12(models, sid):
+                with open(os.path.join(a12_data, "config.json"), "w") as f:
+                    json.dump({"models": models}, f)
+                rc_, out_ = run("delegation_gate.py",
+                                task_payload("general-purpose", sid=sid), a12_data)
+                return rc_, decision(out_), (out_.get("hookSpecificOutput") or {}).get(
+                    "permissionDecisionReason", "")
+
+            rc, dec, r = a12({}, "sess-A12a")
+            check("A12 Claude default config: deny wording byte-identical to contract",
+                  dec == "deny" and r == CLAUDE_HOST_DENY_TEXT, r)
+
+            rc, dec, r = a12({"default_worker": "opus", "task_worker": "sonnet"},
+                             "sess-A12b")
+            check("A12 both tiers explicit: names both configured models",
+                  dec == "deny"
+                  and "Pass model: 'sonnet' (locate) or 'opus' (read/summarize)" in r, r)
+
+            rc, dec, r = a12({"default_worker": "opus", "task_worker": "opus"}, "sess-A12g")
+            check("A12 both tiers on the SAME model: named once, no fake choice",
+                  dec == "deny"
+                  and "Pass model: 'opus', or delegate to haejwo:default-worker / "
+                      "haejwo:task-worker instead." in r
+                  and "(locate)" not in r and "(read/summarize)" not in r, r)
+
+            rc, dec, r = a12({"default_worker": "opus", "task_worker": "inherit"}, "sess-A12c")
+            check("A12 only default_worker explicit: names just that one, for its role",
+                  dec == "deny"
+                  and "Pass model: 'opus' (read/summarize), or delegate to "
+                      "haejwo:default-worker / haejwo:task-worker instead." in r
+                  and "(locate)" not in r, r)
+
+            rc, dec, r = a12({"default_worker": "inherit", "task_worker": "opus"}, "sess-A12d")
+            check("A12 only task_worker explicit: names just that one, for its role",
+                  dec == "deny"
+                  and "Pass model: 'opus' (locate), or delegate to "
+                      "haejwo:default-worker / haejwo:task-worker instead." in r
+                  and "(read/summarize)" not in r, r)
+
+            rc, dec, r = a12({"default_worker": "inherit", "task_worker": "inherit"},
+                             "sess-A12e")
+            check("A12 neither explicit: tier-only wording, no 'Pass model:'",
+                  dec == "deny" and CLAUDE_TIER_ONLY in r and "Pass model:" not in r, r)
+
+            rc, dec, r = a12("not-a-dict", "sess-A12f")
+            check("A12 malformed models on Claude: still denies with Claude tier-only wording",
+                  rc == 0 and dec == "deny" and CLAUDE_TIER_ONLY in r, r)
+        finally:
+            shutil.rmtree(a12_data, ignore_errors=True)
 
         print("== delegation_gate.py envelope v2 (plan_marker_kind / prompt_bytes) ==")
         rc, out = run("delegation_gate.py", task_payload(
@@ -851,6 +1335,242 @@ def main():
         check("envelope: model='inherit' -> requested_model None, decision 'deny' (record matches decision)",
               bool(r_inherit) and r_inherit.get("requested_model") is None
               and r_inherit.get("decision") == "deny", str(r_inherit))
+
+        print("== delegation_gate.py tier pin check (B1) ==")
+        # Omitting the model on a tier worker runs the AGENT FILE's default,
+        # silently ignoring a config pin that says otherwise (origin
+        # 2026-08-21 silent-downgrade). Deny only on that exact mismatch.
+        pin_data = tempfile.mkdtemp(prefix="hjw-test-pin-")
+        try:
+            def pin_cfg(models, raw=None):
+                with open(os.path.join(pin_data, "config.json"), "w") as f:
+                    if raw is not None:
+                        f.write(raw)
+                    else:
+                        json.dump({"configured": True, "models": models}, f)
+
+            def pin_run(subagent, sid, model=None, data_dir=None, root=None):
+                rc_, out_ = run("delegation_gate.py",
+                                task_payload(subagent, model=model, sid=sid),
+                                data_dir or pin_data, root=root)
+                return rc_, decision(out_), (out_.get("hookSpecificOutput") or {}).get(
+                    "permissionDecisionReason", "")
+
+            def pin_rec(sid, data_dir=None):
+                path_ = os.path.join(data_dir or pin_data, "state", "observations.jsonl")
+                try:
+                    recs = [json.loads(l) for l in open(path_)]
+                except Exception:
+                    return None
+                hits = [r for r in recs if r.get("sid") == sid]
+                return hits[-1] if hits else None
+
+            PIN_DENY_TEXT = (
+                "[haejwo gate] Delegation to 'haejwo:default-worker' without a model "
+                "override — the agent file defaults to 'sonnet' but your config pins "
+                "'opus' for this tier (omission would not honor the pin; origin "
+                "2026-08-21 silent-downgrade). Pass model: 'opus', or another explicit "
+                "model if you intend to override the pin, or run /haejwo:setup to "
+                "change it. Emergency override: /haejwo:gate off."
+            )
+
+            pin_cfg({"default_worker": "opus"})
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN1")
+            check("B1 pin opus + model omitted -> DENY", dec == "deny", r)
+            check("B1 deny text byte-identical to the contract", r == PIN_DENY_TEXT, r)
+            check("B1 record: tier_pin_check 'deny'",
+                  (pin_rec("sess-PIN1") or {}).get("tier_pin_check") == "deny",
+                  str(pin_rec("sess-PIN1")))
+
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN2", model="sonnet")
+            check("B1 explicit model -> allow (the host chose deliberately)",
+                  rc == 0 and dec != "deny", r)
+            check("B1 record: tier_pin_check 'pass:explicit-model'",
+                  (pin_rec("sess-PIN2") or {}).get("tier_pin_check") == "pass:explicit-model",
+                  str(pin_rec("sess-PIN2")))
+
+            pin_cfg({"default_worker": "inherit"})
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN3")
+            check("B1 pin 'inherit' -> allow (no pin to honor)", rc == 0 and dec != "deny", r)
+            check("B1 record: tier_pin_check 'pass:pin-inherit'",
+                  (pin_rec("sess-PIN3") or {}).get("tier_pin_check") == "pass:pin-inherit",
+                  str(pin_rec("sess-PIN3")))
+
+            pin_cfg({"default_worker": "sonnet"})
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN4")
+            check("B1 pin == agent-file default -> allow (omission honors it)",
+                  rc == 0 and dec != "deny", r)
+            check("B1 record: tier_pin_check 'pass:pin-matches-default'",
+                  (pin_rec("sess-PIN4") or {}).get("tier_pin_check")
+                  == "pass:pin-matches-default", str(pin_rec("sess-PIN4")))
+
+            pin_cfg({"deep_reasoner": "opus"})
+            rc, dec, r = pin_run("haejwo:deep-reasoner", "sess-PIN5")
+            check("B1 deep-reasoner (agent file declares no model) + pin opus -> DENY",
+                  dec == "deny" and "defaults to 'inherit'" in r, r)
+
+            pin_cfg({"deep_reasoner": "inherit"})
+            rc, dec, r = pin_run("haejwo:deep-reasoner", "sess-PIN6")
+            check("B1 deep-reasoner + pin 'inherit' -> allow", rc == 0 and dec != "deny", r)
+
+            pin_cfg({"task_worker": "opus"})
+            rc, dec, r = pin_run("task-worker", "sess-PIN7")
+            check("B1 BARE tier name 'task-worker' + pin opus -> DENY",
+                  dec == "deny" and "'task-worker'" in r and "'haiku'" in r, r)
+
+            pin_cfg(None, raw="{ not valid json !!! ### garbage")
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN8")
+            check("B1 malformed config.json -> allow (never deny on a config we can't read)",
+                  rc == 0 and dec != "deny", r)
+            check("B1 record: tier_pin_check 'skip:config-unreadable'",
+                  (pin_rec("sess-PIN8") or {}).get("tier_pin_check")
+                  == "skip:config-unreadable", str(pin_rec("sess-PIN8")))
+
+            pin_cfg({"default_worker": "opus"})
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN9",
+                                 root=os.path.join(pin_data, "no-such-plugin-root"))
+            check("B1 agent file missing (agents/ absent) -> allow",
+                  rc == 0 and dec != "deny", r)
+            check("B1 record: tier_pin_check 'skip:frontmatter-unreadable'",
+                  (pin_rec("sess-PIN9") or {}).get("tier_pin_check")
+                  == "skip:frontmatter-unreadable", str(pin_rec("sess-PIN9")))
+
+            fm_root = tempfile.mkdtemp(prefix="hjw-test-fmroot-")
+            try:
+                os.makedirs(os.path.join(fm_root, "agents"), exist_ok=True)
+                # (a) frontmatter never closed -> unparseable -> skip
+                with open(os.path.join(fm_root, "agents", "default-worker.md"), "w") as f:
+                    f.write("---\nname: default-worker\nmodel: sonnet\nbody with no close\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINA", root=fm_root)
+                check("B1 frontmatter with no closing '---' -> allow (skip)",
+                      rc == 0 and dec != "deny", r)
+                check("B1 record: unclosed frontmatter -> 'skip:frontmatter-unreadable'",
+                      (pin_rec("sess-PINA") or {}).get("tier_pin_check")
+                      == "skip:frontmatter-unreadable", str(pin_rec("sess-PINA")))
+
+                # (b) valid frontmatter, no model key -> default is "inherit"
+                with open(os.path.join(fm_root, "agents", "default-worker.md"), "w") as f:
+                    f.write("---\nname: default-worker\ndescription: x\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINB", root=fm_root)
+                check("B1 frontmatter without model: + pin opus -> DENY (inherit != opus)",
+                      dec == "deny" and "defaults to 'inherit'" in r, r)
+
+                # K1: certainty rules — only a column-0 `---` delimits, only a
+                # column-0 `model:` counts, and any uncertainty fails OPEN.
+                def fm_write(body):
+                    with open(os.path.join(fm_root, "agents", "default-worker.md"),
+                              "w") as f:
+                        f.write(body)
+
+                pin_cfg({"default_worker": "sonnet"})
+                fm_write('---\nname: default-worker\nmodel: "sonnet"\n---\nbody\n')
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINF", root=fm_root)
+                check("K1 quoted model value compares equal to the pin -> allow",
+                      rc == 0 and dec != "deny", r)
+                check("K1 record: quoted value -> 'pass:pin-matches-default'",
+                      (pin_rec("sess-PINF") or {}).get("tier_pin_check")
+                      == "pass:pin-matches-default", str(pin_rec("sess-PINF")))
+
+                fm_write("---\nname: default-worker\nmodel: sonnet # default\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PING", root=fm_root)
+                check("K1 inline-comment model value compares equal to the pin -> allow",
+                      rc == 0 and dec != "deny", r)
+                check("K1 record: inline comment -> 'pass:pin-matches-default'",
+                      (pin_rec("sess-PING") or {}).get("tier_pin_check")
+                      == "pass:pin-matches-default", str(pin_rec("sess-PING")))
+
+                # an INDENTED --- inside a description must not close the block
+                pin_cfg({"default_worker": "opus"})
+                fm_write("---\nname: default-worker\ndescription: writes\n"
+                         "  ---\n  more prose\nmodel: sonnet\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINH", root=fm_root)
+                check("K1 indented '---' does not close the block (model still read)",
+                      dec == "deny" and "defaults to 'sonnet'" in r, r)
+
+                fm_write("---\nname: [broken\nmodel: sonnet\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINI", root=fm_root)
+                check("K1 unparseable value ('[') anywhere in the block -> allow (skip)",
+                      rc == 0 and dec != "deny", r)
+                check("K1 record: '[' value -> 'skip:frontmatter-unreadable'",
+                      (pin_rec("sess-PINI") or {}).get("tier_pin_check")
+                      == "skip:frontmatter-unreadable", str(pin_rec("sess-PINI")))
+
+                fm_write("---\nname: default-worker\nmodel: sonnet | opus\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINJ", root=fm_root)
+                check("K1 model value outside [A-Za-z0-9._-] -> allow (skip)",
+                      rc == 0 and dec != "deny", r)
+
+                # L1: forms whose effective default would be a GUESS -> skip.
+                # Pin 'sonnet' equals the real agent-file default, so a skip
+                # and a correct read both allow; the record tells them apart.
+                pin_cfg({"default_worker": "sonnet"})
+                for body, sid, name in (
+                    ("---\nname: default-worker\nmodel:\n  sonnet\n---\nbody\n",
+                     "sess-PINP", "model: value continues on an indented line"),
+                    ("---\nname: default-worker\nmodel:sonnet\n---\nbody\n",
+                     "sess-PINQ", "no space after the colon"),
+                    ("---\nname: default-worker\nmodel: sonnet\nmodel: opus\n---\nbody\n",
+                     "sess-PINR", "model: declared twice"),
+                ):
+                    fm_write(body)
+                    rc, dec, r = pin_run("haejwo:default-worker", sid, root=fm_root)
+                    check(f"L1 {name} -> allow", rc == 0 and dec != "deny", r)
+                    check(f"L1 record: {name} -> 'skip:frontmatter-unreadable'",
+                          (pin_rec(sid) or {}).get("tier_pin_check")
+                          == "skip:frontmatter-unreadable", str(pin_rec(sid)))
+            finally:
+                shutil.rmtree(fm_root, ignore_errors=True)
+
+            rc, out = run("delegation_gate.py", task_payload(5, sid="sess-PINC"), pin_data)
+            check("B1 non-string subagent_type -> allow (no check)",
+                  rc == 0 and decision(out) != "deny", str(out))
+            check("B1 record: non-string subagent_type -> 'pass:not-a-tier'",
+                  (pin_rec("sess-PINC") or {}).get("tier_pin_check") == "pass:not-a-tier",
+                  str(pin_rec("sess-PINC")))
+
+            # K3: a non-string model means we cannot tell what the host asked
+            # for at all -> fail open (the generic check keeps its own contract).
+            pin_cfg({"default_worker": "opus"})
+            for raw_model, sid in ((42, "sess-PINK"), ({}, "sess-PINL")):
+                pl = task_payload("haejwo:default-worker", sid=sid)
+                pl["tool_input"]["model"] = raw_model
+                rc, out = run("delegation_gate.py", pl, pin_data)
+                check(f"K3 non-string model ({raw_model!r}) -> allow rc0",
+                      rc == 0 and decision(out) != "deny", str(out))
+                check(f"K3 record: non-string model ({raw_model!r}) -> 'skip:fail-open'",
+                      (pin_rec(sid) or {}).get("tier_pin_check") == "skip:fail-open",
+                      str(pin_rec(sid)))
+
+            # K4: valid JSON that is not an object is an unusable config
+            for raw_cfg, sid in (("[]", "sess-PINM"), ("null", "sess-PINN"),
+                                 ("42", "sess-PINO")):
+                pin_cfg(None, raw=raw_cfg)
+                rc, dec, r = pin_run("haejwo:default-worker", sid)
+                check(f"K4 config.json {raw_cfg} -> allow (unusable config)",
+                      rc == 0 and dec != "deny", r)
+                check(f"K4 record: config.json {raw_cfg} -> 'skip:config-unreadable'",
+                      (pin_rec(sid) or {}).get("tier_pin_check")
+                      == "skip:config-unreadable", str(pin_rec(sid)))
+            pin_cfg({"default_worker": "opus"})
+
+            rc, dec, r = pin_run("general-purpose", "sess-PIND")
+            check("B1 generic-agent deny still takes precedence (not the pin wording)",
+                  dec == "deny" and "generic agent" in r and "silent-downgrade" not in r, r)
+
+            # Codex host: spawn_agent never hits this hook's Task|Agent matcher,
+            # so the tier check must never deny there. Recorded as
+            # 'pass:not-a-tier' (the documented "check did not apply" bucket).
+            pin_codex = os.path.join(pin_data, ".codex", "plugins", "data", "haejwo")
+            os.makedirs(pin_codex, exist_ok=True)
+            with open(os.path.join(pin_codex, "config.json"), "w") as f:
+                json.dump({"configured": True, "models": {"default_worker": "opus"}}, f)
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PINE", data_dir=pin_codex)
+            check("B1 codex host: tier check never denies", rc == 0 and dec != "deny", r)
+            check("B1 codex host record: 'pass:not-a-tier'",
+                  (pin_rec("sess-PINE", data_dir=pin_codex) or {}).get("tier_pin_check")
+                  == "pass:not-a-tier", str(pin_rec("sess-PINE", data_dir=pin_codex)))
+        finally:
+            shutil.rmtree(pin_data, ignore_errors=True)
 
         print("== hooks.json hook-target existence ==")
         hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")
@@ -1176,6 +1896,35 @@ exit "$rc"
                 "CODEX_ALLOW_MARKERS": "1"})
             check("stderr scan: CODEX_ALLOW_MARKERS=1 disables only this scan -> success",
                   rc == 0, f"rc={rc} err={err}")
+
+            # K8: an anchored tracing line that reports a HOOK BLOCK of a
+            # reviewer command is the gate working on the reviewer's side —
+            # keep the reply, note it once (observed live 2026-09-14).
+            hook_block_stderr = write_file(
+                os.path.join(runner_tmp, "stderr-hook-block.txt"),
+                "2026-01-02T03:04:05.123456Z  ERROR codex_core::exec: "
+                "Command blocked by PreToolUse hook: [haejwo gate] ...\n")
+            rc, out, err, calls = codex_run("trace-hook-block", {
+                "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": hook_block_stderr})
+            check("stderr scan: hook-blocked reviewer command -> success + one note",
+                  rc == 0
+                  and "note: a reviewer command was blocked by a hook (see log)" in out,
+                  f"rc={rc} out={out} err={err}")
+
+            mixed_stderr = write_file(
+                os.path.join(runner_tmp, "stderr-hook-block-mixed.txt"),
+                "2026-01-02T03:04:05.123456Z  ERROR codex_core::exec: "
+                "Command blocked by PreToolUse hook: [haejwo gate] ...\n"
+                "2026-01-02T03:04:06.123456Z  ERROR codex_core::exec: sandbox helper failed\n")
+            rc, out, err, calls = codex_run("trace-hook-block-mixed", {
+                "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": mixed_stderr})
+            # the failure must name the REAL error, not the hook block (the
+            # hook-block line legitimately appears in the printed log tail)
+            fail_line = next((l for l in err.splitlines()
+                              if "codex tracing error:" in l), "")
+            check("stderr scan: a REAL tracing error alongside a hook block still fails",
+                  rc != 0 and "sandbox helper failed" in fail_line
+                  and "PreToolUse hook" not in fail_line, f"rc={rc} err={err}")
 
             prose_stderr = write_file(
                 os.path.join(runner_tmp, "stderr-prose.txt"),
@@ -1646,9 +2395,22 @@ exit "$rc"
                 except Exception:
                     return False
 
+            # the fixture only PROVES anything if the stub actually spawned a
+            # descendant and recorded its pid — assert that before polling.
             leaked = None
+            check("no-timeout PATH: stub recorded a descendant pid file",
+                  os.path.isfile(pidfile), pidfile)
             if os.path.isfile(pidfile):
-                leaked = int(open(pidfile).read().strip() or 0)
+                raw_pid = open(pidfile).read().strip()
+                try:
+                    leaked = int(raw_pid or 0)
+                except Exception:
+                    leaked = 0
+                check("no-timeout PATH: descendant pid file holds a positive integer",
+                      leaked > 0, repr(raw_pid))
+                if leaked <= 0:
+                    leaked = None  # never poll pid 0 (that signals the group)
+            if leaked is not None:
                 deadline = time.time() + 3
                 while time.time() < deadline:
                     if not pid_running(leaked):

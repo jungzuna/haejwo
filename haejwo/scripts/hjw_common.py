@@ -85,13 +85,39 @@ def paths(argv):
     return root, data
 
 
-def load_config(data_dir):
+def load_config_with_status(data_dir):
+    """ONE read, two answers: (effective config, readability status).
+
+    Callers that only ENFORCE want the config and nothing else — defaults on
+    any problem, fail open. A check that DENIES because the config says so
+    also needs to know the config was actually readable: denying on a file we
+    could not parse would enforce a pin the user never set (origin 2026-09-14,
+    tier-pin check). Reading once means the two answers can never describe
+    different file contents.
+
+    status: "absent" (no config.json) | "malformed" (unparseable, or a
+    top-level value that is not a JSON object) | "ok". Never raises.
+    """
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    try:
+        path = os.path.join(data_dir, "config.json")
+    except Exception:
+        return cfg, "absent"
     try:
         # utf-8-sig: tolerate a BOM from Windows/editor-saved config
         # (origin: recurring real-world BOM corruption incidents).
-        with open(os.path.join(data_dir, "config.json"), encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             user = json.load(f)
+    except FileNotFoundError:
+        return cfg, "absent"
+    except Exception:
+        try:
+            return cfg, ("malformed" if os.path.exists(path) else "absent")
+        except Exception:
+            return cfg, "absent"
+    if not isinstance(user, dict):
+        return cfg, "malformed"  # [], null, 42: valid JSON, unusable config
+    try:
         for k, v in user.items():
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
                 cfg[k].update(v)
@@ -99,7 +125,15 @@ def load_config(data_dir):
                 cfg[k] = v
     except Exception:
         pass
-    return cfg
+    return cfg, "ok"
+
+
+def load_config(data_dir):
+    return load_config_with_status(data_dir)[0]
+
+
+def config_status(data_dir):
+    return load_config_with_status(data_dir)[1]
 
 
 def gate_disabled_by_env():
@@ -164,6 +198,38 @@ def is_subagent(payload):
 _OBSERVATIONS_LOCK_ID = "__observations__"  # dedicated lock name, not a session id
 
 
+def _try_lock(path, timeout=0.3, interval=0.02):
+    """Best-effort exclusive flock: LOCK_NB with bounded retries.
+
+    Returns the open handle on success, or None if the lock stayed busy (the
+    caller then proceeds UNLOCKED). Telemetry must never block a decision
+    (P4): a contended observations lock degrades to an unlocked append — at
+    worst an interleaved line — rather than stalling a gate hook that a user
+    is waiting on. Origin 2026-09-14: the decision path may not wait on the
+    audit path.
+    """
+    if not fcntl:
+        return None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fh = open(path, "w")
+    except Exception:
+        return None
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except Exception:
+            if time.time() >= deadline:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+                return None
+            time.sleep(interval)
+
+
 def observe(data_dir, record):
     """Best-effort empirical log (e.g. to answer: do hooks fire in subagents?).
 
@@ -171,12 +237,16 @@ def observe(data_dir, record):
     previous .1) once it exceeds 200KB, instead of being unlinked, so the
     prior generation survives as P13 audit evidence. Bound stays ~400KB
     total (current file + one prior generation).
+
+    The lock is NON-blocking with bounded retries; a busy lock means the
+    append happens unlocked rather than the caller waiting (see _try_lock).
     """
     try:
         sdir = os.path.join(data_dir, "state")
         os.makedirs(sdir, exist_ok=True)
         path = os.path.join(sdir, "observations.jsonl")
-        with state_lock(data_dir, _OBSERVATIONS_LOCK_ID):
+        fh = _try_lock(state_file(data_dir, _OBSERVATIONS_LOCK_ID) + ".lock")
+        try:
             try:
                 if os.path.exists(path) and os.path.getsize(path) > 200_000:
                     os.replace(path, path + ".1")
@@ -185,6 +255,16 @@ def observe(data_dir, record):
             record["ts"] = round(time.time(), 1)
             with open(path, "a") as f:
                 f.write(json.dumps(record) + "\n")
+        finally:
+            if fh is not None:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    fh.close()
+                except Exception:
+                    pass
     except Exception:
         pass
 

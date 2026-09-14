@@ -915,9 +915,24 @@ fi
 # merely discussed an error. CODEX_ALLOW_MARKERS=1 disables ONLY this scan.
 if [ "${CODEX_ALLOW_MARKERS:-0}" != 1 ]; then
   TRACE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z[[:space:]]+ERROR[[:space:]]+codex_core'
-  TRACE_LINE="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -m1 -E "$TRACE_RE")"
-  if [ -n "$TRACE_LINE" ]; then
-    fail "codex tracing error: $TRACE_LINE"
+  HOOK_BLOCK_RE='Command blocked by PreToolUse hook'
+  TRACE_ALL="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -E "$TRACE_RE")"
+  if [ -n "$TRACE_ALL" ]; then
+    # A hook denying a command the REVIEWER tried to run is the gate doing
+    # its job on the reviewer's side — not a codex failure, and not grounds
+    # to throw away a complete reply. Record it, note it once, keep going.
+    # Observed live 2026-09-14. Every OTHER anchored tracing error still fails.
+    HOOK_BLOCKED="$(printf '%s\n' "$TRACE_ALL" | grep -F "$HOOK_BLOCK_RE")"
+    TRACE_LINE="$(printf '%s\n' "$TRACE_ALL" | grep -vF "$HOOK_BLOCK_RE" | grep -m1 -E "$TRACE_RE")"
+    if [ -n "$HOOK_BLOCKED" ]; then
+      printf '%s\n' "$HOOK_BLOCKED" | while IFS= read -r hb_line; do
+        [ -n "$hb_line" ] && echo "# ---- hook-blocked reviewer command: $hb_line ----" >> "$LOG"
+      done
+      HOOK_BLOCK_NOTE="note: a reviewer command was blocked by a hook (see log)"
+    fi
+    if [ -n "$TRACE_LINE" ]; then
+      fail "codex tracing error: $TRACE_LINE"
+    fi
   fi
 fi
 
@@ -983,5 +998,6 @@ fi
 [ -n "$COVERAGE_NOTE" ] && echo "# ---- change detection:$COVERAGE_NOTE ----" >> "$LOG"
 echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===$COVERAGE_NOTE"
 [ -n "$FALLBACK_NOTE" ] && echo "$FALLBACK_NOTE"
+[ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"
 cat "$OUT"
 exit 0

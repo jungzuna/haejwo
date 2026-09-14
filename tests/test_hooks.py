@@ -865,80 +865,167 @@ def main():
         print("== runner stub tests (codex_consult.sh / claude_consult.sh) ==")
         runner_tmp = tempfile.mkdtemp(prefix="hjw-test-runners-")
         try:
-            repo_dir = os.path.join(runner_tmp, "repo")
-            os.makedirs(repo_dir, exist_ok=True)
-            subprocess.run(["git", "init", "-q", repo_dir], check=True, capture_output=True)
+            def make_repo(name):
+                d = os.path.join(runner_tmp, name)
+                os.makedirs(d, exist_ok=True)
+                subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+                for k, v in (("user.email", "stub@example.invalid"), ("user.name", "stub")):
+                    subprocess.run(["git", "-C", d, "config", k, v],
+                                   check=True, capture_output=True)
+                return d
+
+            repo_dir = make_repo("repo")
 
             codex_script = os.path.join(SCRIPTS, "codex_consult.sh")
             claude_script = os.path.join(SCRIPTS, "claude_consult.sh")
             CONTRACT_HEAD = "REVIEWER CONTRACT: analyze and reply only."
 
-            def make_stub(bin_dir, name, capture_dir, model_fallback=False):
-                """Stub codex/claude executable: captures argv (one arg per
-                line) + full stdin per invocation into capture_dir, replies
-                non-empty. --version calls are NOT captured/counted (the
-                runners probe --version for their log header before the real
-                call). If argv contains '-o <path>' the reply is written
-                there (matches real codex's -o contract); else to stdout
-                (matches claude, and codex's --resume path)."""
-                fallback_block = ""
-                if model_fallback:
-                    fallback_block = (
-                        'model=""\n'
-                        'prev=""\n'
-                        'for a in "$@"; do\n'
-                        '  if [ "$prev" = "-m" ]; then model="$a"; fi\n'
-                        '  prev="$a"\n'
-                        'done\n'
-                        'if [ ! -f "$CAP/_ff_done" ]; then\n'
-                        '  touch "$CAP/_ff_done"\n'
-                        '  echo "unknown model: ${model:-unspecified}" >&2\n'
-                        '  exit 1\n'
-                        'fi\n'
-                    )
-                script = (
-                    "#!/usr/bin/env bash\n"
-                    "set +u\n"
-                    'if [ "${1:-}" = "--version" ]; then\n'
-                    '  echo "stub-version 0.0.0"\n'
-                    "  exit 0\n"
-                    "fi\n"
-                    f'CAP="{capture_dir}"\n'
-                    'mkdir -p "$CAP"\n'
-                    'idx_file="$CAP/_idx"\n'
-                    'if [ -f "$idx_file" ]; then idx=$(( $(cat "$idx_file") + 1 )); else idx=1; fi\n'
-                    'echo "$idx" > "$idx_file"\n'
-                    'printf \'%s\\n\' "$@" > "$CAP/call_${idx}.argv"\n'
-                    'cat > "$CAP/call_${idx}.stdin"\n'
-                    'out=""\n'
-                    'prev=""\n'
-                    'for a in "$@"; do\n'
-                    '  if [ "$prev" = "-o" ]; then out="$a"; fi\n'
-                    '  prev="$a"\n'
-                    'done\n'
-                    + fallback_block +
-                    'reply="STUB-REPLY-OK-${idx}"\n'
-                    'if [ -n "$out" ]; then\n'
-                    '  printf \'%s\\n\' "$reply" > "$out"\n'
-                    'else\n'
-                    '  printf \'%s\\n\' "$reply"\n'
-                    'fi\n'
-                    'exit 0\n'
-                )
+            # Stub codex/claude executable. Captures argv (one arg per line) +
+            # full stdin per invocation; `--version` and `--help` probes are
+            # NOT captured (the runners probe both before/around the real
+            # call). With `--json` in argv it prints a JSONL event stream to
+            # stdout and honors `-o <file>` for the reply (real codex
+            # contract); without it the reply goes to stdout (claude). All
+            # behavior is scripted through env vars, globally (STUB_RC) or
+            # per call index (STUB_RC_2) — the per-call form is what makes the
+            # model-fallback and second-attempt-fails fixtures expressible.
+            STUB_BODY = r'''#!/usr/bin/env bash
+set +u
+if [ "${1:-}" = "--version" ]; then
+  echo "stub-version 0.0.0"
+  exit 0
+fi
+for a in "$@"; do
+  if [ "$a" = "--help" ] || [ "$a" = "-h" ]; then
+    echo "Usage: stub exec [OPTIONS]"
+    __HELP_FLAGS__
+    exit 0
+  fi
+done
+CAP="__CAP__"
+mkdir -p "$CAP"
+idx_file="$CAP/_idx"
+if [ -f "$idx_file" ]; then idx=$(( $(cat "$idx_file") + 1 )); else idx=1; fi
+echo "$idx" > "$idx_file"
+printf '%s\n' "$@" > "$CAP/call_${idx}.argv"
+cat > "$CAP/call_${idx}.stdin"
+out=""; model=""; json=0; prev=""
+for a in "$@"; do
+  case "$prev" in
+    -o|--output-last-message) out="$a" ;;
+    -m|--model) model="$a" ;;
+  esac
+  if [ "$a" = "--json" ]; then json=1; fi
+  prev="$a"
+done
+pick() {
+  local per="${1}_${idx}"
+  local v="${!per}"
+  if [ -z "$v" ]; then local g="$1"; v="${!g}"; fi
+  printf '%s' "$v"
+}
+ev="$(pick STUB_EVENTS_FILE)"
+se="$(pick STUB_STDERR_FILE)"
+rc="$(pick STUB_RC)"; [ -z "$rc" ] && rc=0
+noout="$(pick STUB_NO_OUT)"
+touchf="$(pick STUB_TOUCH_FILE)"
+gitc="$(pick STUB_GIT_COMMIT)"
+if [ -n "$se" ] && [ -f "$se" ]; then cat "$se" >&2; fi
+if [ -n "$touchf" ]; then printf 'mutated by stub call %s\n' "$idx" > "$touchf"; fi
+if [ -n "$gitc" ]; then git commit --allow-empty -q -m "stub commit $idx" >/dev/null 2>&1; fi
+spawn="$(pick STUB_SPAWN_PIDFILE)"
+if [ -n "$spawn" ]; then
+  python3 -c 'import time; time.sleep(60)' &
+  echo "$!" > "$spawn"
+fi
+slp="$(pick STUB_SLEEP)"
+if [ -n "$slp" ]; then python3 -c 'import sys,time; time.sleep(float(sys.argv[1]))' "$slp"; fi
+reply="STUB-REPLY-OK-${idx}"
+if [ "$json" = 1 ]; then
+  if [ -n "$ev" ] && [ -f "$ev" ]; then
+    cat "$ev"
+  else
+    echo '{"type":"thread.started","thread_id":"stub-thread"}'
+    echo '{"type":"turn.started"}'
+    echo '{"type":"item.started","item":{"type":"agent_message"}}'
+    printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$reply"
+    echo '{"type":"turn.completed"}'
+  fi
+fi
+if [ -z "$noout" ]; then
+  if [ -n "$out" ]; then
+    printf '%s\n' "$reply" > "$out"
+  else
+    printf '%s\n' "$reply"
+  fi
+fi
+exit "$rc"
+'''
+
+            # An OLDER codex advertises neither --json nor -o on resume; the
+            # runner must keep the plain stdout capture there.
+            HELP_MODERN = ('echo "      --json"\n'
+                           'echo "          Print events to stdout as JSONL"\n'
+                           'echo "  -o, --output-last-message <FILE>"\n'
+                           'echo "          Write the agent\'s last message to FILE"')
+            HELP_OLD = 'echo "      --last"'
+
+            def make_stub(bin_dir, name, capture_dir, help_advertises=True):
+                os.makedirs(bin_dir, exist_ok=True)
                 path = os.path.join(bin_dir, name)
+                body = STUB_BODY.replace("__CAP__", capture_dir).replace(
+                    "__HELP_FLAGS__", HELP_MODERN if help_advertises else HELP_OLD)
                 with open(path, "w") as f:
-                    f.write(script)
+                    f.write(body)
                 os.chmod(path, 0o755)
                 return path
 
-            def run_script(script, args, extra_env, stdin_data=""):
+            def make_git_stub(bin_dir, fail_from_call=1):
+                """git that fails `status` from the Nth call on (everything
+                else passes through to the real git) — the only honest way to
+                exercise 'change detection unavailable' without a real
+                broken repo."""
+                os.makedirs(bin_dir, exist_ok=True)
+                real_git = shutil.which("git")
+                counter = os.path.join(bin_dir, "_gitcount")
+                path = os.path.join(bin_dir, "git")
+                with open(path, "w") as f:
+                    f.write(
+                        "#!/usr/bin/env bash\n"
+                        "for a in \"$@\"; do\n"
+                        "  if [ \"$a\" = \"status\" ]; then\n"
+                        f"    c=1; if [ -f '{counter}' ]; then c=$(( $(cat '{counter}') + 1 )); fi\n"
+                        f"    echo \"$c\" > '{counter}'\n"
+                        f"    if [ \"$c\" -ge {fail_from_call} ]; then\n"
+                        "      echo \"fatal: stubbed git status failure\" >&2\n"
+                        "      exit 1\n"
+                        "    fi\n"
+                        "  fi\n"
+                        "done\n"
+                        f"exec {real_git} \"$@\"\n")
+                os.chmod(path, 0o755)
+                return path
+
+            def run_script(script, args, extra_env, stdin_data="", cwd=None):
+                """Runner invocation with a HERMETIC env: every runner-read
+                env var is popped unless the fixture sets it, and
+                CLAUDE_PLUGIN_DATA points at a fresh empty dir so the
+                derived (~/.claude/...) config path is never consulted by
+                accident. Pass CLAUDE_PLUGIN_DATA=None to opt out (the
+                derived-path fixtures need the real resolution)."""
                 env = dict(os.environ)
-                env.pop("CODEX_SANDBOX", None)
-                env.pop("CLAUDE_PLUGIN_DATA", None)
-                env.update(extra_env)
+                for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
+                            "CLAUDE_MODEL", "CODEX_ALLOW_MARKERS",
+                            "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
+                            "CLAUDE_PLUGIN_DATA"):
+                    env.pop(var, None)
+                if "CLAUDE_PLUGIN_DATA" not in extra_env:
+                    env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp, prefix="nocfg-")
+                env.update({k: v for k, v in extra_env.items() if v is not None})
                 p = subprocess.run(
                     ["bash", script] + args, input=stdin_data,
-                    capture_output=True, text=True, timeout=20, cwd=repo_dir, env=env,
+                    capture_output=True, text=True, timeout=60,
+                    cwd=cwd or repo_dir, env=env,
                 )
                 return p.returncode, p.stdout, p.stderr
 
@@ -954,16 +1041,55 @@ def main():
                     i += 1
                 return calls
 
-            # ---- contract prepend on top of captured stdin: file brief,
-            # stdin brief, --resume (both runners) ----
+            def write_file(path, text):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(text)
+                return path
+
+            def events_file(name, lines):
+                return write_file(os.path.join(runner_tmp, name),
+                                  "".join(l + "\n" for l in lines))
+
+            def brief_file(name, text="Test brief body.\n"):
+                return write_file(os.path.join(runner_tmp, name), text)
+
+            def cfg_dir_with(name, payload):
+                d = os.path.join(runner_tmp, name)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "config.json"), "w") as f:
+                    json.dump(payload, f)
+                return d
+
+            OK_EVENTS = [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"turn.started"}',
+                '{"type":"item.started","item":{"type":"agent_message"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"fine"}}',
+                '{"type":"turn.completed"}',
+            ]
+
+            def codex_run(label, env_extra=None, args=None, cwd=None, stub_repo=None):
+                """One hermetic codex run: fresh stub, fresh capture dir."""
+                bin_dir = os.path.join(runner_tmp, f"bin-{label}")
+                cap = os.path.join(runner_tmp, f"cap-{label}")
+                make_stub(bin_dir, "codex", cap)
+                env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
+                env.update(env_extra or {})
+                brief = brief_file(f"brief-{label}.md")
+                rc, out, err = run_script(codex_script, (args or []) + [brief], env, cwd=cwd)
+                return rc, out, err, read_calls(cap)
+
+            # ---- (p) existing runner contracts: contract prepend on top
+            # of captured stdin — file brief, stdin brief, --resume (both
+            # runners). Sandbox precedence, --mode implement removal and
+            # --disallowedTools continue further down under the same label. ----
             for label, script in (("codex", codex_script), ("claude", claude_script)):
                 bin_dir = os.path.join(runner_tmp, f"bin-{label}-contract")
                 os.makedirs(bin_dir, exist_ok=True)
                 env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
 
-                brief_path = os.path.join(runner_tmp, f"{label}-brief-file.md")
-                with open(brief_path, "w") as f:
-                    f.write("Test brief body.\n")
+                brief_path = brief_file(f"{label}-brief-file.md")
 
                 cap = os.path.join(runner_tmp, f"cap-{label}-file")
                 make_stub(bin_dir, label, cap)
@@ -989,28 +1115,661 @@ def main():
                 check(f"{label} --resume: contract at top of captured stdin",
                       bool(calls3) and calls3[0][1].startswith(CONTRACT_HEAD), calls3[:1])
 
-            # ---- codex CODEX_MODEL-unavailable fallback rerun: contract on
-            # BOTH the failing initial call and the retry ----
-            bin_dir = os.path.join(runner_tmp, "bin-codex-fallback")
-            os.makedirs(bin_dir, exist_ok=True)
-            cap = os.path.join(runner_tmp, "cap-codex-fallback")
-            make_stub(bin_dir, "codex", cap, model_fallback=True)
-            env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                   "CODEX_MODEL": "totally-fake-model"}
-            brief_path = os.path.join(runner_tmp, "codex-fallback-brief.md")
-            with open(brief_path, "w") as f:
-                f.write("Fallback test brief.\n")
-            rc, out, err = run_script(codex_script, [brief_path], env)
+            # ---- (a/b) nested content is NEVER inspected: a reply that
+            # QUOTES an error string, or a command whose aggregated output
+            # contains a tracing line, must not fail its own run ----
+            ev = events_file("ev-quoted-marker.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"item.completed","item":{"type":"agent_message",'
+                '"text":"The sandbox helper failed and ERROR codex_core appeared in their log."}}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("quoted-marker", {"STUB_EVENTS_FILE": ev})
+            check("events: agent_message quoting an error marker -> success",
+                  rc == 0, f"rc={rc} err={err}")
+
+            ev = events_file("ev-nested-trace.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"item.completed","item":{"type":"command_execution",'
+                '"aggregated_output":"2026-01-02T03:04:05.123456Z  ERROR codex_core::exec: boom"}}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("nested-trace", {"STUB_EVENTS_FILE": ev})
+            check("events: command_execution aggregated_output with a tracing line -> success",
+                  rc == 0, f"rc={rc} err={err}")
+
+            # ---- (c/d) TOP-LEVEL failure events fail the run even at rc=0
+            # with a non-empty reply (the silent-failure case) ----
+            ev = events_file("ev-turn-failed.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}',
+            ])
+            rc, out, err, calls = codex_run("turn-failed", {"STUB_EVENTS_FILE": ev})
+            check("events: top-level turn.failed (rc=0, reply present) -> failure",
+                  rc != 0, f"rc={rc} out={out}")
+            check("events: turn.failed failure names type and message",
+                  "codex reported turn.failed" in err
+                  and "stream disconnected before completion" in err, err)
+
+            ev = events_file("ev-error-event.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"error","message":"usage limit reached"}',
+            ])
+            rc, out, err, calls = codex_run("error-event", {"STUB_EVENTS_FILE": ev})
+            check("events: top-level error event -> failure naming it",
+                  rc != 0 and "codex reported error" in err
+                  and "usage limit reached" in err, f"rc={rc} err={err}")
+
+            # ---- (e/f) stderr tracing scan is ANCHORED at column 0 ----
+            trace_stderr = write_file(
+                os.path.join(runner_tmp, "stderr-anchored.txt"),
+                "2026-01-02T03:04:05.123456Z  ERROR codex_core::exec: sandbox helper failed\n")
+            ev = events_file("ev-ok.jsonl", OK_EVENTS)
+            rc, out, err, calls = codex_run("trace-anchored", {
+                "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": trace_stderr})
+            check("stderr scan: anchored tracing line -> failure printing the line",
+                  rc != 0 and "codex tracing error:" in err
+                  and "codex_core::exec" in err, f"rc={rc} err={err}")
+
+            rc, out, err, calls = codex_run("trace-allow-markers", {
+                "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": trace_stderr,
+                "CODEX_ALLOW_MARKERS": "1"})
+            check("stderr scan: CODEX_ALLOW_MARKERS=1 disables only this scan -> success",
+                  rc == 0, f"rc={rc} err={err}")
+
+            prose_stderr = write_file(
+                os.path.join(runner_tmp, "stderr-prose.txt"),
+                "    2026-01-02T03:04:05.123456Z  ERROR codex_core::exec: indented, not a trace\n"
+                "the reviewer wrote: 2026-01-02T03:04:05Z  ERROR codex_core happened yesterday\n")
+            rc, out, err, calls = codex_run("trace-prose", {
+                "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": prose_stderr})
+            check("stderr scan: indented / in-prose tracing text -> success (anchor holds)",
+                  rc == 0, f"rc={rc} err={err}")
+
+            # ---- (g) malformed event lines are counted and ignored; zero
+            # valid events at rc=0 is an unverifiable run ----
+            ev = events_file("ev-malformed-mixed.jsonl", [
+                'not json at all',
+                '[1, 2, 3]',
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"fine"}}',
+                '{"type":"turn.completed"}',
+                '{"broken": ',
+            ])
+            rc, out, err, calls = codex_run("malformed-mixed", {"STUB_EVENTS_FILE": ev})
+            check("events: malformed lines mixed with valid events -> success",
+                  rc == 0, f"rc={rc} err={err}")
+
+            ev = events_file("ev-all-malformed.jsonl", ['not json', 'still not json'])
+            rc, out, err, calls = codex_run("no-events", {"STUB_EVENTS_FILE": ev})
+            check("events: rc=0 with zero valid top-level events -> 'no event stream' failure",
+                  rc != 0 and "no event stream" in err, f"rc={rc} err={err}")
+
+            ev = events_file("ev-anonymous-objects.jsonl", ['{}', '{}', '{}'])
+            rc, out, err, calls = codex_run("anonymous-events", {"STUB_EVENTS_FILE": ev})
+            check("events: a stream of anonymous {} objects counts as ABSENT",
+                  rc != 0 and "no event stream" in err, f"rc={rc} err={err}")
+
+            # ---- (h) model/effort: env > config > runner default ----
+            model_cfg = cfg_dir_with("plugin-data-model", {"codex": {"model": "cfg-model"}})
+
+            def argv_value(argv, flag):
+                for i, a in enumerate(argv):
+                    if a == flag and i + 1 < len(argv):
+                        return argv[i + 1]
+                return None
+
+            rc, out, err, calls = codex_run("model-env-wins", {
+                "CLAUDE_PLUGIN_DATA": model_cfg, "CODEX_MODEL": "env-model"})
+            check("model precedence: env CODEX_MODEL wins over config codex.model",
+                  bool(calls) and argv_value(calls[0][0], "-m") == "env-model", calls[:1])
+            check("model disclosure: env source labeled on the result line",
+                  "model=env-model (env)" in out, out)
+
+            rc, out, err, calls = codex_run("model-config", {"CLAUDE_PLUGIN_DATA": model_cfg})
+            check("model precedence: config codex.model used when env unset",
+                  bool(calls) and argv_value(calls[0][0], "-m") == "cfg-model", calls[:1])
+            check("model disclosure: (config) source on the result line",
+                  "model=cfg-model (config)" in out, out)
+
+            rc, out, err, calls = codex_run("model-env-empty", {
+                "CLAUDE_PLUGIN_DATA": model_cfg, "CODEX_MODEL": ""})
+            check("model precedence: empty CODEX_MODEL counts as UNSET (config wins)",
+                  bool(calls) and argv_value(calls[0][0], "-m") == "cfg-model", calls[:1])
+
+            rc, out, err, calls = codex_run("model-none", {})
+            check("model disclosure: nothing selected -> cli-default (identity unverified)",
+                  "model=cli-default (identity unverified)" in out and "-m" not in (calls[0][0] if calls else []),
+                  f"out={out} argv={calls[:1]}")
+
+            effort_cfg = cfg_dir_with("plugin-data-effort", {"codex": {"effort": "medium"}})
+            rc, out, err, calls = codex_run("effort-config", {"CLAUDE_PLUGIN_DATA": effort_cfg})
+            check("effort precedence: config codex.effort used when env unset",
+                  'model_reasoning_effort="medium"' in (calls[0][0] if calls else []), calls[:1])
+            check("effort disclosure: (config) source on the result line",
+                  "effort=medium (config)" in out, out)
+
+            bad_effort_cfg = cfg_dir_with("plugin-data-effort-bad",
+                                          {"codex": {"effort": "insane"}})
+            rc, out, err, calls = codex_run("effort-config-invalid",
+                                            {"CLAUDE_PLUGIN_DATA": bad_effort_cfg})
+            check("effort: invalid CONFIG value -> one note + runner-default high, run continues",
+                  rc == 0 and "note: config codex.effort 'insane' invalid; using runner-default high" in err
+                  and 'model_reasoning_effort="high"' in (calls[0][0] if calls else [])
+                  and "effort=high (runner-default)" in out,
+                  f"rc={rc} err={err} out={out}")
+
+            rc, out, err, calls = codex_run("effort-env-invalid", {"CODEX_EFFORT": "insane"})
+            check("effort: invalid ENV value -> exit 2 naming all four valid values",
+                  rc == 2 and all(v in (out + err) for v in ("low", "medium", "high", "xhigh")),
+                  f"rc={rc} err={err}")
+            check("effort: invalid ENV value -> codex never invoked", len(calls) == 0, calls)
+
+            # ---- (F8) non-string config values are noted, never used ----
+            junk_cfg = cfg_dir_with("plugin-data-junk", {"codex": {
+                "model": 123, "effort": [], "fallback_model": None}})
+            rc, out, err, calls = codex_run("config-nonstring", {"CLAUDE_PLUGIN_DATA": junk_cfg})
+            check("config: non-string values -> one note per key, defaults used",
+                  rc == 0
+                  and "note: config codex.model ignored (not a string)" in err
+                  and "note: config codex.effort ignored (not a string)" in err
+                  and "note: config codex.fallback_model ignored (not a string)" in err
+                  and "model=cli-default (identity unverified)" in out
+                  and "effort=high (runner-default)" in out,
+                  f"rc={rc} err={err} out={out}")
+
+            # ---- (F9) the `codex` config block describes the HOST's reviewer:
+            # on a codex host that reviewer is Claude, so the codex runner must
+            # ignore model/effort/fallback_model there. ----
+            codex_host_cfg = cfg_dir_with(os.path.join(".codex", "plugins", "data", "haejwo-haejwo"),
+                                          {"codex": {"model": "claude-reviewer-model"}})
+            rc, out, err, calls = codex_run("model-codex-host", {"CLAUDE_PLUGIN_DATA": codex_host_cfg})
+            check("host-relative config: codex runner ignores codex.model under a /.codex/ path",
+                  "model=cli-default (identity unverified)" in out
+                  and argv_value(calls[0][0] if calls else [], "-m") is None,
+                  f"out={out} argv={calls[:1]}")
+
+            # ---- (i) model-unavailable fallback: pre-execution only, once ----
+            fb_cfg = cfg_dir_with("plugin-data-fallback",
+                                  {"codex": {"fallback_model": "fb-model"}})
+            pre_exec_fail = events_file("ev-unknown-model-preexec.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"turn.failed","error":{"message":"unknown model: totally-fake-model"}}',
+            ])
+            bin_dir = os.path.join(runner_tmp, "bin-fallback")
+            cap = os.path.join(runner_tmp, "cap-fallback")
+            make_stub(bin_dir, "codex", cap)
+            fb_out = os.path.join(runner_tmp, "fallback-reply.md")
+            rc, out, err = run_script(codex_script, ["-o", fb_out, brief_file("fb-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": fb_cfg,
+                "CODEX_MODEL": "totally-fake-model",
+                "STUB_EVENTS_FILE_1": pre_exec_fail,
+                "STUB_RC_1": "1", "STUB_NO_OUT_1": "1",
+            })
             calls = read_calls(cap)
-            check("codex CODEX_MODEL fallback: two calls captured (fail then retry)",
+            check("fallback: exactly two codex invocations (fail then retry)",
                   len(calls) == 2, calls)
-            check("codex CODEX_MODEL fallback: run eventually succeeds",
-                  rc == 0, f"rc={rc} out={out} err={err}")
+            check("fallback: run eventually succeeds", rc == 0, f"rc={rc} err={err}")
             if len(calls) == 2:
-                check("codex CODEX_MODEL fallback: 1st (failing) call stdin carries contract",
-                      calls[0][1].startswith(CONTRACT_HEAD), calls[0])
-                check("codex CODEX_MODEL fallback: 2nd (retry) call stdin carries contract",
-                      calls[1][1].startswith(CONTRACT_HEAD), calls[1])
+                check("fallback: retry uses config codex.fallback_model",
+                      argv_value(calls[1][0], "-m") == "fb-model", calls[1][0])
+                check("fallback: both calls carry the reviewer contract",
+                      calls[0][1].startswith(CONTRACT_HEAD)
+                      and calls[1][1].startswith(CONTRACT_HEAD), calls)
+            note = "note: requested model 'totally-fake-model' unavailable; reviewed by 'fb-model' (config fallback)"
+            check("fallback: reply note names BOTH requested and effective model (stdout)",
+                  note in out, out)
+            check("fallback: the same note is persisted into the reply FILE",
+                  os.path.isfile(fb_out) and note in open(fb_out).read(),
+                  open(fb_out).read() if os.path.isfile(fb_out) else "missing")
+
+            post_exec_fail = events_file("ev-unknown-model-postexec.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"item.started","item":{"type":"command_execution"}}',
+                '{"type":"turn.failed","error":{"message":"model not available: totally-fake-model"}}',
+            ])
+            bin_dir = os.path.join(runner_tmp, "bin-fallback-postexec")
+            cap = os.path.join(runner_tmp, "cap-fallback-postexec")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("fb-post-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": fb_cfg,
+                "CODEX_MODEL": "totally-fake-model",
+                "STUB_EVENTS_FILE": post_exec_fail,
+                "STUB_RC": "1", "STUB_NO_OUT": "1",
+            })
+            calls = read_calls(cap)
+            check("fallback: unknown-model AFTER item.started -> no retry (execution had begun)",
+                  len(calls) == 1, calls)
+            check("fallback: post-execution unknown-model failure is reported, not retried",
+                  rc != 0, f"rc={rc} err={err}")
+
+            bin_dir = os.path.join(runner_tmp, "bin-fallback-twice")
+            cap = os.path.join(runner_tmp, "cap-fallback-twice")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("fb-twice-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": fb_cfg,
+                "CODEX_MODEL": "totally-fake-model",
+                "STUB_EVENTS_FILE": pre_exec_fail,
+                "STUB_RC": "1", "STUB_NO_OUT": "1",
+            })
+            calls = read_calls(cap)
+            check("fallback: retry also fails -> failure, still exactly two invocations",
+                  rc != 0 and len(calls) == 2, f"rc={rc} calls={len(calls)}")
+
+            contaminated = events_file("ev-unknown-model-contaminated.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                'not json — a dropped line could have carried item.started',
+                '{"type":"turn.failed","error":{"message":"unknown model: totally-fake-model"}}',
+            ])
+            bin_dir = os.path.join(runner_tmp, "bin-fallback-contaminated")
+            cap = os.path.join(runner_tmp, "cap-fallback-contaminated")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("fb-contaminated-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": fb_cfg,
+                "CODEX_MODEL": "totally-fake-model",
+                "STUB_EVENTS_FILE": contaminated,
+                "STUB_RC": "1", "STUB_NO_OUT": "1",
+            })
+            check("fallback: a malformed line BEFORE the failure event inhibits the retry",
+                  rc != 0 and len(read_calls(cap)) == 1, f"rc={rc} calls={len(read_calls(cap))}")
+
+            # the failed FIRST attempt's events and stderr traces must never
+            # fail a successful retry (each attempt is classified on its own).
+            bin_dir = os.path.join(runner_tmp, "bin-fallback-clean-retry")
+            cap = os.path.join(runner_tmp, "cap-fallback-clean-retry")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("fb-clean-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": fb_cfg,
+                "CODEX_MODEL": "totally-fake-model",
+                "STUB_EVENTS_FILE_1": pre_exec_fail,
+                "STUB_STDERR_FILE_1": trace_stderr,
+                "STUB_RC_1": "1", "STUB_NO_OUT_1": "1",
+            })
+            check("fallback: attempt 1 events/traces do not fail a clean retry",
+                  rc == 0 and len(read_calls(cap)) == 2, f"rc={rc} err={err}")
+
+            # ---- (j) resume: --json/-o probed and used; nothing is verified ----
+            bin_dir = os.path.join(runner_tmp, "bin-resume-json")
+            cap = os.path.join(runner_tmp, "cap-resume-json")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, ["--resume", brief_file("resume-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")})
+            calls = read_calls(cap)
+            argv = calls[0][0] if calls else []
+            check("resume: --json passed when the CLI advertises it", "--json" in argv, argv)
+            check("resume: -o passed when the CLI advertises it", "-o" in argv, argv)
+            check("resume: model/effort/sandbox disclosed as inherited (unverified)",
+                  rc == 0 and "model=inherited (unverified)" in out, f"rc={rc} out={out}")
+
+            bin_dir = os.path.join(runner_tmp, "bin-resume-oldcli")
+            cap = os.path.join(runner_tmp, "cap-resume-oldcli")
+            make_stub(bin_dir, "codex", cap, help_advertises=False)
+            rc, out, err = run_script(codex_script, ["--resume", brief_file("resume-old-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")})
+            calls = read_calls(cap)
+            argv = calls[0][0] if calls else []
+            check("resume: an older CLI (no --json/-o in help) keeps the plain stdout capture",
+                  rc == 0 and "--json" not in argv and "-o" not in argv,
+                  f"rc={rc} argv={argv} err={err}")
+
+            # ---- (k/l/m/n) change detection ----
+            head_repo = make_repo("repo-head")
+            bin_dir = os.path.join(runner_tmp, "bin-head")
+            cap = os.path.join(runner_tmp, "cap-head")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("head-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_GIT_COMMIT": "1"}, cwd=head_repo)
+            check("change detection: HEAD moved during the run -> failure listing HEAD",
+                  rc != 0 and "repository changed during the run" in err and "HEAD" in err,
+                  f"rc={rc} err={err}")
+            check("change detection: failure states attribution is unknown, never auto-revert",
+                  "attribution unknown" in err and "revert" not in err.lower(), err)
+
+            untracked_repo = make_repo("repo-untracked")
+            spaced = os.path.join(untracked_repo, "note file.txt")
+            write_file(spaced, "original\n")
+            bin_dir = os.path.join(runner_tmp, "bin-untracked")
+            cap = os.path.join(runner_tmp, "cap-untracked")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("untracked-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_TOUCH_FILE": spaced}, cwd=untracked_repo)
+            check("change detection: untracked file CONTENT change -> failure",
+                  rc != 0 and "repository changed during the run" in err, f"rc={rc} err={err}")
+            check("change detection: a path containing a space is named intact",
+                  "note file.txt" in err, err)
+
+            artifact_repo = make_repo("repo-artifacts")
+            bin_dir = os.path.join(runner_tmp, "bin-artifacts")
+            cap = os.path.join(runner_tmp, "cap-artifacts")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(
+                codex_script,
+                ["-o", os.path.join(artifact_repo, "reply.md"), brief_file("artifact-brief.md")],
+                {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                cwd=artifact_repo)
+            check("change detection: runner-owned artifacts inside the repo do NOT trigger it",
+                  rc == 0, f"rc={rc} err={err}")
+
+            big_repo = make_repo("repo-big")
+            for i in range(2001):
+                write_file(os.path.join(big_repo, "untracked", f"f{i:05d}.txt"), "x\n")
+            bin_dir = os.path.join(runner_tmp, "bin-big")
+            cap = os.path.join(runner_tmp, "cap-big")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("big-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}, cwd=big_repo)
+            check("change detection: >2000 untracked files -> success with partial coverage noted",
+                  rc == 0 and "(untracked coverage partial: >2000 files)" in out,
+                  f"rc={rc} out={out} err={err}")
+
+            # ---- (F2) NUL-safe serialization: filenames may contain newlines ----
+            nl_repo = make_repo("repo-newline-names")
+            first = os.path.join(nl_repo, "a\nsame")
+            second = os.path.join(nl_repo, "b\nsame")
+            write_file(first, "one\n")
+            write_file(second, "two\n")
+            bin_dir = os.path.join(runner_tmp, "bin-newline")
+            cap = os.path.join(runner_tmp, "cap-newline")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("newline-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_TOUCH_FILE": first}, cwd=nl_repo)
+            check("change detection: a newline in a filename is detected, not conflated",
+                  rc != 0 and repr("a\nsame")[1:-1] in err
+                  and repr("b\nsame")[1:-1] not in err, f"rc={rc} err={err}")
+
+            # ---- (F4) artifact exclusion completeness ----
+            tracked_out_repo = make_repo("repo-tracked-out")
+            tracked_out = os.path.join(tracked_out_repo, "tracked-out.md")
+            write_file(tracked_out, "committed content\n")
+            subprocess.run(["git", "-C", tracked_out_repo, "add", "tracked-out.md"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", tracked_out_repo, "commit", "-q", "-m", "seed"],
+                           check=True, capture_output=True)
+            bin_dir = os.path.join(runner_tmp, "bin-tracked-out")
+            cap = os.path.join(runner_tmp, "cap-tracked-out")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, ["-o", tracked_out,
+                                                     brief_file("tracked-out-brief.md")],
+                                      {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                                      cwd=tracked_out_repo)
+            check("change detection: -o over a TRACKED file does not self-trip the gate",
+                  rc == 0, f"rc={rc} err={err}")
+
+            newdir_repo = make_repo("repo-newdir")
+            newdir = os.path.join(newdir_repo, "fresh")
+            os.makedirs(newdir, exist_ok=True)  # empty: invisible to git
+            bin_dir = os.path.join(runner_tmp, "bin-newdir")
+            cap = os.path.join(runner_tmp, "cap-newdir")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, ["-o", os.path.join(newdir, "reply.md"),
+                                                     brief_file("newdir-brief.md")],
+                                      {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                                      cwd=newdir_repo)
+            check("change detection: artifacts in a new directory are excluded (-uall, not a collapsed dir)",
+                  rc == 0, f"rc={rc} err={err}")
+
+            # ---- (F5) per-path fingerprints: an already-dirty tracked file
+            # edited AGAIN keeps its status but must still be named ----
+            dirty_repo = make_repo("repo-dirty")
+            dirty = os.path.join(dirty_repo, "tracked-dirty.md")
+            write_file(dirty, "committed\n")
+            subprocess.run(["git", "-C", dirty_repo, "add", "tracked-dirty.md"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", dirty_repo, "commit", "-q", "-m", "seed"],
+                           check=True, capture_output=True)
+            write_file(dirty, "dirty before the run\n")
+            bin_dir = os.path.join(runner_tmp, "bin-dirty")
+            cap = os.path.join(runner_tmp, "cap-dirty")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("dirty-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_TOUCH_FILE": dirty}, cwd=dirty_repo)
+            check("change detection: pre-existing dirt edited again -> the PATH is named",
+                  rc != 0 and "tracked-dirty.md" in err, f"rc={rc} err={err}")
+
+            # ---- (F6/F1) a snapshot that cannot be taken or read is NEVER
+            # 'no change': before-failure costs no reviewer run, after-failure
+            # fails the run ----
+            fail_before_repo = make_repo("repo-detect-before")
+            bin_dir = os.path.join(runner_tmp, "bin-detect-before")
+            cap = os.path.join(runner_tmp, "cap-detect-before")
+            make_stub(bin_dir, "codex", cap)
+            make_git_stub(bin_dir, fail_from_call=1)
+            rc, out, err = run_script(codex_script, [brief_file("detect-before-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}, cwd=fail_before_repo)
+            check("change detection: BEFORE-snapshot failure -> run fails unavailable",
+                  rc != 0 and "change detection unavailable" in err, f"rc={rc} err={err}")
+            check("change detection: BEFORE-snapshot failure -> codex was NEVER invoked (no paid run)",
+                  len(read_calls(cap)) == 0, read_calls(cap))
+            preflight_log = os.path.join(runner_tmp, "detect-before-brief.reply.log")
+            log_text = open(preflight_log).read() if os.path.isfile(preflight_log) else ""
+            check("change detection: preflight failure is persisted into $LOG, not just stderr",
+                  "stubbed git status failure" in log_text and "stubbed git status failure" in err,
+                  f"log={log_text!r}")
+
+            fail_after_repo = make_repo("repo-detect-after")
+            bin_dir = os.path.join(runner_tmp, "bin-detect-after")
+            cap = os.path.join(runner_tmp, "cap-detect-after")
+            make_stub(bin_dir, "codex", cap)
+            make_git_stub(bin_dir, fail_from_call=2)
+            rc, out, err = run_script(codex_script, [brief_file("detect-after-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}, cwd=fail_after_repo)
+            check("change detection: AFTER-snapshot failure -> failure, never 'no change'",
+                  rc != 0 and "change detection unavailable" in err
+                  and len(read_calls(cap)) == 1, f"rc={rc} calls={len(read_calls(cap))} err={err}")
+
+            # ---- claude-runner parity for both detection signals ----
+            claude_head_repo = make_repo("repo-claude-head")
+            bin_dir = os.path.join(runner_tmp, "bin-claude-head")
+            cap = os.path.join(runner_tmp, "cap-claude-head")
+            make_stub(bin_dir, "claude", cap)
+            rc, out, err = run_script(claude_script, [brief_file("claude-head-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_GIT_COMMIT": "1"}, cwd=claude_head_repo)
+            check("claude change detection: HEAD moved during the run -> failure listing HEAD",
+                  rc != 0 and "repository changed during the run" in err and "HEAD" in err,
+                  f"rc={rc} err={err}")
+
+            claude_unt_repo = make_repo("repo-claude-untracked")
+            claude_spaced = os.path.join(claude_unt_repo, "note file.txt")
+            write_file(claude_spaced, "original\n")
+            bin_dir = os.path.join(runner_tmp, "bin-claude-untracked")
+            cap = os.path.join(runner_tmp, "cap-claude-untracked")
+            make_stub(bin_dir, "claude", cap)
+            rc, out, err = run_script(claude_script, [brief_file("claude-untracked-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_TOUCH_FILE": claude_spaced}, cwd=claude_unt_repo)
+            check("claude change detection: untracked content change -> failure naming the path",
+                  rc != 0 and "note file.txt" in err, f"rc={rc} err={err}")
+
+            # ---- (G5a) the wall clock must hold with NO `timeout` binary ----
+            def make_minimal_bin(name, capture_dir, stub_name="codex"):
+                """A PATH with everything the runner needs EXCEPT timeout(1)."""
+                d = os.path.join(runner_tmp, name)
+                os.makedirs(d, exist_ok=True)
+                for tool in ("python3", "git", "bash", "sh", "sed", "awk", "grep",
+                             "cat", "head", "tail", "rm", "mv", "mkdir", "mktemp",
+                             "date", "realpath", "chmod", "env"):
+                    src = shutil.which(tool)
+                    dst = os.path.join(d, tool)
+                    if src and not os.path.exists(dst):
+                        os.symlink(src, dst)
+                make_stub(d, stub_name, capture_dir)
+                return d
+
+            notimeout_repo = make_repo("repo-no-timeout")
+            cap = os.path.join(runner_tmp, "cap-no-timeout")
+            min_bin = make_minimal_bin("bin-no-timeout", cap)
+            check("no-timeout PATH: the `timeout` binary really is absent",
+                  shutil.which("timeout", path=min_bin) is None, min_bin)
+            rc, out, err = run_script(codex_script, [brief_file("no-timeout-brief.md")],
+                                      {"PATH": min_bin}, cwd=notimeout_repo)
+            check("no-timeout PATH: a clean consult still succeeds",
+                  rc == 0, f"rc={rc} err={err}")
+
+            cap = os.path.join(runner_tmp, "cap-no-timeout-slow")
+            min_bin2 = make_minimal_bin("bin-no-timeout-slow", cap)
+            pidfile = os.path.join(runner_tmp, "slow-descendant.pid")
+            t0 = time.time()
+            rc, out, err = run_script(codex_script, [brief_file("no-timeout-slow-brief.md")],
+                                      {"PATH": min_bin2, "CODEX_TIMEOUT": "2",
+                                       "STUB_SLEEP": "5",
+                                       "STUB_SPAWN_PIDFILE": pidfile}, cwd=notimeout_repo)
+            elapsed = time.time() - t0
+            check("no-timeout PATH: an over-running reviewer is cut off at rc=124, on time",
+                  rc == 124 and "timed out" in err and elapsed < 2 + 3,
+                  f"rc={rc} elapsed={elapsed:.1f}s err={err}")
+
+            # the killed reviewer must not leave descendants RUNNING. A
+            # zombie counts as dead: the process is killed, its reaper (PID 1
+            # in a container) may simply not have collected it.
+            def pid_running(pid):
+                try:
+                    with open("/proc/%d/stat" % pid) as f:
+                        state = f.read().rsplit(")", 1)[1].split()[0]
+                    return state != "Z"
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    return False
+                try:
+                    os.kill(pid, 0)
+                    return True
+                except Exception:
+                    return False
+
+            leaked = None
+            if os.path.isfile(pidfile):
+                leaked = int(open(pidfile).read().strip() or 0)
+                deadline = time.time() + 3
+                while time.time() < deadline:
+                    if not pid_running(leaked):
+                        leaked = None
+                        break
+                    time.sleep(0.1)
+            check("timeout kills the whole process group (no surviving descendant)",
+                  leaked is None, f"pid still running: {leaked}")
+
+            # ---- (G5b) an unwritable TMPDIR must fail closed, unpaid ----
+            ro_tmp = os.path.join(runner_tmp, "readonly-tmp")
+            os.makedirs(ro_tmp, exist_ok=True)
+            os.chmod(ro_tmp, 0o555)
+            try:
+                probe = os.path.join(ro_tmp, ".probe")
+                with open(probe, "w"):
+                    pass
+                os.remove(probe)
+                ro_tmp_enforced = False
+            except Exception:
+                ro_tmp_enforced = True
+            if not ro_tmp_enforced:
+                # running as root: mode bits do not bind. An absent TMPDIR
+                # fails mktemp for every user, so the same fail-closed path is
+                # still exercised.
+                print("  note: mode-555 TMPDIR stayed writable (root) — using an absent TMPDIR instead")
+                ro_tmp = os.path.join(runner_tmp, "tmpdir-that-does-not-exist")
+            bin_dir = os.path.join(runner_tmp, "bin-ro-tmp")
+            cap = os.path.join(runner_tmp, "cap-ro-tmp")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("ro-tmp-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "TMPDIR": ro_tmp})
+            check("unusable TMPDIR: exits 4 (temp-file guard) and codex is never invoked",
+                  rc == 4 and len(read_calls(cap)) == 0,
+                  f"rc={rc} calls={len(read_calls(cap))} err={err}")
+
+            # ---- (G5d/G3) a repo directory name ending in a space ----
+            space_repo = make_repo("repo-trailing-space ")
+            spaced_file = os.path.join(space_repo, "watched.txt")
+            write_file(spaced_file, "original\n")
+            bin_dir = os.path.join(runner_tmp, "bin-trailing-space")
+            cap = os.path.join(runner_tmp, "cap-trailing-space")
+            make_stub(bin_dir, "codex", cap)
+            rc, out, err = run_script(codex_script, [brief_file("trailing-space-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "STUB_TOUCH_FILE": spaced_file}, cwd=space_repo)
+            check("repo root ending in a space: the change is still detected with the right path",
+                  rc != 0 and "repository changed during the run" in err
+                  and "watched.txt" in err, f"rc={rc} err={err}")
+
+            # ---- (G5e/G4) files this gate cannot read are counted, not skipped ----
+            unreadable_repo = make_repo("repo-unreadable")
+            secret = os.path.join(unreadable_repo, "secret.txt")
+            write_file(secret, "unreadable\n")
+            os.chmod(secret, 0o000)
+            try:
+                with open(secret, "rb"):
+                    pass
+                still_readable = True
+            except Exception:
+                still_readable = False
+            if still_readable:
+                print("  skipped (root) unreadable-file fixture: mode 000 stayed readable")
+            else:
+                bin_dir = os.path.join(runner_tmp, "bin-unreadable")
+                cap = os.path.join(runner_tmp, "cap-unreadable")
+                make_stub(bin_dir, "codex", cap)
+                rc, out, err = run_script(codex_script, [brief_file("unreadable-brief.md")], {
+                    "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=unreadable_repo)
+                check("unreadable file: run succeeds with the count disclosed on the result line",
+                      rc == 0 and "(some files unreadable: 1)" in out,
+                      f"rc={rc} out={out} err={err}")
+            os.chmod(secret, 0o644)
+
+            # ---- (o) claude runner reads codex.model as its default ----
+            bin_dir = os.path.join(runner_tmp, "bin-claude-model")
+            cap = os.path.join(runner_tmp, "cap-claude-model")
+            make_stub(bin_dir, "claude", cap)
+            claude_host_cfg = cfg_dir_with(
+                os.path.join(".codex", "plugins", "data", "haejwo-haejwo-claude"),
+                {"codex": {"model": "cfg-model"}})
+            rc, out, err = run_script(claude_script, [brief_file("claude-model-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": claude_host_cfg})
+            calls = read_calls(cap)
+            check("claude: config codex.model used when CLAUDE_MODEL unset (codex-host config)",
+                  bool(calls) and argv_value(calls[0][0], "--model") == "cfg-model", calls[:1])
+            check("claude: (config) source disclosed on the result line",
+                  rc == 0 and "model=cfg-model (config)" in out, f"rc={rc} out={out}")
+
+            # live-smoke regression: a CLAUDE-host config's codex.model names
+            # the OTHER vendor's reviewer — claude must never be launched with it.
+            bin_dir = os.path.join(runner_tmp, "bin-claude-wrong-host")
+            cap = os.path.join(runner_tmp, "cap-claude-wrong-host")
+            make_stub(bin_dir, "claude", cap)
+            astra_cfg = cfg_dir_with("plugin-data-claude-host", {"codex": {"model": "gpt-6-astra"}})
+            rc, out, err = run_script(claude_script, [brief_file("claude-wrong-host-brief.md")], {
+                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                "CLAUDE_PLUGIN_DATA": astra_cfg})
+            calls = read_calls(cap)
+            check("claude: a non-/.codex/ config's codex.model is IGNORED (no --model passed)",
+                  rc == 0 and bool(calls) and "--model" not in calls[0][0]
+                  and "model=cli-default (identity unverified)" in out,
+                  f"rc={rc} argv={calls[:1]} out={out}")
+
+            # ---- (F3) --resume passes NOTHING, not even --model ----
+            bin_dir = os.path.join(runner_tmp, "bin-claude-resume-model")
+            cap = os.path.join(runner_tmp, "cap-claude-resume-model")
+            make_stub(bin_dir, "claude", cap)
+            rc, out, err = run_script(claude_script,
+                                      ["--resume", brief_file("claude-resume-model-brief.md")], {
+                                          "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+                                          "CLAUDE_MODEL": "some-model"})
+            calls = read_calls(cap)
+            check("claude --resume: --model is NOT passed even with CLAUDE_MODEL set",
+                  rc == 0 and bool(calls) and "--model" not in calls[0][0]
+                  and "some-model" not in calls[0][0]
+                  and "model=inherited (unverified)" in out,
+                  f"rc={rc} argv={calls[:1]} out={out}")
 
             # ---- --mode implement removed (both runners, both flag forms) ----
             for label, script in (("codex", codex_script), ("claude", claude_script)):
@@ -1030,33 +1789,24 @@ def main():
                 make_stub(sandbox_bin_dir, "codex", cap)
                 env = {"PATH": sandbox_bin_dir + os.pathsep + os.environ.get("PATH", "")}
                 env.update(env_extra)
-                brief_path = os.path.join(runner_tmp, f"sandbox-brief-{label}.md")
-                with open(brief_path, "w") as f:
-                    f.write("Sandbox precedence test brief.\n")
+                brief_path = brief_file(f"sandbox-brief-{label}.md",
+                                        "Sandbox precedence test brief.\n")
                 run_script(codex_script, [brief_path], env)
                 calls = read_calls(cap)
                 argv = calls[0][0] if calls else []
-                sbx = None
-                for i, a in enumerate(argv):
-                    if a == "-s" and i + 1 < len(argv):
-                        sbx = argv[i + 1]
-                return sbx
+                return argv_value(argv, "-s")
 
             sbx = sandbox_used({"CODEX_SANDBOX": "workspace-write"}, "env-wins")
             check("sandbox precedence: env CODEX_SANDBOX wins", sbx == "workspace-write", sbx)
 
-            cfg_dir = os.path.join(runner_tmp, "plugin-data-danger")
-            os.makedirs(cfg_dir, exist_ok=True)
-            with open(os.path.join(cfg_dir, "config.json"), "w") as f:
-                json.dump({"codex": {"consult_sandbox": "danger-full-access"}}, f)
+            cfg_dir = cfg_dir_with("plugin-data-danger",
+                                   {"codex": {"consult_sandbox": "danger-full-access"}})
             sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir}, "config-danger")
             check("sandbox precedence: config consult_sandbox used when env unset",
                   sbx == "danger-full-access", sbx)
 
-            cfg_dir2 = os.path.join(runner_tmp, "plugin-data-invalid")
-            os.makedirs(cfg_dir2, exist_ok=True)
-            with open(os.path.join(cfg_dir2, "config.json"), "w") as f:
-                json.dump({"codex": {"consult_sandbox": "yolo"}}, f)
+            cfg_dir2 = cfg_dir_with("plugin-data-invalid",
+                                    {"codex": {"consult_sandbox": "yolo"}})
             sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir2}, "config-invalid")
             check("sandbox precedence: invalid config value falls back to read-only",
                   sbx == "read-only", sbx)
@@ -1067,6 +1817,13 @@ def main():
                 f.write("{ not valid json !!!")
             sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir3}, "config-malformed")
             check("sandbox precedence: malformed config JSON falls back to read-only",
+                  sbx == "read-only", sbx)
+
+            # malformed SHAPE (codex is not an object) is "no config" too —
+            # model/effort/fallback_model must not crash or leak a value.
+            cfg_dir4 = cfg_dir_with("plugin-data-shape", {"codex": "not-an-object"})
+            sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir4}, "config-shape")
+            check("config shape: codex not an object -> read-only, no crash",
                   sbx == "read-only", sbx)
 
             # regression: CLAUDE_PLUGIN_DATA set (non-empty) but its
@@ -1087,9 +1844,10 @@ def main():
                   "read-only (NEVER falls back to the derived path / a stale config there)",
                   sbx == "read-only", sbx)
 
-            # empty $HOME in the derived-path branch (CLAUDE_PLUGIN_DATA unset)
-            # must not crash under `set -u` and must resolve to "no config".
-            sbx = sandbox_used({"HOME": ""}, "home-empty")
+            # empty $HOME in the derived-path branch (CLAUDE_PLUGIN_DATA unset
+            # — passed as None so the hermetic default does not mask it) must
+            # not crash under `set -u` and must resolve to "no config".
+            sbx = sandbox_used({"HOME": "", "CLAUDE_PLUGIN_DATA": None}, "home-empty")
             check("sandbox precedence: empty $HOME in derived-path branch -> read-only, no crash",
                   sbx == "read-only", sbx)
 
@@ -1101,10 +1859,7 @@ def main():
             make_stub(bad_env_bin_dir, "codex", cap)
             env = {"PATH": bad_env_bin_dir + os.pathsep + os.environ.get("PATH", ""),
                    "CODEX_SANDBOX": "yolo"}
-            brief_path = os.path.join(runner_tmp, "badenv-brief.md")
-            with open(brief_path, "w") as f:
-                f.write("Bad CODEX_SANDBOX brief.\n")
-            rc, out, err = run_script(codex_script, [brief_path], env)
+            rc, out, err = run_script(codex_script, [brief_file("badenv-brief.md")], env)
             combined = out + err
             check("invalid CODEX_SANDBOX env: exit 2 (loud error, not silent downgrade)",
                   rc == 2, f"rc={rc}")
@@ -1118,9 +1873,7 @@ def main():
             disallow_bin_dir = os.path.join(runner_tmp, "bin-claude-disallow")
             os.makedirs(disallow_bin_dir, exist_ok=True)
             env = {"PATH": disallow_bin_dir + os.pathsep + os.environ.get("PATH", "")}
-            brief_path = os.path.join(runner_tmp, "claude-disallow-brief.md")
-            with open(brief_path, "w") as f:
-                f.write("disallowedTools test brief.\n")
+            brief_path = brief_file("claude-disallow-brief.md")
 
             cap = os.path.join(runner_tmp, "cap-claude-disallow-normal")
             make_stub(disallow_bin_dir, "claude", cap)
@@ -1141,6 +1894,8 @@ def main():
                   "--disallowedTools" in argv2, argv2)
             check("claude --resume run: Edit,Write,NotebookEdit value present",
                   "Edit,Write,NotebookEdit" in argv2, argv2)
+            check("claude --resume run: model disclosed as inherited (unverified)",
+                  "model=inherited (unverified)" in out, out)
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
 

@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.reply.md
 *.log
+*.events.jsonl
+*.events.2.jsonl
 .DS_Store
 
 # development-process artifacts — never published

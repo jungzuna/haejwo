@@ -52,8 +52,25 @@ WHAT IS NORMALIZED (G4/H1) — and NOTHING else
     N4  (folded into N3's designation list) the recorded descendant pid.
     N5  native shell diagnostic source locations (`<script>: line N:`), and
         ONLY for the explicitly enumerated relocated operations in
-        N5_RELOCATED — EMPTY in this commit, so line numbers must match
-        byte-for-byte.
+        N5_RELOCATED. The 2.13 extraction moved mechanics into scripts/lib but
+        left every operation a fixture drives into bash's OWN diagnostics in
+        the ENTRYPOINT, so the source FILE NAME is unchanged on both sides and
+        only the line number moved. Scope, three conditions, ALL required:
+        the scenario is flagged `native_diagnostics`; the item is one of the
+        runner's own channels (stdout/stderr/combined) or the artifact that
+        IS its log, identified by the log's own header line rather than by a
+        `.log` suffix (`-o x.log` puts that suffix on the REPLY);
+        and the prefix is the RECORDED runner script path — the `{scripts}`
+        token followed by `/codex_consult.sh: line ` or
+        `/claude_consult.sh: line `, never a bare filename. A quoted
+        `codex_consult.sh: line 10:` in a reply, in a captured brief, or in a
+        scenario that asserts no diagnostics is compared byte for byte.
+
+WHAT IS ACCEPTED (2.13) — and nothing else
+    ACCEPTED_DIFFERENCES is the complete, hand-written ledger of differences
+    this refactor is allowed to introduce, keyed by scenario + item with a
+    predicate. It is asserted to hold exactly its documented entries, and the
+    run reports how many of them it actually needed.
 
     Tokens are emitted between private-use-area markers (U+E000/U+E001) that
     cannot occur in the captured bytes, and any item that ALREADY carries a
@@ -280,9 +297,99 @@ RUNNER_CHANNELS = ("stdout", "stderr", "combined")
 
 # N5: shell diagnostics (`<script>: line N: ...`) whose line number legitimately
 # moves because the operation was RELOCATED by the extraction. Each entry names
-# one operation and is reviewed by hand. Empty in this commit: nothing has moved
-# yet, so every diagnostic — line number included — must match byte for byte.
-N5_RELOCATED = ()
+# the operations it covers and is reviewed by hand.
+#
+# 2.13 (shared internals -> scripts/lib) moved code OUT of both entrypoints,
+# which shifts the line numbers of everything below it. Three operations are
+# driven into bash's own diagnostics by the fixtures, and ALL THREE stayed in
+# the entrypoint — they are redirections whose target is the caller's own
+# artifact, and the vendor-owned $LOG / REVIEWER CONTRACT are what they write:
+#   1. the log header write        `} > "$LOG"`               (artifact-inside)
+#   2. the effective brief write   `} > "$EFFECTIVE_BRIEF"`   (brief-unwritable)
+#   3. the snapshot-note rewrite   `} > "$EFFECTIVE_BRIEF"`   (brief-unwritable)
+# So the source FILE NAME is `<runner>_consult.sh` on both sides and only the
+# number moved. The pattern is anchored to the RECORDED scripts directory (the
+# N1 token, so a bare `codex_consult.sh` in prose can never match), to the
+# runner file name, and to bash's cannot-open-this-redirection message — so
+# nothing else (a command that failed to run, a library diagnostic, a quoted
+# example) is normalized by it. `_n5_shell_lines` adds the two remaining
+# scope conditions: the scenario must be flagged `native_diagnostics` and the
+# item must be a runner channel or the runner's log. A diagnostic that moved
+# INTO scripts/lib would still fail the comparison, which is the point: the
+# `native_diagnostics` assertion below must keep binding.
+N5_RELOCATED = (
+    r"(?m)" + re.escape(_tok("scripts"))
+    + r"/(?:codex|claude)_consult\.sh: line \d+:"
+      r"(?=[^\n]*: (?:Is a directory|No such file or directory)$)",
+)
+# N5 is confined to the runner's OWN output: its two stream channels (plus the
+# merged one the cleanup fixture uses) and the log artifact it writes. Reply
+# artifacts, captured stdin and the events stream are never touched — and the
+# log is identified PER RUN by the header line only the real log carries, never
+# by a `.log` suffix: `-o x.log` puts that suffix on the REPLY and moves the
+# log to `x.log.log` (the aliasing rule).
+_LOG_HEADER_RE = re.compile(r"\A# (?:codex|claude)_consult v[0-9.]+ ")
+
+
+def _log_items(capture):
+    """The item names that ARE the runner's own log, by its own header."""
+    return set(name for name, text in capture["items"]
+               if name.startswith("artifacts@") and _LOG_HEADER_RE.match(text))
+
+# --------------------------------------------------------------------------
+# accepted differences — the COMPLETE ledger, enumerated by hand
+# --------------------------------------------------------------------------
+# (scenario | "*", item | None, predicate | None, why). A difference survives
+# ONLY when an entry names its scenario and item and the predicate agrees;
+# everything else fails. Entries with predicate=None are recorded, not
+# tolerated: they name a change that is NOT a baseline-vs-candidate difference
+# at all, so that the ledger states the whole refactor rather than hiding half
+# of it. The self-test mutants are compared with NO scenario, so the ledger
+# can never soften them.
+_ACCEPTED_USED = []
+
+
+def _only_bounded_wrapper_removed(base_text, cand_text):
+    """2.13: the wall clock is `scripts/lib/bounded.py`, a file the runner
+    READS — the baseline wrote a per-run copy (`hjw_bounded.XXXXXX.py`) and
+    deleted it again. A clean run therefore shows the same (empty) inventory
+    on both sides; this predicate only tolerates the case where a fixture ever
+    catches the wrapper mid-life, and it tolerates NOTHING else in the item."""
+    base_lines = base_text.split("\n")
+    kept = [l for l in base_lines if "hjw_bounded." not in l]
+    return len(kept) != len(base_lines) and kept == cand_text.split("\n")
+
+
+ACCEPTED_DIFFERENCES = (
+    ("*", "tmp/inventory(name,type,mode,size)", _only_bounded_wrapper_removed,
+     "2.13: the bounded wrapper is scripts/lib/bounded.py, not a temp copy the "
+     "runner allocates and deletes on every run"),
+    # The missing-library failure path (`consult runner library missing: <path>`,
+    # exit 3, zero CLI calls) is a NEW scenario, not a changed one: the 6d09729
+    # runners had no library to miss, so there is no baseline counterpart to
+    # compare against. Both runners' fixtures for it live in tests/test_hooks.py.
+    ("*", None, None,
+     "2.13: `consult runner library missing:` has no 6d09729 counterpart — it is "
+     "a NEW scenario, covered by tests/test_hooks.py, never by this differential"),
+)
+
+
+# The `native_diagnostics` assertion reads NORMALIZED text, so it must accept
+# both a raw line number and an N5 token — but never a source file other than
+# an entrypoint: that is what makes "the diagnostics are still the runner's
+# own" an assertion rather than a hope.
+_NATIVE_DIAG_RE = re.compile(
+    r"_consult\.sh: line (?:\d+|%s):" % re.escape(_tok("n")))
+
+
+def _accepted(scenario, item, base_text, cand_text):
+    for scen, name, predicate, why in ACCEPTED_DIFFERENCES:
+        if predicate is None or name != item or scen not in ("*", scenario):
+            continue
+        if predicate(base_text, cand_text):
+            _ACCEPTED_USED.append((scenario, item, why))
+            return True
+    return False
 
 
 def _anchored_stems(items, tmpdirs):
@@ -365,10 +472,12 @@ def _n2_worktree_admin(text, item, ctx):
     `# ---- snapshot: …` / `# ---- snapshot cleanup ----` record lines in its
     log. Free text (a reply, a brief, prose on stdout/stderr) is never touched:
     prose that mentions `.git/worktrees/alpha` is compared byte for byte.
-    Ownership/cleanup is asserted from `git worktree list` itself."""
+    Ownership/cleanup is asserted from `git worktree list` itself. "Its log"
+    is the header-identified real log (see `_log_items`), never every item
+    ending in `.log`: `-o x.log` puts that name on the REPLY."""
     if item == "git/worktrees":
         return _wt_sub(text, ctx)
-    if not (item in RUNNER_CHANNELS or item.endswith(".log")):
+    if not (item in RUNNER_CHANNELS or item in ctx.get("log_items", ())):
         return text
     out, in_cleanup = [], False
     for line in text.split("\n"):
@@ -407,11 +516,18 @@ def _n3_designated_fields(text, item):
     return text
 
 
-def _n5_shell_lines(text):
-    """N5: source locations in bash's own diagnostics, for relocated
-    operations only. The list is empty in this commit, so this is a documented
-    no-op and every `<script>: line N:` must match exactly."""
-    for pattern in N5_RELOCATED:  # pragma: no cover - populated by the extraction
+def _n5_shell_lines(text, item, ctx):
+    """N5: source locations in bash's own diagnostics, for the enumerated
+    relocated operations only, and ONLY where all three scope conditions hold
+    (flagged scenario / runner channel or log / recorded script path). The
+    SOURCE FILE NAME is preserved by the replacement — only the line number
+    becomes a token — so a diagnostic that changed files is still a
+    difference."""
+    if not ctx.get("native_diag"):
+        return text
+    if not (item in RUNNER_CHANNELS or item in ctx.get("log_items", ())):
+        return text
+    for pattern in N5_RELOCATED:
         text = re.sub(pattern,
                       lambda m: m.group(0).split(": line ")[0] + ": line " + _tok("n") + ":",
                       text)
@@ -422,7 +538,7 @@ def _normalize(text, item, ctx):
     text = _n1_paths(text, ctx)
     text = _n2_worktree_admin(text, item, ctx)
     text = _n3_designated_fields(text, item)
-    return _n5_shell_lines(text)
+    return _n5_shell_lines(text, item, ctx)
 
 
 def _normalized_items(capture):
@@ -430,7 +546,11 @@ def _normalized_items(capture):
     can itself be a recorded path). Raises TokenLiteral when a captured item
     already carries a token marker or literal token form."""
     _guard_literals(capture["items"])
-    ctx = {"paths": _path_table(capture), "wt": {}}
+    # N5 runs only for the scenarios that ASSERT native diagnostics; every
+    # other capture compares bash's source locations byte for byte.
+    ctx = {"paths": _path_table(capture), "wt": {},
+           "native_diag": bool(capture.get("native_diag")),
+           "log_items": _log_items(capture)}
     return [(_normalize(name, name, ctx), _normalize(text, name, ctx))
             for name, text in capture["items"]]
 
@@ -442,9 +562,12 @@ def _repr_lines(text):
     return [repr(line) for line in text.split("\n")]
 
 
-def _differences(base, cand):
+def _differences(base, cand, scenario=None):
     """Returns (ok, detail, differing_item_names). A structural problem (item
-    sets differ, a literal token) is reported as a difference too."""
+    sets differ, a literal token) is reported as a difference too.
+
+    `scenario` enables the ACCEPTED_DIFFERENCES ledger for that scenario's
+    items; the self-test mutants pass none, so nothing softens them."""
     try:
         a, b = _normalized_items(base), _normalized_items(cand)
     except TokenLiteral as exc:
@@ -455,7 +578,8 @@ def _differences(base, cand):
         only_b = [n for n in names_b if n not in names_a]
         return False, ("item set differs: baseline-only=%s candidate-only=%s"
                        % (only_a[:6], only_b[:6])), ["<item-set>"]
-    diffs = [na for (na, ta), (_, tb) in zip(a, b) if ta != tb]
+    diffs = [na for (na, ta), (_, tb) in zip(a, b)
+             if ta != tb and not (scenario and _accepted(scenario, na, ta, tb))]
     if not diffs:
         return True, "", []
     first = diffs[0]
@@ -467,8 +591,8 @@ def _differences(base, cand):
     return False, "first differing item: %s\n    %s" % (first, "\n    ".join(diff[:30])), diffs
 
 
-def _compare(base, cand):
-    ok, detail, _ = _differences(base, cand)
+def _compare(base, cand, scenario=None):
+    ok, detail, _ = _differences(base, cand, scenario)
     return ok, detail
 
 
@@ -531,8 +655,11 @@ def _scenarios():
                   out="out/reply.md", git_stub=("worktree-remove",), combined=True))
     S.append(dict(name="snapshot-cleanup-failure-split", repo="dirty", snapshot=True,
                   out="out/reply.md", git_stub=("worktree-remove",)))
+    # Flagged: the pinned $OUT makes the runner's own log unopenable, so this
+    # scenario reaches bash's OWN diagnostics exactly as the next one does —
+    # and N5 only applies where that is asserted.
     S.append(dict(name="snapshot-artifact-inside", repo="dirty", snapshot=True,
-                  out="PINNED", mktemp="pin-snap"))
+                  out="PINNED", mktemp="pin-snap", native_diagnostics=True))
     S.append(dict(name="snapshot-effective-brief-unwritable", repo="dirty", snapshot=True,
                   out="out/reply.md", mktemp="block-effective", native_diagnostics=True))
 
@@ -989,7 +1116,8 @@ def _execute(plan):
 
     head = _git_text(plan["repo"], ["rev-parse", "HEAD"]).strip() or "unborn"
     return {"items": items, "known": known, "tmpdirs": plan["tmpdirs"], "rc": rc,
-            "elapsed": elapsed, "head": head, "run_dir": plan["run_dir"]}
+            "elapsed": elapsed, "head": head, "run_dir": plan["run_dir"],
+            "native_diag": bool(scen.get("native_diagnostics"))}
 
 
 def _env_item(path):
@@ -1098,8 +1226,9 @@ def _parity_fields(capture, kind):
 # --------------------------------------------------------------------------
 # H1/H2 — negative controls and token self-tests (memory-only)
 # --------------------------------------------------------------------------
-def _synthetic(items, known=(), tmpdirs=()):
-    return {"items": list(items), "known": list(known), "tmpdirs": list(tmpdirs)}
+def _synthetic(items, known=(), tmpdirs=(), native_diag=False):
+    return {"items": list(items), "known": list(known), "tmpdirs": list(tmpdirs),
+            "native_diag": native_diag}
 
 
 def _negative_controls(check):
@@ -1140,13 +1269,28 @@ def _negative_controls(check):
     check("golden negative control: a worktree admin name in PROSE is not normalized away",
           not ok, "the harness called two different prose strings identical")
     wt = "worktree /x\nHEAD abc\n"
+    # The runner's own log is identified by its header, not by a `.log` name.
+    log_hdr = "# codex_consult v0.4  mode=consult timeout=600s  Thu Jan  1 00:00:00 2026\n"
+    real_log = "artifacts@/golden/out/x.log.log"
     ok, detail, _ = _differences(
-        _synthetic([("git/worktrees", wt), ("x.log", "# ---- snapshot cleanup ----\n"
-                                           "fatal: .git/worktrees/alpha is locked\n")]),
-        _synthetic([("git/worktrees", wt), ("x.log", "# ---- snapshot cleanup ----\n"
-                                           "fatal: .git/worktrees/beta is locked\n")]))
+        _synthetic([("git/worktrees", wt), (real_log, log_hdr + "# ---- snapshot cleanup ----\n"
+                                            "fatal: .git/worktrees/alpha is locked\n")]),
+        _synthetic([("git/worktrees", wt), (real_log, log_hdr + "# ---- snapshot cleanup ----\n"
+                                            "fatal: .git/worktrees/beta is locked\n")]))
     check("golden: a worktree admin name IS normalized in the runner's cleanup record",
           ok, detail)
+    # `-o x.log`: the REPLY carries the .log name and the log moves to x.log.log.
+    # A suffix test would have normalized the reply's own prose.
+    alias_reply = "artifacts@/golden/out/x.log"
+    snap_rec = "# ---- snapshot: /golden/tmp/.git/worktrees/%s ----\n"
+    ok, _, _ = _differences(
+        _synthetic([("git/worktrees", wt), (alias_reply, snap_rec % "alpha")],
+                   native_diag=True),
+        _synthetic([("git/worktrees", wt), (alias_reply, snap_rec % "beta")],
+                   native_diag=True))
+    check("golden negative control: a worktree admin name in a reply written to x.log "
+          "is not normalized away", not ok,
+          "a `-o x.log` reply was normalized as if it were the runner's log")
 
     # (I2) the capture-window phrase in the caller's own brief prose
     note = (_SNAP_NOTE_PREFIX + " /r at /s — HEAD abc plus uncommitted changes "
@@ -1161,6 +1305,77 @@ def _negative_controls(check):
         _synthetic([("calls/1.stdin", note % ("T1", "T2"))]),
         _synthetic([("calls/1.stdin", note % ("T3", "T4"))]))
     check("golden: the capture window IS normalized on the runner's snapshot-note line",
+          ok, detail)
+
+    # (J2) N5 scope. The mapping applies ONLY in a scenario that asserts
+    # native diagnostics, ONLY in the runner's own channels / its log, and
+    # ONLY behind the RECORDED runner script path. Each control below breaks
+    # exactly one of those three conditions and must be REPORTED.
+    scripts = "/golden/haejwo/scripts"
+    scripts_known = [(scripts, "scripts")]
+    real = "%s/codex_consult.sh: line %d: /blk: Is a directory\n"
+    quoted = "Quoted example: codex_consult.sh: line %d: x: Is a directory\n"
+
+    ok, detail, _ = _differences(
+        _synthetic([("stderr", real % (scripts, 340))], known=scripts_known,
+                   native_diag=True),
+        _synthetic([("stderr", real % (scripts, 242))], known=scripts_known,
+                   native_diag=True))
+    check("golden: N5 maps the line number of the RECORDED runner path in a "
+          "native-diagnostics scenario", ok, detail)
+
+    for label, item in (("a reply artifact", "artifacts@%s/brief.reply.md" % scripts),
+                        ("captured stdin", "calls/1.stdin")):
+        ok, _, _ = _differences(
+            _synthetic([(item, real % (scripts, 340))], known=scripts_known,
+                       native_diag=True),
+            _synthetic([(item, real % (scripts, 242))], known=scripts_known,
+                       native_diag=True))
+        check("golden negative control: N5 never reaches %s" % label, not ok,
+              "the harness called two different line numbers identical")
+        ok, _, _ = _differences(
+            _synthetic([(item, quoted % 10)], known=scripts_known, native_diag=True),
+            _synthetic([(item, quoted % 999)], known=scripts_known, native_diag=True))
+        check("golden negative control: a QUOTED `codex_consult.sh: line N:` in %s "
+              "is not normalized away" % label, not ok,
+              "the harness called two different quoted examples identical")
+
+    ok, _, _ = _differences(
+        _synthetic([("stdout", quoted % 10)], known=scripts_known, native_diag=True),
+        _synthetic([("stdout", quoted % 999)], known=scripts_known, native_diag=True))
+    check("golden negative control: a QUOTED bare `codex_consult.sh: line N:` on the "
+          "runner's own stdout is not normalized away", not ok,
+          "a bare filename matched without the recorded scripts path")
+
+    ok, _, _ = _differences(
+        _synthetic([("stdout", real % (scripts, 340))], known=scripts_known),
+        _synthetic([("stdout", real % (scripts, 242))], known=scripts_known))
+    check("golden negative control: N5 is inert in a scenario that asserts no native "
+          "diagnostics", not ok, "N5 fired outside a native_diagnostics scenario")
+
+    # `-o x.log`: the REPLY takes the .log name and the runner's log moves to
+    # x.log.log (the aliasing rule). Only the file carrying the log header is
+    # the log — a suffix test would have made the reply eligible.
+    hdr = "# codex_consult v0.4  mode=consult timeout=600s  Thu Jan  1 00:00:00 2026\n"
+    alias_reply = "artifacts@%s/x.log" % scripts
+    alias_log = "artifacts@%s/x.log.log" % scripts
+    ok, _, _ = _differences(
+        _synthetic([(alias_reply, real % (scripts, 340)),
+                    (alias_log, hdr + real % (scripts, 340))],
+                   known=scripts_known, native_diag=True),
+        _synthetic([(alias_reply, real % (scripts, 242)),
+                    (alias_log, hdr + real % (scripts, 340))],
+                   known=scripts_known, native_diag=True))
+    check("golden negative control: N5 never reaches a reply written to x.log",
+          not ok, "a `-o x.log` reply was normalized as if it were the log")
+    ok, detail, _ = _differences(
+        _synthetic([(alias_reply, real % (scripts, 340)),
+                    (alias_log, hdr + real % (scripts, 340))],
+                   known=scripts_known, native_diag=True),
+        _synthetic([(alias_reply, real % (scripts, 340)),
+                    (alias_log, hdr + real % (scripts, 242))],
+                   known=scripts_known, native_diag=True))
+    check("golden: N5 still maps the line number inside the REAL log (x.log.log)",
           ok, detail)
 
     # the designated fields still ARE normalized (the mapping is not dead)
@@ -1207,9 +1422,16 @@ MUTATIONS = (
      [(b'run_attempt 1 "$EVENTS" codex exec --json',
        b'export HOME="$HOME/golden-selftest-home"\nrun_attempt 1 "$EVENTS" codex exec --json')],
      r"\Acalls/1\.env\Z", 1),
+    # 2.13: this mutation used to suppress the cleanup of the bounded wrapper
+    # (`BOUNDED_PY`), which no longer exists — the wall clock is a file in
+    # scripts/lib and the runner allocates no per-run copy of it
+    # (ACCEPTED_DIFFERENCES[0]). The postcondition under test is unchanged: a
+    # file the runner leaves behind in TMPDIR must be REPORTED, and only by
+    # the tmp inventory.
     ("postcondition (a file left behind)", "file-brief-clean",
-     [(b'[ -n "$BOUNDED_PY" ] && rm -f "$BOUNDED_PY"',
-       b'[ -n "$BOUNDED_PY" ] && : "$BOUNDED_PY"')],
+     [(b'run_attempt 1 "$EVENTS" codex exec --json',
+       b': > "${TMPDIR:-/tmp}/golden-selftest-leftover"\n'
+       b'run_attempt 1 "$EVENTS" codex exec --json')],
      r"\Atmp/inventory", 1),
 )
 # The artifact mutant is built separately: it appends to $OUT AFTER `cat "$OUT"`,
@@ -1325,7 +1547,7 @@ def run(check, tk):
                 pairs += 1
                 check("golden %s: scratch repos share one HEAD (ids stay exact)" % name,
                       base["head"] == cand["head"], "%s != %s" % (base["head"], cand["head"]))
-                same, detail = _compare(base, cand)
+                same, detail = _compare(base, cand, scen["name"])
                 check("golden %s: baseline and candidate are byte-identical" % name,
                       same, detail)
                 limit = scen.get("timeout_limit")
@@ -1339,11 +1561,12 @@ def run(check, tk):
                           gone == ["gone", "gone"], str(gone))
                 if scen.get("native_diagnostics"):
                     # The one fixture that reaches bash's OWN diagnostics — the
-                    # case N5 exists for. With N5_RELOCATED empty the source
-                    # locations are compared exactly, so this asserts both that
-                    # the fixture still produces them and that they matched.
+                    # case N5 exists for. The pattern below requires them to
+                    # still come from a `*_consult.sh`, so an operation that
+                    # moved INTO scripts/lib would fail here even if the
+                    # comparison had been satisfied.
                     diag = [l for l in _item(cand, "stderr").split("\n")
-                            if re.search(r"_consult\.sh: line \d+:", l)]
+                            if _NATIVE_DIAG_RE.search(l)]
                     check("golden %s: native shell diagnostics present and matched exactly"
                           % name, bool(diag) and same, "\n".join(diag) or "no diagnostic")
                 if scen.get("signal"):
@@ -1415,10 +1638,23 @@ def run(check, tk):
                   not ok and in_channel,
                   "differing items: %s (expected %d matching %s)" % (diffs, count, pattern))
 
-        check("golden: N5 relocated-diagnostic list is empty in this commit",
-              N5_RELOCATED == (), str(N5_RELOCATED))
-        print("  golden: %d scenario pairs (%d runs) in %.1fs"
-              % (pairs, len(results), time.time() - started))
+        # N5 may normalize a line NUMBER, never a source file name: every
+        # pattern is anchored to the RECORDED scripts path AND to an
+        # ENTRYPOINT's own name, so a diagnostic that moved into scripts/lib —
+        # or one named only by a bare filename in prose — still fails the
+        # comparison.
+        check("golden: N5 normalizes line numbers only, behind the recorded scripts "
+              "path, and only for the entrypoints' own diagnostics",
+              len(N5_RELOCATED) == 1
+              and all(re.escape(_tok("scripts")) in p and r"_consult\.sh: line " in p
+                      for p in N5_RELOCATED),
+              repr(N5_RELOCATED))
+        check("golden: the accepted-difference ledger holds exactly the enumerated entries",
+              len(ACCEPTED_DIFFERENCES) == 2,
+              str([e[3] for e in ACCEPTED_DIFFERENCES]))
+        print("  golden: %d scenario pairs (%d runs) in %.1fs; accepted differences "
+              "exercised: %d" % (pairs, len(results), time.time() - started,
+                                 len(_ACCEPTED_USED)))
     finally:
         for k, v in saved.items():
             if v is None:

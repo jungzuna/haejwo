@@ -14,6 +14,5 @@ architecture choices, root-cause analysis, subtle bugs, risk/tradeoff calls.
 - When a brief asks you to verify a claim or finding, report each item as
   confirmed | plausible | not-reproduced with file:line (or command) evidence.
 - Report back: your conclusion, the key evidence, rejected alternatives (one line
-  each), and concrete next actions — under 200 words unless the orchestrator asked
-  for depth. End with `Judgment calls:` (behavioral choices the brief didn't
+  each), and concrete next actions — proportional to the question. End with `Judgment calls:` (behavioral choices the brief didn't
   settle, or `none`).

@@ -10,7 +10,7 @@ description: Run pre-implementation consensus with an independent reviewer (read
 You are the **haejwo host**. Drive pre-implementation consensus — planning outweighs implementation, and different models see different failure modes, so the plan gets debated BEFORE any code. The user's input: **$ARGUMENTS**
 
 ## 0. Scope the rigor (don't over-ceremonize)
-Infer the scope: architecture / feature / refactor / bugfix / investigation. Plan consensus is for **material judgment-bearing feature/risk work** — scale depth accordingly. Mechanical or bounded-research work does not need this command: state `No plan because: <reason>` directly in the brief. If the work is trivially small (typo-tier, single obvious change), SAY SO and offer to skip planning — this command is for decisions worth debating.
+Infer the scope: architecture / feature / refactor / bugfix / investigation. Plan consensus is for **material judgment-bearing feature/risk work** — scale depth accordingly. Mechanical or bounded-research work does not need this command: state `No plan because: <reason>` directly in the brief. If the work is trivially small (typo-tier, single obvious change), SAY SO and offer to skip planning — this command is for decisions worth debating. Choose the shape now: A (default: host drafts, reviewer critiques) or B (independent drafts — architecture-level forks or when the owner asks). If B, do NOT send your draft for critique in §2; go to §2b after §1.
 
 ## 1. Draft
 Write your plan draft: goal, key decisions + rationale, alternatives you considered, risks/unknowns, implementation checklist. Note your own uncertainties explicitly — the reviewer should attack the real tensions.
@@ -21,9 +21,17 @@ Reviewer selection: `--reviewer` if given; else the configured other-CLI reviewe
 - **claude** — self-contained brief to `${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh --mode consult <brief>` in the background; wait for completion once. Use the same rebuttal instruction.
 - **fallback** — NOT consensus or independent review, same model: Claude host spawns `haejwo:deep-reasoner` (an isolated critique fallback; the host remains sole authority); Codex host: native same-model subagent. Use the same rebuttal instruction.
 
+## 2b. Shape B — independent drafts (architecture-level forks or when the owner asks)
+Default is shape A above (host drafts, reviewer critiques). Use shape B when the fork is architecture-level or the owner asks for it; it costs roughly double the analysis of shape A (estimate, not measured).
+1. **Host draft first** — WRITE YOUR OWN DRAFT INTO THE CONVERSATION BEFORE the reviewer is contacted. Recording it first is what makes the independence auditable; nothing else does.
+2. **Reviewer draft** — send the reviewer the same factual packet (goal, constraints, evidence, open questions) with NO host draft in it, asking for a full plan of their own.
+3. **One cross-critique round** — critique the reviewer's draft in the ledger (§3), then send a NEW self-contained session brief carrying the packet, BOTH drafts, and the ledger, and ask for rebuttal.
+4. **Merge** — fold both drafts into one plan. **Hard cap: two cross rounds**, then handle it as a deadlock (§4).
+5. **Report** — the Consensus line states `(shape B)`. If the harness delivered the reviewer's reply before your draft was recorded, SAY SO: independence was lost for that round.
+
 ## 3. Disagreement ledger (the anti-fake-convergence core)
 Convert every reviewer objection into a ledger row: `# | objection | evidence level | host response | status`. Status must be one of **accepted** (plan changed — say how), **rejected** (with grounded rationale), **deferred** (explicitly parked, with why). Capitulation without rationale is not a valid status. The ledger is YOUR debate discipline — surface only the material disagreements and their resolutions to the user, not the ceremonial full table.
-- Rounds 2-3 (only if substantive objections remain): send the REVISED plan + ledger back via `--resume` (codex remembers the session) or the same subagent. Round 2 = revised plan + remaining objections; round 3 = final objections or deadlock. **Hard cap: 3 rounds.** Do not re-litigate settled rows unless new evidence changes them.
+- Rounds 2-3 (only if substantive objections remain): send the REVISED plan + ledger back as a NEW self-contained session brief (revised plan + ledger + enough context to reconstruct the decision, not just the latest edits); never `--resume`. Round 2 = revised plan + remaining objections; round 3 = final objections or deadlock. **Hard cap: 3 rounds.** Do not re-litigate settled rows unless new evidence changes them.
 
 ## 4. Converge or escalate
 - **Consensus** = every ledger row has a status + rationale, and no substantive objection stands unaddressed.

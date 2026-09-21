@@ -16,7 +16,7 @@
 
 [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex) are already the official coding harnesses: complete, widely used, and best matched to their models. haejwo doesn't replace them — install it and it's on: the **cold-start plugin** that makes **multiple models run well on top of them, automatically**, with no configuration or workflow commands. You just write the ask as a prompt — however roughly, that's the 해줘 — and the host model plans, delegates across cost tiers, debates with an independent reviewer running on a **different vendor's model** when available, reviews, and verifies.
 
-The core idea: keep the expensive main model on **judgment** (plan, delegate, decide, synthesize) and push **execution** to cheap tiers — and don't just ask nicely. A `PreToolUse` hook **physically blocks** the main agent when it starts implementing instead of delegating.
+The core idea: keep the expensive main model on **judgment** (plan, delegate, decide, synthesize) and push **execution** to cost-appropriate tiers — and don't just ask nicely. A `PreToolUse` hook **physically blocks** the main agent when it starts implementing instead of delegating.
 
 ## Install
 
@@ -37,7 +37,7 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 
 Hooks load at session start, so restart the session (or run `/reload-plugins` on Claude Code) after install. `/haejwo:setup` is optional — it configures model tiers, edit budget, and the reviewer once and persists; safe defaults are already active before you run it, and on first use haejwo offers it automatically.
 
-**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). The default `deep-reasoner` tier inherits your session's model — no separate Opus dependency out of the box. **Want default-worker/task-worker off Sonnet/Haiku too?** Run `/haejwo:setup` and pick the `Balanced` or `Budget` tier preset.
+**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). The default `deep-reasoner` tier inherits your session's model — no separate Opus dependency out of the box. **Want default-worker/task-worker off Sonnet/Haiku too?** Run `/haejwo:setup` and pick the `Quality`, `Budget`, or `Custom` tier preset.
 
 Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 
@@ -48,7 +48,7 @@ Local development install: clone, then `/plugin marketplace add <clone-path>` / 
 | **Zero-config orchestration** | SessionStart injects a minimal operating core before setup, and the full rules + live config once configured. Safe defaults are active immediately either way: gate ON, 2 files/turn, bash-guard ON |
 | **Judgment-first planning** | Feature-scale work starts with plan consensus: the host debates planning, analysis, and review decisions before implementation |
 | **Cross-vendor review when available** | With both CLIs installed, the reviewer is the other company's model — codex on Claude Code, claude on Codex |
-| **Cheap execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to cheaper worker tiers (`spawn_agent` model mapping on Codex) |
+| **Cost-appropriate execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to the configured worker tiers (`spawn_agent` model mapping on Codex). On Claude Code, with haejwo's shipped agent definitions, `inherit` is meaningful for `deep-reasoner` only — `default-worker` and `task-worker` run at their agent file's default model unless an explicit model is passed, and the delegation gate steers an omitted override without verifying which model actually ran |
 | **Physical delegation gate** | A PreToolUse gate stops the main agent after **N distinct code files per turn** and blocks main-agent Bash writes to code files. Subagents are exempt; hook errors fail open |
 | **Push consent** | Workers never push or deploy. The host asks first unless you grant repo-level auto-push with `/haejwo:push auto` |
 
@@ -59,7 +59,7 @@ Normal use involves **zero haejwo commands** — commands exist only for setting
 | | Claude Code only | Codex only | Both CLIs |
 | --- | --- | --- | --- |
 | Gate + rules + plan-first + push consent | ✓ | ✓ | ✓ |
-| Model tiers (cheap execution, expensive judgment) | ✓ session model/sonnet/haiku (judgment inherits; execution downshifts) | ✓ via `spawn_agent` model mapping (judgment inherits; execution downshifts) | ✓ |
+| Model tiers (cost-appropriate execution, expensive judgment) | ✓ session model/sonnet/haiku (judgment inherits; execution runs at the configured tiers) | ✓ via `spawn_agent` model mapping (judgment inherits; execution runs at the configured tiers) | ✓ |
 | **Cross-vendor adversarial review** | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.
@@ -78,7 +78,7 @@ Normal use needs **none** of these; you just talk. They exist to adjust or inspe
 
 ## Dual-host parity
 
-One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). Codex-side tiers ride the native `spawn_agent` model/effort parameters — the reasoner tier inherits the host model (judgment never silently downgrades); worker and chore tiers downshift.
+One repo, one `hooks.json`, one python core — every codex behavior was **measured, not assumed** (env compat aliases, deny round-trip, `apply_patch` multi-file parsing with atomic whole-patch deny, `turn_id` turn reset, subagent `agent_type` exemption). Codex-side tiers ride the native `spawn_agent` model/effort parameters — the reasoner tier inherits the host model (judgment never silently downgrades); worker and chore tiers run at the configured models.
 
 ## Docs
 

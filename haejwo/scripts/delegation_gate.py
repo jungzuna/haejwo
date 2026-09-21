@@ -238,6 +238,11 @@ def _agent_file_default(root, agent_name):
     for idx, line in enumerate(block):
         if not line.strip():
             continue
+        # YAML comment: neither a key nor a continuation *[task-worker.md
+        # carries a column-0 YAML comment (2026-09-21); comments are not
+        # uncertainty]*
+        if line.lstrip()[:1] == "#":
+            continue
         if line[:1].isspace():
             continue  # indented continuation of the previous key
         m = _FM_KEY.match(line)
@@ -252,9 +257,15 @@ def _agent_file_default(root, agent_name):
         if key == "model":
             if model is not None:
                 return None  # declared twice: which one wins is a guess
-            nxt = block[idx + 1] if idx + 1 < len(block) else ""
-            if not value and nxt.strip() and nxt[:1].isspace():
-                return None  # value continues on an indented line
+            if not value:
+                # an empty `model:` may still be continued further down: skip
+                # comment/blank lines before judging the next REAL line.
+                for nxt in block[idx + 1:]:
+                    if not nxt.strip() or nxt.lstrip()[:1] == "#":
+                        continue
+                    if nxt[:1].isspace():
+                        return None  # value continues on an indented line
+                    break
             model = value
     if not model:
         return "inherit"  # no model key, or `model:` with an empty value

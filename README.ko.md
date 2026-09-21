@@ -31,7 +31,9 @@ codex plugin add haejwo@haejwo
 
 훅은 세션이 시작될 때 로드되니, 설치 후 세션을 재시작하세요(Claude Code는 `/reload-plugins`). `/haejwo:setup`은 선택입니다 — 모델 티어·편집 예산·리뷰어를 한 번 설정해 영구 저장하는 것뿐이고, 실행 전에도 안전 기본값이 이미 돌아가며 첫 사용 때 haejwo가 알아서 한 번 권합니다.
 
-**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). 기본 `deep-reasoner` 티어는 세션 모델을 그대로 물려받으므로 별도의 Opus 의존성이 없습니다. **default-worker/task-worker도 Sonnet/Haiku로 내리고 싶다면** `/haejwo:setup`에서 `Balanced`나 `Budget` 프리셋을 고르세요.
+**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). 기본 `deep-reasoner` 티어는 세션 모델을 그대로 물려받으므로 별도의 Opus 의존성이 없습니다. **default-worker/task-worker의 모델을 바꾸고 싶다면** `/haejwo:setup`에서 프리셋을 고르세요. 프리셋은 호스트마다 다릅니다 — Claude Code에서는 `Standard`(기본값, 설정을 건너뛰면 이게 그대로 돕니다) / `Quality` / `Budget` / `Custom`(역할별로 직접 지정), Codex에서는 `Standard` / `Quality` / `Ultra-fast chores` / `Custom`.
+
+Claude Code에서는 haejwo가 기본으로 제공하는 에이전트 정의 기준으로 `inherit`(세션 모델 상속)이 의미를 갖는 건 deep-reasoner 하나뿐입니다. default-worker와 task-worker는 호출할 때 모델을 따로 넘기지 않으면 에이전트 파일에 적힌 기본 모델로 돕니다. 위임 게이트는 설정된 핀을 놓칠 만한 모델 누락을 보고 방향만 잡아줄 뿐, 실제로 어떤 모델이 돌았는지까지 확인해 주지는 않습니다.
 
 로컬 개발용: 클론한 뒤 `/plugin marketplace add <클론 경로>` / `codex plugin marketplace add <클론 경로>`.
 

@@ -1518,6 +1518,43 @@ def main():
                     check(f"L1 record: {name} -> 'skip:frontmatter-unreadable'",
                           (pin_rec(sid) or {}).get("tier_pin_check")
                           == "skip:frontmatter-unreadable", str(pin_rec(sid)))
+
+                # M1: a YAML comment is a comment, not uncertainty — the block
+                # still parses and the pin check still binds (origin: the
+                # 2026-09-21 `effort: low` note in agents/task-worker.md).
+                pin_cfg({"default_worker": "opus"})
+                for body, sid, name in (
+                    ("---\nname: default-worker\n# origin note\nmodel: haiku\n"
+                     "effort: low\n---\nbody\n",
+                     "sess-PINS", "column-0 '# comment' line"),
+                    ("---\nname: default-worker\n\nmodel: haiku\n---\nbody\n",
+                     "sess-PINT", "blank line inside the block"),
+                    ("---\nname: default-worker\n  # indented note\n"
+                     "model: haiku\n---\nbody\n",
+                     "sess-PINU", "indented '# comment' line"),
+                ):
+                    fm_write(body)
+                    rc, dec, r = pin_run("haejwo:default-worker", sid, root=fm_root)
+                    check(f"M1 {name} -> still parsed, pin check DENIES",
+                          dec == "deny" and "defaults to 'haiku'" in r, r)
+                    check(f"M1 record: {name} -> tier_pin_check 'deny'",
+                          (pin_rec(sid) or {}).get("tier_pin_check") == "deny",
+                          str(pin_rec(sid)))
+
+                # N1: a comment between an empty `model:` and its indented
+                # continuation must NOT hide the continuation — still a guess,
+                # still fail open. Pin == the continuation value, so only the
+                # record distinguishes a skip from a (wrong) read.
+                pin_cfg({"default_worker": "haiku"})
+                fm_write("---\nname: default-worker\nmodel:\n# comment\n"
+                         "  haiku\n---\nbody\n")
+                rc, dec, r = pin_run("haejwo:default-worker", "sess-PINV", root=fm_root)
+                check("N1 comment-separated continuation -> allow (fail open)",
+                      rc == 0 and dec != "deny", r)
+                check("N1 record: comment-separated continuation -> "
+                      "'skip:frontmatter-unreadable'",
+                      (pin_rec("sess-PINV") or {}).get("tier_pin_check")
+                      == "skip:frontmatter-unreadable", str(pin_rec("sess-PINV")))
             finally:
                 shutil.rmtree(fm_root, ignore_errors=True)
 

@@ -26,7 +26,7 @@
 # backstopped by the post-run change-detection gate.
 #
 # Usage:
-#   codex_consult.sh [--mode consult] [--resume] [-o out.md] brief.md
+#   codex_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
 #   echo "..." | codex_consult.sh --mode consult -   # stdin brief (deleted on exit)
 #
 # Mode (safety gate):
@@ -39,6 +39,28 @@
 #             model/effort/sandbox (nothing is passed); concurrent sessions can
 #             select the wrong thread — prefer a NEW session with a summary
 #             brief; escalation is always a new session.
+#   --snapshot  runs the reviewer in a DETACHED WORKTREE snapshot of this
+#             repository instead of the working copy — see "Snapshot" below.
+#             Incompatible with --resume (a live thread cannot be re-pointed at
+#             a new working root): the combination exits 2 before any CLI call.
+#
+# Snapshot (--snapshot, 2.11): HEAD plus the NET uncommitted working-tree
+#   changes (one `git diff --binary <SHA>` patch replayed with `git apply
+#   --index` — staged and unstaged states are NOT reproduced separately) plus
+#   untracked non-ignored files (sorted, first 2000; symlinks copied AS LINKS,
+#   never followed). Ignored files are omitted, so dependencies and
+#   configuration may be missing — the reviewer is told to report a missing
+#   capability rather than install anything. Capture is NOT atomic: it is
+#   bracketed by timestamps and followed by a drift re-check that REFUSES
+#   ("original changed during capture — retry") rather than shipping a torn
+#   snapshot. Any capture failure exits 2 with `snapshot unavailable: <reason>`
+#   BEFORE the paid call, and nothing partial survives. This is isolation from
+#   the working copy, NOT containment: the snapshot shares the repository's
+#   `.git` metadata, and writes to the ORIGINAL working tree or to global
+#   config during the run are invisible to the change-detection gate (which
+#   runs inside the snapshot). Refused up front: unborn HEAD, unresolved merge
+#   conflicts, gitlinks (submodules) and embedded untracked repositories —
+#   none of which a plain worktree snapshot can reproduce honestly.
 #
 # Config (${CLAUDE_PLUGIN_DATA}/config.json, or the derived path — see
 # CODEX_SANDBOX below for the exact resolution rules). Keys read here:
@@ -111,6 +133,12 @@
 #   is invoked, so an unverifiable run is never paid for. Files this gate
 #   cannot read are counted and disclosed, never skipped silently.
 #
+# Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
+# the two the SAME file and the runner's own log would overwrite the reply it
+# just captured. When that collision happens the log takes `$OUT.log` instead.
+# Applies in every mode — the hazard predates --snapshot.
+# *[origin: ship review Z4]*
+#
 # Verification discipline: this is a READ-ONLY reviewer slot — never trust it
 #   to have made changes; workers implement, this only analyzes and replies.
 # Waiting discipline: run in the background and wait for ONE completion event —
@@ -131,7 +159,7 @@ print_help() {
 codex_consult.sh — feed a self-contained brief to codex exec; capture reply.
 
 Usage:
-  codex_consult.sh [--mode consult] [--resume] [-o out.md] brief.md
+  codex_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
   echo "..." | codex_consult.sh --mode consult -
 
 Mode:
@@ -140,6 +168,11 @@ Mode:
             model/effort/sandbox (nothing is passed); concurrent sessions can
             select the wrong thread — prefer a NEW session with a summary
             brief; escalation is always a new session.
+  --snapshot  review a detached worktree snapshot (HEAD + net uncommitted
+            changes + untracked non-ignored files, first 2000) instead of the
+            live working copy. Ignored files are omitted; capture is not
+            atomic (drift REFUSES); shared .git metadata means this is
+            isolation, not containment. Refuses with --resume.
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
 non-goal); use the standalone collab tool for manual implement runs.
@@ -165,9 +198,11 @@ EOF
 MODE=""
 OUT=""
 RESUME=0
+SNAPSHOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --resume) RESUME=1; shift ;;
+    --snapshot) SNAPSHOT=1; shift ;;
     --mode)   [ $# -ge 2 ] || { echo "--mode requires a value (consult)" >&2; exit 2; }; MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#--mode=}"; shift ;;
     -o)       [ $# -ge 2 ] || { echo "-o requires a value (output file)" >&2; exit 2; }; OUT="$2"; shift 2 ;;
@@ -193,6 +228,16 @@ case "$MODE" in
     ;;
 esac
 
+# --snapshot + --resume is incoherent, not merely unsupported: a resumed thread
+# already has a working root and this runner cannot re-point it at a new one,
+# so the reviewer would read the ORIGINAL while the disclosure claimed a
+# snapshot. Refuse BEFORE any CLI call — an incoherent run is never paid for.
+# *[origin: B8 snapshot spec 1 — escalation is always a new session]*
+if [ "$SNAPSHOT" = 1 ] && [ "$RESUME" = 1 ]; then
+  echo "--snapshot has no resume semantics (a resumed thread keeps its original working root); start a NEW session with --snapshot." >&2
+  exit 2
+fi
+
 BRIEF="${1:-}"
 [ -z "$BRIEF" ] && { echo "brief file required. usage: codex_consult.sh [--mode consult] [-o out] brief.md|-" >&2; exit 2; }
 
@@ -205,13 +250,53 @@ TMPBRIEF=""
 EFFECTIVE_BRIEF=""
 SNAPDIR=""
 BOUNDED_PY=""
+# --snapshot state. ORIG is the ORIGINAL repository root, SNAP the detached
+# worktree, SNAPMETA the capture scratch dir (patch + computed disclosure).
+# Who owns SNAP is never inferred from a marker this script wrote — cleanup
+# asks git (`worktree list --porcelain`), so an interruption between `mktemp`
+# and `worktree add` cannot leave the wrong removal strategy behind.
+# Sentinel terminator for every path this script receives from python.
+# Command substitution strips trailing newlines and a directory name may
+# legally END in one, so the SENTINEL — not the shell — marks where a value
+# stops. *[origin: ship review Z3/Z5 — lossless path transport]*
+SNAP_META_END=$'\004'"__HJW_SNAP_END__"
+META_VAL=""
+strip_sentinel() {
+  # Sets $META_VAL to $1 minus exactly one trailing sentinel; fails if the
+  # sentinel is absent (a truncated value must never pass as a path).
+  META_VAL=""
+  case "$1" in
+    *"$SNAP_META_END") META_VAL="${1%"$SNAP_META_END"}"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+ORIG=""
+SNAP=""
+SNAPMETA=""
+SNAP_SHA=""
+SNAP_TAG=""
+SNAP_NOTE=""
+SNAP_CLEANUP_DONE=0
+SNAP_CLEANUP_FAILED=0
+SNAP_CLEANUP_REPORTED=0
 cleanup() {
+  # Snapshot removal runs FIRST: it needs `bounded` (and therefore BOUNDED_PY),
+  # which the very next lines delete. Guarded by $SNAP so the early exits above
+  # — which run before snapshot_cleanup is even defined — stay silent.
+  if [ -n "$SNAP" ]; then snapshot_cleanup; report_snapshot_cleanup; fi
   [ -n "$TMPBRIEF" ] && rm -f "$TMPBRIEF"
   [ -n "$EFFECTIVE_BRIEF" ] && rm -f "$EFFECTIVE_BRIEF"
   [ -n "$BOUNDED_PY" ] && rm -f "$BOUNDED_PY"
+  [ -n "$SNAPMETA" ] && rm -rf "$SNAPMETA"
   [ -n "$SNAPDIR" ] && rm -rf "$SNAPDIR"
 }
+# Armed HERE — before the capture creates anything — so there is no window in
+# which a snapshot exists with no trap to remove it.
 trap cleanup EXIT
+# A snapshot worktree must not outlive an interrupted run either; bash does not
+# fire the EXIT trap for an uncaught INT/TERM, so catch both and exit through it.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 if [ "$BRIEF" = "-" ]; then
   BRIEF="$(mktemp "${TMPDIR:-/tmp}/codex_brief.XXXXXX.md")" || {
     echo "cannot create a temp file (is ${TMPDIR:-/tmp} writable?)" >&2; exit 4; }
@@ -222,8 +307,41 @@ fi
 
 [ -z "$OUT" ] && OUT="${BRIEF%.md}.reply.md"
 LOG="${OUT%.*}.log"
+# -o x.log would derive the SAME path for the log and the reply; give the log
+# its own name so the runner never overwrites the answer it captured.
+# *[origin: ship review Z4]*
+[ "$LOG" = "$OUT" ] && LOG="$OUT.log"
 EVENTS="${OUT%.*}.events.jsonl"
 EVENTS2="${OUT%.*}.events.2.jsonl"
+
+# Under --snapshot the reviewer's working root becomes the snapshot, so every
+# caller path is resolved to an absolute one HERE, before anything chdirs: a
+# relative brief or -o would otherwise be read from / written into a directory
+# that is deleted on exit. Only the final component is left unresolved (the
+# reply/log do not exist yet). Non-snapshot runs are untouched — they never
+# chdir, so their relative paths keep meaning exactly what they always meant.
+# *[origin: B8 snapshot spec 2a]*
+canon_path() {
+  # Terminated with the sentinel so a path ending in a newline survives the
+  # command substitution below. *[origin: ship review Z3]*
+  python3 -c 'import os, sys
+p = os.path.abspath(sys.argv[1])
+d, b = os.path.dirname(p), os.path.basename(p)
+sys.stdout.write(os.path.join(os.path.realpath(d), b) + sys.argv[2])' "$1" "$SNAP_META_END"
+}
+if [ "$SNAPSHOT" = 1 ]; then
+  for _v in BRIEF OUT LOG EVENTS EVENTS2; do
+    _canon="$(canon_path "${!_v}")" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    strip_sentinel "$_canon" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    [ -n "$META_VAL" ] || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    printf -v "$_v" '%s' "$META_VAL"
+  done
+  unset _v _canon
+  # Canonicalization can make two textually different paths the SAME file
+  # (a symlinked directory); re-apply the log-aliasing rule on the resolved
+  # pair. *[origin: ship review Z4]*
+  [ "$LOG" = "$OUT" ] && LOG="$OUT.log"
+fi
 
 # ---- effective brief: REVIEWER CONTRACT + blank line + original brief ----
 EFFECTIVE_BRIEF="$(mktemp "${TMPDIR:-/tmp}/codex_effective.XXXXXX.md")" || {
@@ -283,6 +401,490 @@ PY
 bounded() {
   local secs="$1"; shift
   python3 "$BOUNDED_PY" "$secs" "$@"
+}
+
+# ---- --snapshot: capture the repository into a detached worktree ----
+# Every step's status is checked and EVERY failure refuses before the paid
+# call: a snapshot that is silently incomplete is worse than no snapshot,
+# because the reviewer's conclusions would be about a repository that never
+# existed. Reasons are printed loudly and nothing partial survives (the
+# EXIT/INT/TERM traps are armed above, BEFORE anything is created).
+# *[origin: B8 snapshot spec 2 — fail closed and loud on capture]*
+read_meta() {
+  # Command substitution strips trailing newlines, so the capture writes every
+  # value with a sentinel terminator and the SENTINEL — not the shell — marks
+  # the end: a repository path may legally end in a newline and $(cat) alone
+  # would silently corrupt it. The result lands in $META_VAL, never in a
+  # substitution (which would strip it all over again).
+  local raw
+  META_VAL=""
+  raw="$(cat "$1" 2>/dev/null)" || return 1
+  case "$raw" in
+    *"$SNAP_META_END") META_VAL="${raw%"$SNAP_META_END"}"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+snapshot_refuse() {
+  local reason="$1"
+  [ -n "$reason" ] || reason="capture failed (no reason recorded)"
+  # Best effort into the log as well: a caller who keeps only $LOG must still
+  # learn why the snapshot was refused.
+  printf '# ---- snapshot unavailable: %s ----\n' "$reason" >> "$LOG" 2>/dev/null
+  echo "snapshot unavailable: $reason" >&2
+  exit 2
+}
+
+snapshot_read_or_refuse() {
+  # $1 = meta file, $2 = what it holds (for the failure message).
+  read_meta "$1" || snapshot_refuse "capture produced no $2"
+}
+
+snapshot_preflight() {
+  # $1 = starting directory, $2 = meta dir. Writes `orig` and `sha`, or
+  # `refuse`. Runs BEFORE anything is created, so a refusal here costs nothing.
+  bounded 120 python3 - "$1" "$2" <<'PY'
+import os, subprocess, sys
+
+workdir, meta = sys.argv[1] or os.getcwd(), sys.argv[2]
+SENT = "\x04__HJW_SNAP_END__"
+
+
+def write_meta(name, value):
+    # Sentinel-terminated so the shell can read the value back byte-exactly.
+    try:
+        with open(os.path.join(meta, name), "w", encoding="utf-8",
+                  errors="surrogateescape") as f:
+            f.write(value + SENT)
+        return True
+    except Exception:
+        return False
+
+
+def refuse(reason):
+    if not write_meta("refuse", reason):
+        # The meta dir itself is unwritable — say so on stderr rather than
+        # exiting with a status the caller cannot explain.
+        sys.stderr.write("snapshot capture: %s\n" % reason)
+    sys.exit(3)
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True)
+
+
+def detail(r):
+    return r.stderr.decode("utf-8", "replace").strip() or ("rc=%d" % r.returncode)
+
+
+r = git(workdir, "rev-parse", "--show-toplevel")
+if r.returncode != 0:
+    refuse("not a git repository (%s)" % detail(r))
+# ONLY the trailing newline git appends — a directory name may legally end in
+# a space, and .strip() would silently point every path elsewhere.
+root = r.stdout.decode("utf-8", "surrogateescape")
+if root.endswith("\n"):
+    root = root[:-1]
+if not root:
+    refuse("git could not name the repository root")
+
+r = git(root, "rev-parse", "--verify", "HEAD")
+if r.returncode != 0:
+    refuse("unborn HEAD — there is no commit to snapshot")
+sha = r.stdout.decode("ascii", "replace").strip()
+
+r = git(root, "diff", "--name-only", "--diff-filter=U")
+if r.returncode != 0:
+    refuse("cannot list unmerged paths (%s)" % detail(r))
+if r.stdout.strip():
+    refuse("unresolved merge conflicts in the working tree — resolve them first")
+
+# A gitlink is a POINTER to another repository: `worktree add` recreates the
+# pointer but never the submodule's contents, so the reviewer would read an
+# empty directory and believe it.
+for args in (("ls-tree", "-r", "HEAD", "-z"), ("ls-files", "-s", "-z")):
+    r = git(root, *args)
+    if r.returncode != 0:
+        refuse("cannot inspect the tree/index (%s)" % detail(r))
+    for entry in r.stdout.split(b"\0"):
+        if entry.startswith(b"160000 "):
+            refuse("gitlink (submodule) entry present — a worktree snapshot "
+                   "cannot reproduce its contents")
+
+# An embedded untracked repository is listed by git as a single directory and
+# would be copied as an opaque blob (or not at all) — refuse instead of
+# guessing which of the two the caller meant.
+r = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+if r.returncode != 0:
+    refuse("cannot list untracked files (%s)" % detail(r))
+for raw in r.stdout.split(b"\0"):
+    if not raw:
+        continue
+    rel = raw.decode("utf-8", "surrogateescape").rstrip("/")
+    p = os.path.join(root, rel)
+    # islink first: a symlink is copied AS A LINK and never followed, so a
+    # repository behind one is never traversed by this capture.
+    if not os.path.islink(p) and os.path.isdir(p) and os.path.exists(os.path.join(p, ".git")):
+        refuse("embedded untracked repository: %s" % rel)
+
+if not write_meta("orig", root) or not write_meta("sha", sha):
+    refuse("cannot record the repository root and HEAD")
+PY
+}
+
+snapshot_build() {
+  # $1 = ORIG, $2 = SHA, $3 = SNAP, $4 = meta dir, rest = caller paths that
+  # must NOT live inside the snapshot. Writes `tag`, `note` and `log`, or
+  # `refuse`. Every git call and every write is status-checked.
+  bounded 600 python3 - "$@" <<'PY'
+import hashlib, os, shutil, subprocess, sys, time
+
+root, sha, snap, meta = sys.argv[1:5]
+guard = [p for p in sys.argv[5:] if p]
+CAP = 2000
+SENT = "\x04__HJW_SNAP_END__"
+
+
+def write_meta(name, value, sentinel=True):
+    try:
+        with open(os.path.join(meta, name), "w", encoding="utf-8",
+                  errors="surrogateescape") as f:
+            f.write(value + SENT if sentinel else value)
+        return True
+    except Exception:
+        return False
+
+
+def refuse(reason):
+    if not write_meta("refuse", reason):
+        sys.stderr.write("snapshot capture: %s\n" % reason)
+    sys.exit(3)
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True)
+
+
+def detail(r):
+    return r.stderr.decode("utf-8", "replace").strip() or ("rc=%d" % r.returncode)
+
+
+def gitck(cwd, *args):
+    # There is no "best effort" inside a capture: a git call whose status we
+    # ignored would put an unknown amount of the repository into the snapshot.
+    r = git(cwd, *args)
+    if r.returncode != 0:
+        refuse("git %s failed: %s" % (" ".join(args), detail(r)))
+    return r.stdout
+
+
+def under(child, parent):
+    c, p = os.path.realpath(child), os.path.realpath(parent)
+    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+
+
+# The snapshot must never live inside the repository it copies: it would show
+# up in the original's own status and in its own change detection.
+if under(snap, root):
+    refuse("the temp directory lies inside the repository (%s) — point TMPDIR "
+           "outside it" % root)
+for p in guard:
+    if under(p, snap):
+        refuse("a caller path lies inside the snapshot and would be deleted "
+               "with it: %s" % p)
+
+gitck(root, "worktree", "add", "--detach", snap, sha)
+
+
+def stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def tracked_patch():
+    # Working tree vs the captured commit: this reproduces the NET content,
+    # NOT the separate staged/unstaged states (documented in the brief note).
+    return gitck(root, "diff", "--binary", "--no-ext-diff", "--no-textconv", sha)
+
+
+def untracked_list():
+    raw = gitck(root, "ls-files", "--others", "--exclude-standard", "-z")
+    return sorted(x for x in raw.split(b"\0") if x)
+
+
+def fingerprint(path_abs):
+    if os.path.islink(path_abs):
+        return "link:" + hashlib.sha1(
+            os.readlink(path_abs).encode("utf-8", "surrogateescape")).hexdigest()
+    h = hashlib.sha1()
+    with open(path_abs, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+start = stamp()
+patch = tracked_patch()
+patch_path = os.path.join(meta, "capture.patch")
+try:
+    with open(patch_path, "wb") as f:
+        f.write(patch)
+except Exception as exc:
+    refuse("cannot stage the working-tree patch: %s" % exc)
+if patch:
+    r = git(snap, "apply", "--binary", "--index", patch_path)
+    if r.returncode != 0:
+        refuse("cannot replay the working-tree patch into the snapshot: %s" % detail(r))
+names = gitck(root, "diff", "--name-only", "--no-ext-diff", "--no-textconv", "-z", sha)
+n_paths = len([x for x in names.split(b"\0") if x])
+
+eligible = untracked_list()
+n_eligible = len(eligible)
+partial = n_eligible > CAP
+selected = eligible[:CAP]
+src_prints = []
+dst_prints = []
+for raw in selected:
+    rel = raw.decode("utf-8", "surrogateescape")
+    src = os.path.join(root, rel)
+    dst = os.path.join(snap, rel)
+    try:
+        before = fingerprint(src)
+    except Exception as exc:
+        # NEVER downgraded to a coverage note: an unreadable file is a hole in
+        # the snapshot, not a cap omission.
+        refuse("cannot read untracked file %r: %s" % (rel, exc))
+    try:
+        parent = os.path.dirname(dst)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if os.path.islink(src):
+            # Copied AS A LINK: following it could pull in content from
+            # outside the repository and silently widen the snapshot.
+            if os.path.lexists(dst):
+                os.remove(dst)
+            os.symlink(os.readlink(src), dst)
+        else:
+            shutil.copy2(src, dst, follow_symlinks=False)
+    except Exception as exc:
+        refuse("cannot copy untracked file %r into the snapshot: %s" % (rel, exc))
+    try:
+        after = fingerprint(dst)
+    except Exception as exc:
+        refuse("cannot verify the copied file %r: %s" % (rel, exc))
+    # The copy is not atomic either. Hashing only the SOURCE would certify
+    # content the snapshot does not actually hold if a writer changed the file
+    # mid-copy, so the destination is hashed too and the two must agree.
+    if after != before:
+        refuse("untracked file changed during capture: %s" % rel)
+    src_prints.append((raw, before))
+    dst_prints.append((raw, after))
+end = stamp()
+
+# The digest certifies what the snapshot HOLDS, so it is computed over the
+# destination fingerprints.
+digest = hashlib.sha256()
+digest.update(sha.encode("ascii"))
+digest.update(b"\0")
+digest.update(patch)
+digest.update(b"\0")
+for raw, fp in sorted(dst_prints):
+    digest.update(raw + b"\t" + fp.encode("ascii") + b"\n")
+snapshot_digest = digest.hexdigest()
+
+# Drift re-check: capture is a sequence of git calls, not an atomic operation,
+# so a writer active in the original can tear it. Recompute from the ORIGINAL
+# and compare against the pre-copy source fingerprints; REFUSE rather than
+# review a state that never existed.
+drifted = tracked_patch() != patch or untracked_list() != eligible
+if not drifted:
+    for raw, fp in src_prints:
+        try:
+            if fingerprint(os.path.join(root, raw.decode("utf-8", "surrogateescape"))) != fp:
+                drifted = True
+                break
+        except Exception:
+            drifted = True
+            break
+if drifted:
+    refuse("original changed during capture — retry")
+
+ignored_raw = gitck(root, "ls-files", "--others", "--ignored", "--exclude-standard",
+                    "--directory", "-z")
+n_ignored = len([x for x in ignored_raw.split(b"\0") if x])
+
+tag = "snapshot=" + sha[:7]
+if n_paths or selected:
+    tag += "+dirty(%d,%d%s)" % (n_paths, len(selected), ",partial" if partial else "")
+
+note = ("SNAPSHOT: this run executes in a detached snapshot of %s at %s — HEAD %s plus "
+        "uncommitted changes captured between %s and %s (capture is not atomic). Paths "
+        "under %s in the brief refer to the same files under %s; read the snapshot, never "
+        "the original. Ignored untracked files are omitted (tracked files are included "
+        "regardless of ignore rules), so dependencies and configuration may be missing: "
+        "report a missing capability instead of installing anything or reading omitted "
+        "files from the original. Preserved symlinks may resolve outside the snapshot; do "
+        "not follow them. Do not write."
+        % (root, snap, sha, start, end, root, snap))
+if partial:
+    note += (" Untracked coverage is partial (first %d of %d eligible files)."
+             % (CAP, n_eligible))
+
+log = [
+    "# ---- snapshot: %s ----" % snap,
+    "# snapshot origin: %s" % root,
+    "# snapshot HEAD: %s" % sha,
+    "# snapshot capture: %s .. %s (NOT atomic; drift re-checked)" % (start, end),
+    "# snapshot patch: bytes=%d paths=%d (net working-tree content, not staged/unstaged states)"
+    % (len(patch), n_paths),
+    "# snapshot untracked: copied=%d eligible=%d cap=%d" % (len(selected), n_eligible, CAP),
+    "# snapshot digest: sha256 %s" % snapshot_digest,
+    "# snapshot omissions: ignored_entries=%d (directories collapsed) cap_omitted=%d unreadable=0"
+    % (n_ignored, max(0, n_eligible - len(selected))),
+]
+
+# `log` is appended to $LOG verbatim, so it carries no sentinel.
+if not write_meta("tag", tag) or not write_meta("note", note) \
+        or not write_meta("log", "\n".join(log) + "\n", sentinel=False):
+    refuse("cannot record the snapshot disclosure")
+PY
+}
+
+snapshot_capture() {
+  # Orchestrates the capture and leaves ORIG/SNAP/SNAP_TAG/SNAP_NOTE set.
+  # Refuses (exit 2) on ANY failure — never returns a partial snapshot.
+  SNAPMETA="$(mktemp -d "${TMPDIR:-/tmp}/hjw_snapmeta.XXXXXX")" || \
+    snapshot_refuse "cannot create a temp directory (is ${TMPDIR:-/tmp} writable?)"
+  # "" = use python's own os.getcwd(): $(pwd) would have stripped a trailing
+  # newline from a directory name that legally carries one.
+  # *[origin: ship review Z3]*
+  snapshot_preflight "" "$SNAPMETA"
+  if [ $? -ne 0 ]; then
+    read_meta "$SNAPMETA/refuse" || META_VAL=""
+    snapshot_refuse "$META_VAL"
+  fi
+  snapshot_read_or_refuse "$SNAPMETA/orig" "repository root"; ORIG="$META_VAL"
+  snapshot_read_or_refuse "$SNAPMETA/sha" "HEAD"; SNAP_SHA="$META_VAL"
+  [ -n "$ORIG" ] && [ -n "$SNAP_SHA" ] || snapshot_refuse "capture produced no origin/HEAD"
+  SNAP="$(mktemp -d "${TMPDIR:-/tmp}/hjw_snap.XXXXXX")" || \
+    snapshot_refuse "cannot create a temp directory (is ${TMPDIR:-/tmp} writable?)"
+  snapshot_build "$ORIG" "$SNAP_SHA" "$SNAP" "$SNAPMETA" \
+    "$BRIEF" "$OUT" "$LOG" "$EVENTS" "$EVENTS2"
+  if [ $? -ne 0 ]; then
+    # A failure AFTER `worktree add` still leaves a worktree behind; the EXIT
+    # trap reconciles that against git's own bookkeeping, not a marker file.
+    read_meta "$SNAPMETA/refuse" || META_VAL=""
+    snapshot_refuse "$META_VAL"
+  fi
+  snapshot_read_or_refuse "$SNAPMETA/tag" "disclosure tag"; SNAP_TAG="$META_VAL"
+  snapshot_read_or_refuse "$SNAPMETA/note" "brief note"; SNAP_NOTE="$META_VAL"
+  [ -n "$SNAP_TAG" ] && [ -n "$SNAP_NOTE" ] || snapshot_refuse "capture produced no disclosure"
+  cat "$SNAPMETA/log" >> "$LOG" || \
+    snapshot_refuse "cannot append the snapshot record to the log: $LOG"
+  # The reviewer is told WHERE it is running and what the snapshot omits,
+  # between the standing contract and the caller's brief. A brief the reviewer
+  # would read without that note is worse than no run at all.
+  # && between the three writes: a redirection that succeeds while a later
+  # write fails would hand the reviewer a brief with the contract but no
+  # snapshot note — worse than no run at all. *[origin: ship review Z2]*
+  { printf '%s\n\n' "$REVIEWER_CONTRACT" && printf '%s\n\n' "$SNAP_NOTE" && cat "$BRIEF"; } \
+    > "$EFFECTIVE_BRIEF" || \
+    snapshot_refuse "cannot write the effective brief: $EFFECTIVE_BRIEF"
+}
+
+snapshot_registered() {
+  # $1 = ORIG, $2 = candidate path. Runs the listing ITSELF: a NUL-delimited
+  # porcelain stream cannot survive command substitution (bash drops NULs),
+  # and the non-z form C-quotes exotic paths. git prints its OWN resolved
+  # path, which may differ textually from the mktemp path this script holds,
+  # so compare realpaths.
+  # Exit 0 = registered, 1 = definitely NOT registered, anything else = could
+  # not tell — and the caller treats "could not tell" as registered.
+  # *[origin: ship review Z1]*
+  bounded 60 python3 - "$1" "$2" <<'PY'
+import os, subprocess, sys
+
+orig, want = sys.argv[1], sys.argv[2]
+
+
+def paths():
+    # Preferred: NUL-delimited, never quoted (git >= 2.36).
+    r = subprocess.run(["git", "-C", orig, "worktree", "list", "--porcelain", "-z"],
+                       capture_output=True)
+    if r.returncode == 0:
+        return [f[len(b"worktree "):] for f in r.stdout.split(b"\0")
+                if f.startswith(b"worktree ")]
+    # Fallback for a git without -z. A C-quoted entry is one this format
+    # cannot round-trip, so refuse to guess: raise and be treated as
+    # "could not tell" (fail-safe = registered).
+    r = subprocess.run(["git", "-C", orig, "worktree", "list", "--porcelain"],
+                       capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError("worktree list rc=%d" % r.returncode)
+    out = []
+    for line in r.stdout.split(b"\n"):
+        if not line.startswith(b"worktree "):
+            continue
+        value = line[len(b"worktree "):]
+        if value.startswith(b'"'):
+            raise RuntimeError("C-quoted worktree path — cannot parse safely")
+        out.append(value)
+    return out
+
+
+try:
+    target = os.path.realpath(want)
+    for raw in paths():
+        if os.path.realpath(raw.decode("utf-8", "surrogateescape")) == target:
+            sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(2)
+PY
+}
+
+snapshot_cleanup() {
+  # Ownership is reconciled against git's OWN bookkeeping rather than a marker
+  # this script wrote: a registered worktree may be removed only by git, and
+  # anything else is safe to delete only when we asked mktemp to create it
+  # under the system temp root. A repo-wide `worktree prune` is NEVER run — a
+  # concurrent worktree of the same repository is none of this runner's
+  # business.
+  [ "$SNAP_CLEANUP_DONE" = 1 ] && return 0
+  SNAP_CLEANUP_DONE=1
+  [ -n "$SNAP" ] || return 0
+  # Leave the snapshot before removing it: git refuses to remove a worktree
+  # that is the current directory, and this runner may have chdir'd into it.
+  [ -n "$ORIG" ] && cd "$ORIG" 2>/dev/null
+  local rrc out
+  snapshot_registered "$ORIG" "$SNAP"
+  rrc=$?
+  # ONLY a definite "not registered" (rc 1) may take the direct path. A
+  # listing we could not read or parse counts as REGISTERED: attempting the
+  # git removal and reporting its failure beats rm -rf'ing a live worktree.
+  if [ "$rrc" -ne 1 ]; then
+    # Captured into a variable, NEVER redirected into $LOG: an unwritable log
+    # must not be misreported as a cleanup failure.
+    out="$(bounded 60 git -C "$ORIG" worktree remove --force "$SNAP" 2>&1)" || SNAP_CLEANUP_FAILED=1
+    [ -n "$out" ] && printf '# ---- snapshot cleanup ----\n%s\n' "$out" >> "$LOG" 2>/dev/null
+  else
+    case "$SNAP" in
+      # Only a directory this runner asked mktemp to create, and only its
+      # result decides: a failed rm is a leftover like any other.
+      "${TMPDIR:-/tmp}"/*) rm -rf "$SNAP" || SNAP_CLEANUP_FAILED=1 ;;
+      *) SNAP_CLEANUP_FAILED=1 ;;  # not ours to delete — say it is left behind
+    esac
+  fi
+  return 0
+}
+
+report_snapshot_cleanup() {
+  # A leftover worktree is an operator problem (it pins objects and keeps a
+  # stale entry in the repository), so it is never swallowed by a successful
+  # review — but it is announced AFTER the reply, which is still valid.
+  [ "$SNAP_CLEANUP_FAILED" = 1 ] || return 0
+  [ "$SNAP_CLEANUP_REPORTED" = 1 ] && return 0
+  SNAP_CLEANUP_REPORTED=1
+  echo "snapshot cleanup failed: $SNAP" >&2
 }
 
 # ---- config ----
@@ -453,7 +1055,6 @@ fi
 
 command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex --version)" >&2; exit 3; }
 
-rm -f "$OUT" "$EVENTS" "$EVENTS2"
 {
   echo "# codex_consult v0.4  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s  $(date 2>/dev/null)"
   printf '# codex '; bounded 20 codex --version 2>&1 | head -1
@@ -465,6 +1066,23 @@ rm -f "$OUT" "$EVENTS" "$EVENTS2"
 # produces the same signal as a reviewer edit, so the failure message says
 # "attribution unknown" and never proposes automatic reversion.
 WORKDIR="$(pwd)"
+# --snapshot: capture FIRST, then point everything downstream at the snapshot.
+# Change detection, the reviewer's --cd and the artifact exclusions all read
+# $WORKDIR, so the gate verifies the copy the reviewer actually saw. Writes to
+# the ORIGINAL working tree (or to global config) during the run are invisible
+# to it BY DESIGN — that is the price of isolation, disclosed in the brief.
+START_EXTRA=""
+RESULT_EXTRA=""
+if [ "$SNAPSHOT" = 1 ]; then
+  snapshot_capture
+  WORKDIR="$SNAP"
+  START_EXTRA=", $SNAP_TAG"
+  RESULT_EXTRA=", $SNAP_TAG"
+fi
+# Previous artifacts are cleared only once the snapshot is secured: a capture
+# refusal must not destroy the reply/events of the caller's LAST run. $LOG
+# cannot collide with them — the aliasing rule above already renamed it.
+rm -f "$OUT" "$EVENTS" "$EVENTS2"
 SNAPDIR="$(mktemp -d "${TMPDIR:-/tmp}/codex_snap.XXXXXX")" || SNAPDIR=""
 DETECT_OK=1
 [ -n "$SNAPDIR" ] || DETECT_OK=0
@@ -698,7 +1316,7 @@ detect_fail_now() {
   # here too — a caller who only keeps $LOG must still learn why the gate
   # could not run.
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && { echo "# ---- change detection stderr ----"; cat "$SNAPDIR/detect.err"; } >> "$LOG"
-  echo "✗ codex_consult FAILED (mode=$MODE, 0s):" >&2
+  echo "✗ codex_consult FAILED (mode=$MODE, 0s${RESULT_EXTRA:-}):${COVERAGE_NOTE:-}" >&2
   echo "  - $DETECT_MSG" >&2
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && sed 's/^/  /' "$SNAPDIR/detect.err" >&2
   exit 1
@@ -824,7 +1442,7 @@ run_attempt() {
   fi
 }
 
-echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, resume=$RESUME, brief=$BRIEF) ..." >&2
+echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, resume=$RESUME, brief=$BRIEF$START_EXTRA) ..." >&2
 START=$SECONDS
 EVENTS_MODE=1
 CUR_EVENTS="$EVENTS"
@@ -968,7 +1586,7 @@ fi
 
 # ---- result ----
 if [ "$FAILED" = 1 ]; then
-  echo "✗ codex_consult FAILED (mode=$MODE, ${DUR}s):" >&2
+  echo "✗ codex_consult FAILED (mode=$MODE, ${DUR}s${RESULT_EXTRA:-}):${COVERAGE_NOTE:-}" >&2
   printf '%s' "$FAIL_MSG" >&2
   if [ "$MODEL_FALLBACK" = 1 ]; then
     if [ -n "$FALLBACK_MODEL" ]; then
@@ -996,8 +1614,16 @@ if [ "$MODEL_FALLBACK" = 1 ]; then
 fi
 
 [ -n "$COVERAGE_NOTE" ] && echo "# ---- change detection:$COVERAGE_NOTE ----" >> "$LOG"
-echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===$COVERAGE_NOTE"
+# The snapshot worktree is removed BEFORE the success line: announcing a
+# finished run while the snapshot still exists would be a lie about the run's
+# state. A removal failure is still reported — after the reply, which is valid.
+if [ -n "$SNAP" ]; then snapshot_cleanup; fi
+echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP$RESULT_EXTRA ===$COVERAGE_NOTE"
 [ -n "$FALLBACK_NOTE" ] && echo "$FALLBACK_NOTE"
 [ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"
 cat "$OUT"
+if [ -n "$SNAP" ]; then
+  report_snapshot_cleanup
+  [ "$SNAP_CLEANUP_FAILED" = 1 ] && exit 1
+fi
 exit 0

@@ -96,7 +96,7 @@ Boundaries that keep haejwo a lubricant layer on top of the host, not a harness:
 - General DAG or recursive multi-agent runtime
 - Model gateway, billing optimizer, or price-based router
 - Cross-vendor WORKER routing — worker vendor follows the host; only review crosses vendors (want GPT execution? run the Codex host)
-- Worktree orchestration, patch merging, or a replacement sandbox
+- Worktree orchestration or patch merging for workers (the reviewer may run in a detached snapshot under the non-editing reviewer contract — not a replacement sandbox)
 - Hosted control plane or dashboard
 - Autonomous push/deploy/publish
 - Workflow DSL or ontology framework

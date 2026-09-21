@@ -6,6 +6,7 @@ real CLI contract) and asserts allow/deny/reset behavior. No Claude Code
 required. Run: python3 tests/test_hooks.py
 """
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -1666,15 +1667,21 @@ if [ -f "$idx_file" ]; then idx=$(( $(cat "$idx_file") + 1 )); else idx=1; fi
 echo "$idx" > "$idx_file"
 printf '%s\n' "$@" > "$CAP/call_${idx}.argv"
 cat > "$CAP/call_${idx}.stdin"
+cd_dir=""
 out=""; model=""; json=0; prev=""
 for a in "$@"; do
   case "$prev" in
     -o|--output-last-message) out="$a" ;;
     -m|--model) model="$a" ;;
+    --cd) cd_dir="$a" ;;
   esac
   if [ "$a" = "--json" ]; then json=1; fi
   prev="$a"
 done
+# real codex chdirs into --cd; the stub must too, or the recorded cwd (and any
+# relative STUB_TOUCH_FILE) would describe the caller instead of the reviewer.
+if [ -n "$cd_dir" ]; then cd "$cd_dir" || exit 97; fi
+pwd -P > "$CAP/call_${idx}.cwd"
 pick() {
   local per="${1}_${idx}"
   local v="${!per}"
@@ -1687,9 +1694,26 @@ rc="$(pick STUB_RC)"; [ -z "$rc" ] && rc=0
 noout="$(pick STUB_NO_OUT)"
 touchf="$(pick STUB_TOUCH_FILE)"
 gitc="$(pick STUB_GIT_COMMIT)"
+# STUB_MANIFEST records what the reviewer ACTUALLY sees in its own cwd — the
+# only way to assert on a snapshot that is deleted before the runner returns.
+mf="$(pick STUB_MANIFEST)"
+if [ -n "$mf" ]; then
+  : > "$mf"
+  for p in $(pick STUB_MANIFEST_PATHS); do
+    if [ -L "$p" ]; then printf 'link %s %s\n' "$p" "$(readlink "$p")" >> "$mf"
+    elif [ -f "$p" ]; then printf 'file %s %s\n' "$p" \
+      "$(python3 -c 'import hashlib,sys;print(hashlib.sha1(open(sys.argv[1],"rb").read()).hexdigest())' "$p")" >> "$mf"
+    elif [ -e "$p" ]; then printf 'other %s -\n' "$p" >> "$mf"
+    else printf 'absent %s -\n' "$p" >> "$mf"; fi
+  done
+fi
 if [ -n "$se" ] && [ -f "$se" ]; then cat "$se" >&2; fi
 if [ -n "$touchf" ]; then printf 'mutated by stub call %s\n' "$idx" > "$touchf"; fi
 if [ -n "$gitc" ]; then git commit --allow-empty -q -m "stub commit $idx" >/dev/null 2>&1; fi
+# STUB_RELEASE_FILE: written the moment the reviewer starts, so a test can
+# wait for "capture is over, the run has begun" instead of racing a sleep.
+rel="$(pick STUB_RELEASE_FILE)"
+if [ -n "$rel" ]; then printf 'released\n' > "$rel"; fi
 spawn="$(pick STUB_SPAWN_PIDFILE)"
 if [ -n "$spawn" ]; then
   python3 -c 'import time; time.sleep(60)' &
@@ -1716,6 +1740,9 @@ if [ -z "$noout" ]; then
     printf '%s\n' "$reply"
   fi
 fi
+# Wall-clock end of this invocation: lets a test prove an event in the host
+# happened WHILE the reviewer was still running, not after it returned.
+python3 -c 'import sys,time;open(sys.argv[1],"w").write(repr(time.time()))' "$CAP/call_${idx}.end"
 exit "$rc"
 '''
 
@@ -2695,6 +2722,706 @@ exit "$rc"
                   "Edit,Write,NotebookEdit" in argv2, argv2)
             check("claude --resume run: model disclosed as inherited (unverified)",
                   "model=inherited (unverified)" in out, out)
+
+            # ---- (B8) --snapshot: the reviewer reads a detached worktree
+            # snapshot instead of the live working copy. Every fixture below
+            # is hermetic (stub CLIs, stub git/mktemp where a failure must be
+            # forced) and asserts on what the reviewer ACTUALLY saw — the
+            # snapshot itself is gone by the time the runner returns. The
+            # whole matrix runs against BOTH runners: the capture code is
+            # duplicated by design, so it must be proven twice. ----
+            def worktree_count(repo):
+                """-1 when git could not answer: an unreadable listing must
+                FAIL a 'nothing leaked' check, never silently satisfy it."""
+                p = subprocess.run(["git", "-C", repo, "worktree", "list"],
+                                   capture_output=True, text=True)
+                if p.returncode != 0:
+                    return -1
+                return len([l for l in p.stdout.splitlines() if l.strip()])
+
+            def read_cwd(capture_dir, n=1):
+                p = os.path.join(capture_dir, f"call_{n}.cwd")
+                return open(p).read().strip() if os.path.isfile(p) else ""
+
+            def read_end(capture_dir, n=1):
+                p = os.path.join(capture_dir, f"call_{n}.end")
+                try:
+                    return float(open(p).read().strip())
+                except Exception:
+                    return None
+
+            def snap_log_path(log_path):
+                """The runner records the snapshot it built into $LOG."""
+                head = "# ---- snapshot: "
+                for line in (open(log_path).read().splitlines()
+                             if os.path.isfile(log_path) else []):
+                    if line.startswith(head) and line.endswith(" ----"):
+                        return line[len(head):-len(" ----")]
+                return ""
+
+            def sha1_text(text):
+                return hashlib.sha1(text.encode()).hexdigest()
+
+            def hermetic_env(extra_env):
+                """Same env discipline as run_script, for the fixtures that
+                need their own process handling (combined stream, signals)."""
+                env = dict(os.environ)
+                for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
+                            "CLAUDE_MODEL", "CODEX_ALLOW_MARKERS",
+                            "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
+                            "CLAUDE_PLUGIN_DATA"):
+                    env.pop(var, None)
+                if "CLAUDE_PLUGIN_DATA" not in extra_env:
+                    env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp,
+                                                                 prefix="nocfg-")
+                env.update({k: v for k, v in extra_env.items() if v is not None})
+                return env
+
+            def make_repo_committed(name):
+                """A repo with one commit — `make_repo` leaves HEAD unborn,
+                which --snapshot refuses by design."""
+                d = make_repo(name)
+                write_file(os.path.join(d, "seed.txt"), "seed\n")
+                subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "commit", "-q", "-m", "seed"],
+                               check=True, capture_output=True)
+                return d
+
+            def dirty_snap_repo(name):
+                """Every working-tree shape the snapshot must reproduce —
+                staged, unstaged, binary, deletion, untracked, symlink — plus
+                an ignored file it must NOT carry."""
+                d = make_repo(name)
+                write_file(os.path.join(d, "staged.txt"), "committed\n")
+                write_file(os.path.join(d, "unstaged.txt"), "committed\n")
+                with open(os.path.join(d, "binary.dat"), "wb") as f:
+                    f.write(b"\x00\x01committed\x02")
+                write_file(os.path.join(d, "deleted.txt"), "committed\n")
+                write_file(os.path.join(d, ".gitignore"), "ignored.txt\n")
+                subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "commit", "-q", "-m", "seed"],
+                               check=True, capture_output=True)
+                write_file(os.path.join(d, "staged.txt"), "staged change\n")
+                subprocess.run(["git", "-C", d, "add", "staged.txt"], check=True,
+                               capture_output=True)
+                write_file(os.path.join(d, "unstaged.txt"), "unstaged change\n")
+                with open(os.path.join(d, "binary.dat"), "wb") as f:
+                    f.write(b"\x00\x01changed\x02\x03")
+                os.remove(os.path.join(d, "deleted.txt"))
+                write_file(os.path.join(d, "untracked.txt"), "untracked\n")
+                os.symlink("unstaged.txt", os.path.join(d, "link.txt"))
+                write_file(os.path.join(d, "ignored.txt"), "ignored\n")
+                return d
+
+            def gitlink_repo(name):
+                d = make_repo_committed(name)
+                sha = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
+                                     capture_output=True, text=True).stdout.strip()
+                subprocess.run(["git", "-C", d, "update-index", "--add",
+                                "--cacheinfo", f"160000,{sha},nested"],
+                               check=True, capture_output=True)
+                return d
+
+            def embedded_repo(name):
+                d = make_repo_committed(name)
+                subprocess.run(["git", "init", "-q", os.path.join(d, "vendor")],
+                               check=True, capture_output=True)
+                return d
+
+            def conflict_repo(name):
+                d = make_repo_committed(name)
+                base = subprocess.run(["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
+                                      capture_output=True, text=True).stdout.strip()
+                write_file(os.path.join(d, "c.txt"), "base\n")
+                subprocess.run(["git", "-C", d, "add", "c.txt"], check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "commit", "-q", "-m", "base"],
+                               check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "checkout", "-q", "-b", "side"],
+                               check=True, capture_output=True)
+                write_file(os.path.join(d, "c.txt"), "side\n")
+                subprocess.run(["git", "-C", d, "commit", "-q", "-am", "side"],
+                               check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "checkout", "-q", base],
+                               check=True, capture_output=True)
+                write_file(os.path.join(d, "c.txt"), "main\n")
+                subprocess.run(["git", "-C", d, "commit", "-q", "-am", "main"],
+                               check=True, capture_output=True)
+                subprocess.run(["git", "-C", d, "merge", "side"], capture_output=True)
+                return d
+
+            def big_untracked_repo(name):
+                d = make_repo_committed(name)
+                for i in range(2001):
+                    write_file(os.path.join(d, "untracked", f"f{i:05d}.txt"), "x\n")
+                return d
+
+            def make_snapshot_git_stub(bin_dir, mode, nth=1, touch=""):
+                """git wrapper for the capture fixtures: fail `apply`, fail
+                `worktree remove`, mutate a tracked file just before the Nth
+                tracked-patch diff, or mutate an untracked file just before
+                the Nth untracked listing — everything else passes through to
+                the real git."""
+                os.makedirs(bin_dir, exist_ok=True)
+                real_git = shutil.which("git")
+                counter = os.path.join(bin_dir, "_snapcount")
+                path = os.path.join(bin_dir, "git")
+                body = ["#!/usr/bin/env bash"]
+                if mode == "apply":
+                    body += ['for a in "$@"; do',
+                             '  if [ "$a" = "apply" ]; then',
+                             '    echo "fatal: stubbed git apply failure" >&2; exit 1',
+                             '  fi',
+                             'done']
+                elif mode == "worktree-list":
+                    # Only the LISTING fails: cleanup must then assume the
+                    # snapshot is registered and still remove it through git.
+                    body += ['wt=0; lst=0',
+                             'for a in "$@"; do',
+                             '  [ "$a" = "worktree" ] && wt=1',
+                             '  [ "$a" = "list" ] && lst=1',
+                             'done',
+                             'if [ "$wt" = 1 ] && [ "$lst" = 1 ]; then',
+                             '  echo "fatal: stubbed worktree list failure" >&2; exit 1',
+                             'fi']
+                elif mode == "worktree-remove":
+                    # `worktree list` still passes through: cleanup must be
+                    # able to see that the snapshot IS registered.
+                    body += ['wt=0; rmv=0',
+                             'for a in "$@"; do',
+                             '  [ "$a" = "worktree" ] && wt=1',
+                             '  [ "$a" = "remove" ] && rmv=1',
+                             'done',
+                             'if [ "$wt" = 1 ] && [ "$rmv" = 1 ]; then',
+                             '  echo "fatal: stubbed worktree remove failure" >&2; exit 1',
+                             'fi']
+                elif mode in ("drift", "drift-untracked"):
+                    if mode == "drift":
+                        # --binary AND --no-ext-diff identify the tracked-patch
+                        # call only (the `git apply` replay carries --binary too).
+                        cond = ('b=0; e=0\n'
+                                'for a in "$@"; do\n'
+                                '  [ "$a" = "--binary" ] && b=1\n'
+                                '  [ "$a" = "--no-ext-diff" ] && e=1\n'
+                                'done\n'
+                                'hit=0; [ "$b" = 1 ] && [ "$e" = 1 ] && hit=1')
+                    else:
+                        # --others without --ignored = the untracked listing
+                        # (preflight, capture, drift — in that order).
+                        cond = ('o=0; g=0\n'
+                                'for a in "$@"; do\n'
+                                '  [ "$a" = "--others" ] && o=1\n'
+                                '  [ "$a" = "--ignored" ] && g=1\n'
+                                'done\n'
+                                'hit=0; [ "$o" = 1 ] && [ "$g" = 0 ] && hit=1')
+                    body += cond.split("\n")
+                    body += ['if [ "$hit" = 1 ]; then',
+                             f"  c=1; if [ -f '{counter}' ]; then c=$(( $(cat '{counter}') + 1 )); fi",
+                             f"  echo \"$c\" > '{counter}'",
+                             f"  if [ \"$c\" -eq {nth} ]; then",
+                             f"    printf 'torn by a concurrent writer\\n' > '{touch}'",
+                             '  fi',
+                             'fi']
+                body.append(f'exec {real_git} "$@"')
+                with open(path, "w") as f:
+                    f.write("\n".join(body) + "\n")
+                os.chmod(path, 0o755)
+                return path
+
+            def make_mktemp_stub(bin_dir, rules):
+                """mktemp wrapper: each (template-suffix, path) rule returns a
+                FIXED directory for that template, everything else passes
+                through. Pinning the snapshot path is the only way to reach
+                the containment guard; pinning the EFFECTIVE-BRIEF path to a
+                directory is the only way to make its write fail."""
+                os.makedirs(bin_dir, exist_ok=True)
+                real = shutil.which("mktemp")
+                path = os.path.join(bin_dir, "mktemp")
+                body = ["#!/usr/bin/env bash", 'for a in "$@"; do', '  case "$a" in']
+                for suffix, fixed in rules:
+                    body += [f'    *{suffix})',
+                             f'      mkdir -p "{fixed}" || exit 1',
+                             f'      printf "%s\\n" "{fixed}"; exit 0 ;;']
+                body += ['  esac', 'done', f'exec {real} "$@"']
+                with open(path, "w") as f:
+                    f.write("\n".join(body) + "\n")
+                os.chmod(path, 0o755)
+                return path
+
+            def extract_capture_helper(script_path):
+                """The runner embeds its capture helper as a python heredoc.
+                Pulling that exact source out lets a fixture run it in
+                isolation and drive a race the shell cannot reach."""
+                text = open(script_path, encoding="utf-8").read()
+                m = re.search(r"snapshot_build\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}",
+                              text, re.S)
+                return m.group(1) if m else ""
+
+            RACE_DRIVER = '''import runpy, shutil, sys
+
+helper, args = sys.argv[1], sys.argv[2:]
+_real = shutil.copy2
+
+
+def racing_copy2(src, dst, follow_symlinks=True):
+    # A writer wins the race with the reader: the file changes BEFORE its
+    # bytes are copied, so the destination holds content the pre-copy source
+    # hash never covered. That is exactly the window the source/destination
+    # comparison exists to close.
+    with open(src, "a") as fh:
+        fh.write("racing writer\\n")
+    return _real(src, dst, follow_symlinks=follow_symlinks)
+
+
+shutil.copy2 = racing_copy2
+sys.argv = [helper] + args
+runpy.run_path(helper, run_name="__main__")
+'''
+
+            # Both runners, same capture contract, so both get the same matrix.
+            SNAP_RUNNERS = (("codex", codex_script, "codex", "=== Codex reply"),
+                            ("claude", claude_script, "claude", "=== Claude reply"))
+
+            for who, snap_script, snap_cli, reply_head in SNAP_RUNNERS:
+                def snap_run(label, repo, args=None, env_extra=None, bin_dir=None,
+                             _s=snap_script, _c=snap_cli):
+                    """One hermetic --snapshot run: fresh stub, fresh capture
+                    dir, explicit -o so the fixture knows where $LOG lands."""
+                    bin_dir = bin_dir or os.path.join(runner_tmp, f"bin-{label}")
+                    cap = os.path.join(runner_tmp, f"cap-{label}")
+                    make_stub(bin_dir, _c, cap)
+                    out_path = os.path.join(runner_tmp, f"{label}.reply.md")
+                    env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
+                    env.update(env_extra or {})
+                    brief = brief_file(f"brief-{label}.md")
+                    rc, out, err = run_script(
+                        _s, ["--snapshot", "-o", out_path] + (args or []) + [brief],
+                        env, cwd=repo)
+                    log_path = os.path.join(runner_tmp, f"{label}.reply.log")
+                    return {"rc": rc, "out": out, "err": err, "cap": cap,
+                            "bin": bin_dir, "calls": read_calls(cap),
+                            "log": log_path, "snap": snap_log_path(log_path)}
+
+                # (i) every working-tree shape reaches the snapshot; the
+                # ignored file does not; the reviewer's cwd IS the snapshot.
+                shapes_repo = dirty_snap_repo(f"repo-snap-shapes-{who}")
+                shapes_wt = worktree_count(shapes_repo)
+                shapes_manifest = os.path.join(runner_tmp, f"snap-shapes-{who}.manifest")
+                r = snap_run(f"snap-shapes-{who}", shapes_repo, env_extra={
+                    "STUB_MANIFEST": shapes_manifest,
+                    "STUB_MANIFEST_PATHS": ("staged.txt unstaged.txt binary.dat deleted.txt "
+                                            "untracked.txt link.txt ignored.txt")})
+                check(f"{who} snapshot: a dirty repository is captured and the run succeeds",
+                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
+                seen = {}
+                for line in (open(shapes_manifest).read().splitlines()
+                             if os.path.isfile(shapes_manifest) else []):
+                    kind, name, rest = (line.split(" ", 2) + ["", ""])[:3]
+                    seen[name] = (kind, rest)
+                cwd_seen = read_cwd(r["cap"])
+                check(f"{who} snapshot: the reviewer's cwd is the snapshot, never the original",
+                      bool(cwd_seen) and bool(r["snap"])
+                      and os.path.realpath(cwd_seen) == os.path.realpath(r["snap"])
+                      and os.path.realpath(cwd_seen) != os.path.realpath(shapes_repo),
+                      f"cwd={cwd_seen} snap={r['snap']} orig={shapes_repo}")
+                check(f"{who} snapshot: a STAGED change is present in the snapshot",
+                      seen.get("staged.txt") == ("file", sha1_text("staged change\n")),
+                      seen.get("staged.txt"))
+                check(f"{who} snapshot: an UNSTAGED change is present in the snapshot",
+                      seen.get("unstaged.txt") == ("file", sha1_text("unstaged change\n")),
+                      seen.get("unstaged.txt"))
+                check(f"{who} snapshot: a BINARY change is present in the snapshot",
+                      seen.get("binary.dat") == (
+                          "file", hashlib.sha1(b"\x00\x01changed\x02\x03").hexdigest()),
+                      seen.get("binary.dat"))
+                check(f"{who} snapshot: a DELETED file is absent in the snapshot",
+                      seen.get("deleted.txt", ("", ""))[0] == "absent", seen.get("deleted.txt"))
+                check(f"{who} snapshot: an UNTRACKED file is copied into the snapshot",
+                      seen.get("untracked.txt") == ("file", sha1_text("untracked\n")),
+                      seen.get("untracked.txt"))
+                check(f"{who} snapshot: a symlink is preserved AS A LINK, never followed",
+                      seen.get("link.txt") == ("link", "unstaged.txt"), seen.get("link.txt"))
+                check(f"{who} snapshot: an IGNORED file is omitted from the snapshot",
+                      seen.get("ignored.txt", ("", ""))[0] == "absent", seen.get("ignored.txt"))
+                check(f"{who} snapshot: start and result lines disclose sha7 + dirty counts",
+                      "snapshot=" in r["err"] and "+dirty(4,2)" in r["err"]
+                      and "+dirty(4,2)" in r["out"], f"out={r['out']} err={r['err']}")
+                check(f"{who} snapshot: the log records SNAP, HEAD, interval, patch, digest",
+                      all(s in open(r["log"]).read() for s in (
+                          "# snapshot HEAD: ", "# snapshot capture: ", "# snapshot patch: ",
+                          "# snapshot untracked: ", "# snapshot digest: sha256 ",
+                          "# snapshot omissions: ignored_entries=1")), open(r["log"]).read())
+                check(f"{who} snapshot: the effective brief carries contract THEN the note",
+                      bool(r["calls"]) and r["calls"][0][1].startswith(CONTRACT_HEAD)
+                      and "SNAPSHOT: this run executes in a detached snapshot of" in r["calls"][0][1]
+                      and "read the snapshot, never the original" in r["calls"][0][1]
+                      and "Do not write." in r["calls"][0][1], r["calls"][:1])
+                check(f"{who} snapshot: the worktree list is restored after a SUCCESSFUL run",
+                      shapes_wt > 0 and worktree_count(shapes_repo) == shapes_wt,
+                      f"{worktree_count(shapes_repo)} != {shapes_wt}")
+
+                # (ii) the host keeps working in the ORIGINAL while the
+                # reviewer runs — the whole point of the snapshot. The stub
+                # releases a marker when it starts and stamps its end time, so
+                # the write is PROVEN to land mid-run, not after it.
+                conc_repo = dirty_snap_repo(f"repo-snap-concurrent-{who}")
+                conc_release = os.path.join(runner_tmp, f"snap-release-{who}")
+                conc_target = os.path.join(conc_repo, "unstaged.txt")
+                conc_written = []
+                conc_observed = []
+
+                def host_writes(_rel=conc_release, _t=conc_target, _w=conc_written,
+                                _o=conc_observed):
+                    # A timeout must NOT fall through into the write: if the
+                    # marker never appeared the fixture proved nothing, so it
+                    # leaves _o empty and the check below fails.
+                    deadline = time.time() + 30
+                    while time.time() < deadline and not os.path.isfile(_rel):
+                        time.sleep(0.02)
+                    if not os.path.isfile(_rel):
+                        return
+                    _o.append(True)
+                    write_file(_t, "the host kept working\n")
+                    _w.append(time.time())
+
+                writer = threading.Thread(target=host_writes)
+                writer.start()
+                r = snap_run(f"snap-concurrent-{who}", conc_repo, env_extra={
+                    "STUB_RELEASE_FILE": conc_release, "STUB_SLEEP": "1.5"})
+                writer.join()
+                stub_end = read_end(r["cap"])
+                check(f"{who} snapshot: a host write into the ORIGINAL mid-run does not fail it",
+                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
+                check(f"{who} snapshot: that write really landed in the original, mid-run",
+                      bool(conc_observed) and bool(conc_written) and stub_end is not None
+                      and stub_end > conc_written[0]
+                      and open(conc_target).read() == "the host kept working\n",
+                      f"stub_end={stub_end} wrote_at={conc_written} "
+                      f"content={open(conc_target).read()!r}")
+
+                # (iii) a write INSIDE the snapshot still trips the no-edit
+                # gate, and the original never sees the file.
+                wrote_repo = dirty_snap_repo(f"repo-snap-wrote-{who}")
+                wrote_wt = worktree_count(wrote_repo)
+                r = snap_run(f"snap-wrote-{who}", wrote_repo,
+                             env_extra={"STUB_TOUCH_FILE": "reviewer-wrote-this.txt"})
+                check(f"{who} snapshot: a reviewer write inside the snapshot fails by path",
+                      r["rc"] != 0 and "repository changed during the run" in r["err"]
+                      and "reviewer-wrote-this.txt" in r["err"],
+                      f"rc={r['rc']} err={r['err']}")
+                check(f"{who} snapshot: the ORIGINAL never receives the reviewer's file",
+                      not os.path.exists(os.path.join(wrote_repo, "reviewer-wrote-this.txt")),
+                      wrote_repo)
+                check(f"{who} snapshot: the FAILURE line still discloses the snapshot",
+                      "snapshot=" in r["err"], r["err"])
+                check(f"{who} snapshot: the worktree list is restored after a FAILED run",
+                      wrote_wt > 0 and worktree_count(wrote_repo) == wrote_wt,
+                      f"{worktree_count(wrote_repo)} != {wrote_wt}")
+
+                # (v) --snapshot + --resume is incoherent: exit 2, zero calls.
+                resume_repo = make_repo_committed(f"repo-snap-resume-{who}")
+                bin_dir = os.path.join(runner_tmp, f"bin-snap-resume-{who}")
+                cap = os.path.join(runner_tmp, f"cap-snap-resume-{who}")
+                make_stub(bin_dir, snap_cli, cap)
+                rc, out, err = run_script(
+                    snap_script, ["--snapshot", "--resume",
+                                  brief_file(f"snap-resume-{who}-brief.md")],
+                    {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=resume_repo)
+                check(f"{who} --snapshot --resume: exit 2 naming the missing semantics",
+                      rc == 2 and "--snapshot has no resume semantics" in (out + err),
+                      f"rc={rc} out={out} err={err}")
+                check(f"{who} --snapshot --resume: the CLI is never invoked",
+                      len(read_calls(cap)) == 0, read_calls(cap))
+
+                # (vi) shapes a worktree snapshot cannot reproduce honestly
+                # are refused up front, unpaid, each with ITS OWN reason.
+                for kind, builder, reason in (
+                        ("unborn HEAD", make_repo,
+                         "snapshot unavailable: unborn HEAD — there is no commit to snapshot"),
+                        ("gitlink", gitlink_repo,
+                         "snapshot unavailable: gitlink (submodule) entry present"),
+                        ("embedded repo", embedded_repo,
+                         "snapshot unavailable: embedded untracked repository: vendor"),
+                        ("merge conflict", conflict_repo,
+                         "snapshot unavailable: unresolved merge conflicts in the working tree")):
+                    slug = kind.split()[0]
+                    r = snap_run(f"snap-refuse-{slug}-{who}", builder(f"repo-snap-{slug}-{who}"))
+                    check(f"{who} snapshot: {kind} -> exit 2 with its own reason, zero calls",
+                          r["rc"] == 2 and reason in r["err"] and len(r["calls"]) == 0,
+                          f"rc={r['rc']} err={r['err']}")
+
+                # (vii) a patch that will not replay is a HOLE in the
+                # snapshot, not a degraded run: refuse before the paid call.
+                apply_repo = dirty_snap_repo(f"repo-snap-apply-{who}")
+                apply_wt = worktree_count(apply_repo)
+                apply_bin = os.path.join(runner_tmp, f"bin-snap-apply-{who}")
+                make_snapshot_git_stub(apply_bin, "apply")
+                r = snap_run(f"snap-apply-{who}", apply_repo, bin_dir=apply_bin)
+                check(f"{who} snapshot: a patch that cannot be replayed -> exit 2, zero calls",
+                      r["rc"] == 2
+                      and "snapshot unavailable: cannot replay the working-tree patch" in r["err"]
+                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
+                check(f"{who} snapshot: a refusal after `worktree add` leaves no worktree behind",
+                      apply_wt > 0 and worktree_count(apply_repo) == apply_wt,
+                      f"{worktree_count(apply_repo)} != {apply_wt}")
+
+                # (viii) untracked coverage above the cap is PARTIAL, and that
+                # word reaches the reviewer's brief as well as the result line.
+                big_repo = big_untracked_repo(f"repo-snap-big-{who}")
+                r = snap_run(f"snap-big-{who}", big_repo)
+                check(f"{who} snapshot: >2000 untracked files -> success, partial coverage",
+                      r["rc"] == 0 and "+dirty(0,2000,partial)" in r["out"],
+                      f"rc={r['rc']} out={r['out']} err={r['err']}")
+                check(f"{who} snapshot: partial coverage is stated in the reviewer's own brief",
+                      bool(r["calls"])
+                      and "Untracked coverage is partial (first 2000 of 2001 eligible files)."
+                      in r["calls"][0][1], r["calls"][:1])
+
+                # (ix) capture is NOT atomic — a writer that tears it must
+                # refuse, never ship a state that never existed. Both halves
+                # of the drift check get their own fixture.
+                drift_repo = dirty_snap_repo(f"repo-snap-drift-{who}")
+                drift_bin = os.path.join(runner_tmp, f"bin-snap-drift-{who}")
+                make_snapshot_git_stub(drift_bin, "drift", nth=2,
+                                       touch=os.path.join(drift_repo, "unstaged.txt"))
+                r = snap_run(f"snap-drift-{who}", drift_repo, bin_dir=drift_bin)
+                check(f"{who} snapshot: a TRACKED file torn during capture -> refuse, zero calls",
+                      r["rc"] == 2
+                      and "snapshot unavailable: original changed during capture" in r["err"]
+                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
+
+                udrift_repo = dirty_snap_repo(f"repo-snap-udrift-{who}")
+                udrift_bin = os.path.join(runner_tmp, f"bin-snap-udrift-{who}")
+                # 3rd untracked listing = the drift re-check (preflight,
+                # capture, drift); the stub rewrites a COPIED untracked file
+                # just before it, so the recomputed source fingerprint differs
+                # from the one taken before the copy.
+                make_snapshot_git_stub(udrift_bin, "drift-untracked", nth=3,
+                                       touch=os.path.join(udrift_repo, "untracked.txt"))
+                r = snap_run(f"snap-udrift-{who}", udrift_repo, bin_dir=udrift_bin)
+                check(f"{who} snapshot: an UNTRACKED file torn during capture -> refuse",
+                      r["rc"] == 2
+                      and "snapshot unavailable: original changed during capture" in r["err"]
+                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
+
+                # (x) a leftover worktree is never swallowed by a successful
+                # review. ONE combined stream proves the ORDER: reply first,
+                # cleanup failure after.
+                leak_repo = dirty_snap_repo(f"repo-snap-leak-{who}")
+                leak_bin = os.path.join(runner_tmp, f"bin-snap-leak-{who}")
+                leak_cap = os.path.join(runner_tmp, f"cap-snap-leak-{who}")
+                make_snapshot_git_stub(leak_bin, "worktree-remove")
+                make_stub(leak_bin, snap_cli, leak_cap)
+                leak_out = os.path.join(runner_tmp, f"snap-leak-{who}.reply.md")
+                leak_stream = os.path.join(runner_tmp, f"snap-leak-{who}.combined")
+                with open(leak_stream, "w") as fh:
+                    lp = subprocess.run(
+                        ["bash", snap_script, "--snapshot", "-o", leak_out,
+                         brief_file(f"snap-leak-{who}-brief.md")],
+                        input="", stdout=fh, stderr=subprocess.STDOUT, text=True,
+                        timeout=60, cwd=leak_repo,
+                        env=hermetic_env({"PATH": leak_bin + os.pathsep
+                                          + os.environ.get("PATH", "")}))
+                combined = open(leak_stream).read()
+                check(f"{who} snapshot: cleanup failure -> non-zero exit though the review passed",
+                      lp.returncode != 0, f"rc={lp.returncode} stream={combined}")
+                check(f"{who} snapshot: the reply is printed BEFORE the cleanup failure",
+                      reply_head in combined and "snapshot cleanup failed: " in combined
+                      and combined.index(reply_head) < combined.index("snapshot cleanup failed: ")
+                      and "STUB-REPLY-OK-1" in combined, combined)
+                leaked_snap = ""
+                for line in combined.splitlines():
+                    if line.startswith("snapshot cleanup failed: "):
+                        leaked_snap = line[len("snapshot cleanup failed: "):].strip()
+                check(f"{who} snapshot: the leftover snapshot is named and still on disk",
+                      bool(leaked_snap) and os.path.isdir(leaked_snap), leaked_snap)
+                if leaked_snap and os.path.isdir(leaked_snap):
+                    shutil.rmtree(leaked_snap, ignore_errors=True)
+
+                # (xi) a caller artifact inside the snapshot would be deleted
+                # with it — refuse. Unreachable through mktemp's randomness,
+                # so the fixture pins the snapshot path with a stub.
+                inside_repo = dirty_snap_repo(f"repo-snap-inside-{who}")
+                inside_bin = os.path.join(runner_tmp, f"bin-snap-inside-{who}")
+                pinned_snap = os.path.join(runner_tmp, f"pinned-snapshot-{who}")
+                make_mktemp_stub(inside_bin, [("hjw_snap.XXXXXX", pinned_snap)])
+                r = snap_run(f"snap-inside-{who}", inside_repo, bin_dir=inside_bin,
+                             args=["-o", os.path.join(pinned_snap, "reply.md")])
+                check(f"{who} snapshot: an output path inside the snapshot -> exit 2, zero calls",
+                      r["rc"] == 2
+                      and "snapshot unavailable: a caller path lies inside the snapshot"
+                      in r["err"] and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
+
+                # (xii) an interrupted run must not leave a worktree behind
+                # either: SIGTERM while the reviewer is mid-flight.
+                term_repo = dirty_snap_repo(f"repo-snap-term-{who}")
+                term_wt = worktree_count(term_repo)
+                term_bin = os.path.join(runner_tmp, f"bin-snap-term-{who}")
+                term_cap = os.path.join(runner_tmp, f"cap-snap-term-{who}")
+                make_stub(term_bin, snap_cli, term_cap)
+                term_release = os.path.join(runner_tmp, f"snap-term-release-{who}")
+                term_proc = subprocess.Popen(
+                    ["bash", snap_script, "--snapshot", "-o",
+                     os.path.join(runner_tmp, f"snap-term-{who}.reply.md"),
+                     brief_file(f"snap-term-{who}-brief.md")],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, cwd=term_repo,
+                    env=hermetic_env({"PATH": term_bin + os.pathsep
+                                      + os.environ.get("PATH", ""),
+                                      "STUB_RELEASE_FILE": term_release,
+                                      "STUB_SLEEP": "2"}))
+                deadline = time.time() + 30
+                while time.time() < deadline and not os.path.isfile(term_release):
+                    time.sleep(0.02)
+                released = os.path.isfile(term_release)
+                term_proc.terminate()
+                try:
+                    term_proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    term_proc.kill()
+                    term_proc.communicate()
+                check(f"{who} snapshot: the SIGTERM fixture really interrupted a live run",
+                      released, term_release)
+                check(f"{who} snapshot: SIGTERM mid-run -> non-zero exit",
+                      term_proc.returncode not in (0, None), term_proc.returncode)
+                check(f"{who} snapshot: SIGTERM mid-run leaves NO worktree behind",
+                      term_wt > 0 and worktree_count(term_repo) == term_wt,
+                      f"{worktree_count(term_repo)} != {term_wt}")
+
+                # (Z1a) a temp root carrying a TAB and a space: the porcelain
+                # listing must still identify the snapshot, and git — not
+                # rm -rf — must be what removes it.
+                odd_tmp = os.path.join(runner_tmp, f"tmp dir\twith ws {who}")
+                os.makedirs(odd_tmp, exist_ok=True)
+                odd_repo = dirty_snap_repo(f"repo-snap-oddtmp-{who}")
+                odd_wt = worktree_count(odd_repo)
+                r = snap_run(f"snap-oddtmp-{who}", odd_repo, env_extra={"TMPDIR": odd_tmp})
+                check(f"{who} snapshot: a TMPDIR with a tab and a space still runs",
+                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
+                check(f"{who} snapshot: and `git worktree list` ends clean afterwards",
+                      odd_wt > 0 and worktree_count(odd_repo) == odd_wt
+                      and not [n for n in os.listdir(odd_tmp) if n.startswith("hjw_snap.")],
+                      f"{worktree_count(odd_repo)} != {odd_wt} left={os.listdir(odd_tmp)}")
+
+                # (Z1b) a listing we cannot read is NOT a licence to rm -rf: the
+                # removal still goes through git, and the worktree really goes.
+                wl_repo = dirty_snap_repo(f"repo-snap-wtlist-{who}")
+                wl_wt = worktree_count(wl_repo)
+                wl_bin = os.path.join(runner_tmp, f"bin-snap-wtlist-{who}")
+                make_snapshot_git_stub(wl_bin, "worktree-list")
+                r = snap_run(f"snap-wtlist-{who}", wl_repo, bin_dir=wl_bin)
+                check(f"{who} snapshot: an unreadable worktree listing still succeeds",
+                      r["rc"] == 0 and "snapshot cleanup failed" not in r["err"],
+                      f"rc={r['rc']} err={r['err']}")
+                check(f"{who} snapshot: and the snapshot is still removed THROUGH git",
+                      wl_wt > 0 and worktree_count(wl_repo) == wl_wt,
+                      f"{worktree_count(wl_repo)} != {wl_wt}")
+
+                # (Z2) an effective brief that cannot be written refuses before
+                # the paid call — a reviewer must never get the contract
+                # without the snapshot note.
+                eb_repo = dirty_snap_repo(f"repo-snap-brief-{who}")
+                eb_bin = os.path.join(runner_tmp, f"bin-snap-brief-{who}")
+                eb_blocker = os.path.join(runner_tmp, f"effective-is-a-dir-{who}")
+                make_mktemp_stub(eb_bin, [("_effective.XXXXXX.md", eb_blocker)])
+                r = snap_run(f"snap-brief-{who}", eb_repo, bin_dir=eb_bin)
+                check(f"{who} snapshot: an unwritable effective brief -> exit 2, zero calls",
+                      r["rc"] == 2
+                      and "snapshot unavailable: cannot write the effective brief" in r["err"]
+                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
+
+                # (Z3a) a brief whose FILE NAME ends in a newline must resolve
+                # to itself — $(cat)/$() would have eaten the newline.
+                nl_brief = os.path.join(runner_tmp, f"nl-brief-{who}.md\n")
+                write_file(nl_brief, "Newline-named brief body.\n")
+                nlb_repo = dirty_snap_repo(f"repo-snap-nlbrief-{who}")
+                nlb_bin = os.path.join(runner_tmp, f"bin-snap-nlbrief-{who}")
+                nlb_cap = os.path.join(runner_tmp, f"cap-snap-nlbrief-{who}")
+                make_stub(nlb_bin, snap_cli, nlb_cap)
+                rc, out, err = run_script(
+                    snap_script,
+                    ["--snapshot", "-o", os.path.join(runner_tmp, f"nl-brief-{who}.reply.md"),
+                     nl_brief],
+                    {"PATH": nlb_bin + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=nlb_repo)
+                nlb_calls = read_calls(nlb_cap)
+                check(f"{who} snapshot: a brief NAMED with a trailing newline is read losslessly",
+                      rc == 0 and bool(nlb_calls)
+                      and "Newline-named brief body." in nlb_calls[0][1],
+                      f"rc={rc} err={err} calls={nlb_calls[:1]}")
+
+                # (Z3b) a repository root that ENDS in a newline survives
+                # preflight AND cleanup (the cleanup runs `git -C ORIG`).
+                nlw_repo = dirty_snap_repo(f"repo-snap-nlwd-{who}\n")
+                nlw_wt = worktree_count(nlw_repo)
+                r = snap_run(f"snap-nlwd-{who}", nlw_repo)
+                check(f"{who} snapshot: a working directory ending in a newline captures",
+                      r["rc"] == 0 and "+dirty(4,2)" in r["out"],
+                      f"rc={r['rc']} out={r['out']} err={r['err']}")
+                check(f"{who} snapshot: and its snapshot is removed through that same root",
+                      nlw_wt > 0 and worktree_count(nlw_repo) == nlw_wt,
+                      f"{worktree_count(nlw_repo)} != {nlw_wt}")
+
+                # (Z4) -o x.log: the derived log must not devour the reply.
+                alias_repo = dirty_snap_repo(f"repo-snap-alias-{who}")
+                alias_out = os.path.join(runner_tmp, f"alias-{who}.log")
+                write_file(alias_out, "PREVIOUS REPLY\n")
+                alias_bin = os.path.join(runner_tmp, f"bin-snap-alias-{who}")
+                alias_cap = os.path.join(runner_tmp, f"cap-snap-alias-{who}")
+                make_snapshot_git_stub(alias_bin, "apply")
+                make_stub(alias_bin, snap_cli, alias_cap)
+                rc, out, err = run_script(
+                    snap_script, ["--snapshot", "-o", alias_out,
+                                  brief_file(f"snap-alias-{who}-brief.md")],
+                    {"PATH": alias_bin + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=alias_repo)
+                check(f"{who} -o x.log: a capture refusal leaves the previous reply intact",
+                      rc == 2 and open(alias_out).read() == "PREVIOUS REPLY\n",
+                      f"rc={rc} content={open(alias_out).read()!r} err={err}")
+                alias_bin2 = os.path.join(runner_tmp, f"bin-snap-alias2-{who}")
+                alias_cap2 = os.path.join(runner_tmp, f"cap-snap-alias2-{who}")
+                make_stub(alias_bin2, snap_cli, alias_cap2)
+                rc, out, err = run_script(
+                    snap_script, ["--snapshot", "-o", alias_out,
+                                  brief_file(f"snap-alias2-{who}-brief.md")],
+                    {"PATH": alias_bin2 + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=alias_repo)
+                check(f"{who} -o x.log: the reply lands in x.log and the log in x.log.log",
+                      rc == 0 and "STUB-REPLY-OK-1" in open(alias_out).read()
+                      and os.path.isfile(alias_out + ".log")
+                      and "# snapshot HEAD: " in open(alias_out + ".log").read(),
+                      f"rc={rc} reply={open(alias_out).read()!r} err={err}")
+
+                # (Z6) the copy/hash race itself. The shell cannot reach the
+                # window between shutil.copy2 and the destination hash, so the
+                # fixture extracts the runner's OWN capture helper and runs it
+                # with a copy that loses the race.
+                helper_src = extract_capture_helper(snap_script)
+                check(f"{who} snapshot: the capture helper source is extractable",
+                      bool(helper_src) and "untracked file changed during capture" in helper_src,
+                      len(helper_src))
+                if helper_src:
+                    race_repo = dirty_snap_repo(f"repo-snap-race-{who}")
+                    race_sha = subprocess.run(["git", "-C", race_repo, "rev-parse", "HEAD"],
+                                              capture_output=True, text=True).stdout.strip()
+                    helper_path = write_file(os.path.join(runner_tmp, f"capture-{who}.py"),
+                                             helper_src + "\n")
+                    driver_path = write_file(os.path.join(runner_tmp, f"race-driver-{who}.py"),
+                                             RACE_DRIVER)
+                    race_meta = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-meta-{who}-")
+                    race_snap = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-snap-{who}-")
+                    rp = subprocess.run(
+                        [sys.executable, driver_path, helper_path, race_repo, race_sha,
+                         race_snap, race_meta],
+                        capture_output=True, text=True, timeout=120)
+                    race_refuse = os.path.join(race_meta, "refuse")
+                    race_reason = open(race_refuse).read() if os.path.isfile(race_refuse) else ""
+                    check(f"{who} snapshot: a file that changes between hash and copy is refused",
+                          rp.returncode == 3
+                          and "untracked file changed during capture" in race_reason,
+                          f"rc={rp.returncode} reason={race_reason!r} stderr={rp.stderr}")
+                    subprocess.run(["git", "-C", race_repo, "worktree", "remove",
+                                    "--force", race_snap], capture_output=True)
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
 

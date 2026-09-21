@@ -17,28 +17,21 @@
 # change detection below, not by tool blocking. That detection is not a
 # security boundary; its exact scope is spelled out under "Change detection".
 #
-# Every input the reviewer sees (initial run, --resume) is prefixed with a
-# standing REVIEWER CONTRACT (below) that forbids edits/installs/config
-# changes — enforced by instruction, backstopped by --disallowedTools and the
-# change-detection gate.
+# Every input the reviewer sees is prefixed with a standing REVIEWER CONTRACT
+# (below) that forbids edits/installs/config changes — enforced by
+# instruction, backstopped by --disallowedTools and the change-detection gate.
 #
 # Usage:
-#   claude_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
+#   claude_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
 #   echo "..." | claude_consult.sh --mode consult -
 #
 # Mode (safety gate — enforced via change detection, since `claude -p` runs
 # with the invoking user's permissions and has no read-only sandbox):
 #   consult   (only mode) non-editing contract with post-run change detection —
 #             FAILS if the repository changed during the run.
-#   --resume  continue the most recent Claude session in this directory
-#             (message = stdin/brief; reply = stdout). NOTHING is passed on
-#             this path — not even --model: the thread keeps its own model,
-#             which is inherited and NOT verifiable from here.
+#   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
 #   --snapshot  runs the reviewer in a DETACHED WORKTREE snapshot of this
 #             repository instead of the working copy — see "Snapshot" below.
-#             Incompatible with --resume (this runner maps --resume to
-#             `--continue`, and a continued session keeps its own working
-#             root): the combination exits 2 before any CLI call.
 #
 # Snapshot (--snapshot, 2.11; identical capture to codex_consult.sh): HEAD plus
 #   the NET uncommitted working-tree changes (one `git diff --binary <SHA>`
@@ -76,14 +69,12 @@
 # reviewer's model.
 #
 # Env (env > config > default; an EMPTY env value counts as UNSET):
-#   CLAUDE_MODEL    force a model (passed as --model; optional). Ignored on
-#                   --resume, which passes no flags at all.
+#   CLAUDE_MODEL    force a model (passed as --model; optional).
 #   CLAUDE_TIMEOUT  seconds; default 600. 0 = unlimited.
 #
 # Disclosure discipline: the model is always printed with its SOURCE
-#   (env | config | cli-default | inherited). An unselected model is
-#   `cli-default (identity unverified)` — the runner does not know which model
-#   answered; a --resume run inherits and verifies nothing.
+#   (env | config | cli-default). An unselected model is `cli-default
+#   (identity unverified)` — the runner does not know which model answered.
 #
 # Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
 # the two the SAME file and the runner's own log would overwrite the reply it
@@ -108,8 +99,8 @@
 set -uo pipefail
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to claude, on
-# every input path (initial run, --resume). Durable owner policy — not
-# brief-specific, do not let callers override it.
+# every input path. Durable owner policy — not brief-specific, do not let
+# callers override it.
 REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
@@ -121,18 +112,17 @@ print_help() {
 claude_consult.sh — feed a self-contained brief to headless claude; capture reply.
 
 Usage:
-  claude_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
+  claude_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
   echo "..." | claude_consult.sh --mode consult -
 
 Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.
-  --resume  continue the most recent session (multi-round memory); no flags
-            are passed, so the model is inherited and unverifiable from here.
+  --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
   --snapshot  review a detached worktree snapshot (HEAD + net uncommitted
             changes + untracked non-ignored files, first 2000) instead of the
             live working copy. Ignored files are omitted; capture is not
             atomic (drift REFUSES); shared .git metadata means this is
-            isolation, not containment. Refuses with --resume.
+            isolation, not containment.
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
 non-goal); use the standalone collab tool for manual implement runs.
@@ -159,11 +149,15 @@ EOF
 # ---- argument parsing (mirrors codex_consult.sh) ----
 MODE=""
 OUT=""
-RESUME=0
 SNAPSHOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --resume) RESUME=1; shift ;;
+    # --resume was removed in 2.13: implicit latest-thread selection
+    # misroutes under concurrent sessions (the runner cannot tell which
+    # thread is the caller's). Rejected during PARSING — before any CLI
+    # call, snapshot capture or preflight work.
+    # *[origin: cross-vendor decision round 2026-09-21]*
+    --resume) echo "--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief" >&2; exit 2 ;;
     --snapshot) SNAPSHOT=1; shift ;;
     --mode)   [ $# -ge 2 ] || { echo "--mode requires a value (consult)" >&2; exit 2; }; MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#--mode=}"; shift ;;
@@ -189,16 +183,6 @@ case "$MODE" in
     exit 2
     ;;
 esac
-
-# --snapshot + --resume is incoherent, not merely unsupported: --resume maps to
-# `claude --continue`, and a continued session keeps its own working root that
-# this runner cannot re-point, so the reviewer would read the ORIGINAL while
-# the disclosure claimed a snapshot. Refuse BEFORE any CLI call.
-# *[origin: B8 snapshot spec 1 — escalation is always a new session]*
-if [ "$SNAPSHOT" = 1 ] && [ "$RESUME" = 1 ]; then
-  echo "--snapshot has no resume semantics (a resumed thread keeps its original working root); start a NEW session with --snapshot." >&2
-  exit 2
-fi
 
 BRIEF="${1:-}"
 [ -z "$BRIEF" ] && { echo "brief file required. usage: claude_consult.sh [--mode consult] [-o out] brief.md|-" >&2; exit 2; }
@@ -923,12 +907,6 @@ MODEL_FLAG=(); [ -n "$MODEL" ] && MODEL_FLAG=(--model "$MODEL")
 
 if [ -n "$MODEL" ]; then MODEL_DISP="model=$MODEL ($MODEL_SRC)"
 else MODEL_DISP="model=cli-default (identity unverified)"; fi
-# --continue passes NOTHING: the thread keeps its own model, so passing
-# --model here would silently contradict the thread it claims to continue.
-if [ "$RESUME" = 1 ]; then
-  MODEL_FLAG=()
-  MODEL_DISP="model=inherited (unverified)"
-fi
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
@@ -1216,16 +1194,15 @@ else
 fi
 
 # ---- run ----
-echo "→ Claude (mode=$MODE, $MODEL_DISP, timeout=${TIMEOUT}s, resume=$RESUME, brief=$BRIEF$START_EXTRA) ..." >&2
+echo "→ Claude (mode=$MODE, $MODEL_DISP, timeout=${TIMEOUT}s, brief=$BRIEF$START_EXTRA) ..." >&2
 # `claude -p` has no --cd: the working root IS the process cwd, so the runner
 # moves into the snapshot itself. Every path used after this point ($BRIEF,
 # $OUT, $LOG, $EFFECTIVE_BRIEF) was made absolute up front for exactly this.
 if [ -n "$SNAP" ]; then
   cd "$SNAP" || snapshot_refuse "cannot enter the snapshot: $SNAP"
 fi
-RESUME_FLAG=(); [ "$RESUME" = 1 ] && RESUME_FLAG=(--continue)
 # Direct edit tools disabled — the reviewer analyzes and replies only.
-RUN=(claude -p "${RESUME_FLAG[@]}" "${MODEL_FLAG[@]}" --disallowedTools "Edit,Write,NotebookEdit")
+RUN=(claude -p "${MODEL_FLAG[@]}" --disallowedTools "Edit,Write,NotebookEdit")
 START=$SECONDS
 echo "# ---- attempt 1: $MODEL_DISP ----" >> "$LOG"
 echo "# ---- attempt 1 stderr ----" >> "$LOG"

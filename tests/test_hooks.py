@@ -1903,27 +1903,20 @@ def main():
             CONTRACT_HEAD = "REVIEWER CONTRACT: analyze and reply only."
 
             # Stub codex/claude executable. Captures argv (one arg per line) +
-            # full stdin per invocation; `--version` and `--help` probes are
-            # NOT captured (the runners probe both before/around the real
-            # call). With `--json` in argv it prints a JSONL event stream to
-            # stdout and honors `-o <file>` for the reply (real codex
-            # contract); without it the reply goes to stdout (claude). All
-            # behavior is scripted through env vars, globally (STUB_RC) or
-            # per call index (STUB_RC_2) — the per-call form is what makes the
-            # model-fallback and second-attempt-fails fixtures expressible.
+            # full stdin per invocation; the `--version` probe is NOT captured
+            # (the runners probe it before the real call). With `--json` in
+            # argv it prints a JSONL event stream to stdout and honors
+            # `-o <file>` for the reply (real codex contract); without it the
+            # reply goes to stdout (claude). All behavior is scripted through
+            # env vars, globally (STUB_RC) or per call index (STUB_RC_2) — the
+            # per-call form is what makes the model-fallback and
+            # second-attempt-fails fixtures expressible.
             STUB_BODY = r'''#!/usr/bin/env bash
 set +u
 if [ "${1:-}" = "--version" ]; then
   echo "stub-version 0.0.0"
   exit 0
 fi
-for a in "$@"; do
-  if [ "$a" = "--help" ] || [ "$a" = "-h" ]; then
-    echo "Usage: stub exec [OPTIONS]"
-    __HELP_FLAGS__
-    exit 0
-  fi
-done
 CAP="__CAP__"
 mkdir -p "$CAP"
 idx_file="$CAP/_idx"
@@ -2010,19 +2003,10 @@ python3 -c 'import sys,time;open(sys.argv[1],"w").write(repr(time.time()))' "$CA
 exit "$rc"
 '''
 
-            # An OLDER codex advertises neither --json nor -o on resume; the
-            # runner must keep the plain stdout capture there.
-            HELP_MODERN = ('echo "      --json"\n'
-                           'echo "          Print events to stdout as JSONL"\n'
-                           'echo "  -o, --output-last-message <FILE>"\n'
-                           'echo "          Write the agent\'s last message to FILE"')
-            HELP_OLD = 'echo "      --last"'
-
-            def make_stub(bin_dir, name, capture_dir, help_advertises=True):
+            def make_stub(bin_dir, name, capture_dir):
                 os.makedirs(bin_dir, exist_ok=True)
                 path = os.path.join(bin_dir, name)
-                body = STUB_BODY.replace("__CAP__", capture_dir).replace(
-                    "__HELP_FLAGS__", HELP_MODERN if help_advertises else HELP_OLD)
+                body = STUB_BODY.replace("__CAP__", capture_dir)
                 with open(path, "w") as f:
                     f.write(body)
                 os.chmod(path, 0o755)
@@ -2128,9 +2112,37 @@ exit "$rc"
                 rc, out, err = run_script(codex_script, (args or []) + [brief], env, cwd=cwd)
                 return rc, out, err, read_calls(cap)
 
+            def check_resume_removed(slug, title, script, cli, args, cwd=None):
+                """--resume was REMOVED in 2.13 (implicit latest-thread
+                selection misroutes under concurrent sessions). Parsing
+                refuses it: exit 2 with the removal message, no CLI call, and
+                not one artifact on disk — the refusal happens before any
+                snapshot capture or preflight work, so there is nothing to
+                clean up."""
+                bin_dir = os.path.join(runner_tmp, f"bin-{slug}")
+                cap = os.path.join(runner_tmp, f"cap-{slug}")
+                make_stub(bin_dir, cli, cap)
+                brief_dir = os.path.join(runner_tmp, f"briefdir-{slug}")
+                brief = brief_file(f"briefdir-{slug}/brief.md")
+                rc, out, err = run_script(
+                    script, list(args) + [brief],
+                    {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                    cwd=cwd)
+                combined = out + err
+                check(f"{title}: exit 2", rc == 2, f"rc={rc} out={out} err={err}")
+                check(f"{title}: message names the 2.13 removal and a NEW session",
+                      "removed in 2.13" in combined
+                      and "start a NEW session with a self-contained brief" in combined,
+                      combined)
+                check(f"{title}: the CLI is never invoked",
+                      len(read_calls(cap)) == 0, read_calls(cap))
+                left = sorted(os.listdir(brief_dir))
+                check(f"{title}: no reply/log/events artifact is written",
+                      left == ["brief.md"], left)
+
             # ---- (p) existing runner contracts: contract prepend on top
-            # of captured stdin — file brief, stdin brief, --resume (both
-            # runners). Sandbox precedence, --mode implement removal and
+            # of captured stdin — file brief, stdin brief (both runners).
+            # Sandbox precedence, --mode implement removal and
             # --disallowedTools continue further down under the same label. ----
             for label, script in (("codex", codex_script), ("claude", claude_script)):
                 bin_dir = os.path.join(runner_tmp, f"bin-{label}-contract")
@@ -2155,13 +2167,8 @@ exit "$rc"
                 check(f"{label} stdin-brief: contract at top of captured stdin",
                       bool(calls2) and calls2[0][1].startswith(CONTRACT_HEAD), calls2[:1])
 
-                cap3 = os.path.join(runner_tmp, f"cap-{label}-resume")
-                make_stub(bin_dir, label, cap3)
-                rc, out, err = run_script(script, ["--resume", brief_path], env)
-                calls3 = read_calls(cap3)
-                check(f"{label} --resume: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
-                check(f"{label} --resume: contract at top of captured stdin",
-                      bool(calls3) and calls3[0][1].startswith(CONTRACT_HEAD), calls3[:1])
+                check_resume_removed(f"{label}-resume", f"{label} --resume",
+                                     script, label, ["--resume"])
 
             # ---- (a/b) nested content is NEVER inspected: a reply that
             # QUOTES an error string, or a command whose aggregated output
@@ -2469,30 +2476,6 @@ exit "$rc"
             })
             check("fallback: attempt 1 events/traces do not fail a clean retry",
                   rc == 0 and len(read_calls(cap)) == 2, f"rc={rc} err={err}")
-
-            # ---- (j) resume: --json/-o probed and used; nothing is verified ----
-            bin_dir = os.path.join(runner_tmp, "bin-resume-json")
-            cap = os.path.join(runner_tmp, "cap-resume-json")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, ["--resume", brief_file("resume-brief.md")], {
-                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")})
-            calls = read_calls(cap)
-            argv = calls[0][0] if calls else []
-            check("resume: --json passed when the CLI advertises it", "--json" in argv, argv)
-            check("resume: -o passed when the CLI advertises it", "-o" in argv, argv)
-            check("resume: model/effort/sandbox disclosed as inherited (unverified)",
-                  rc == 0 and "model=inherited (unverified)" in out, f"rc={rc} out={out}")
-
-            bin_dir = os.path.join(runner_tmp, "bin-resume-oldcli")
-            cap = os.path.join(runner_tmp, "cap-resume-oldcli")
-            make_stub(bin_dir, "codex", cap, help_advertises=False)
-            rc, out, err = run_script(codex_script, ["--resume", brief_file("resume-old-brief.md")], {
-                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")})
-            calls = read_calls(cap)
-            argv = calls[0][0] if calls else []
-            check("resume: an older CLI (no --json/-o in help) keeps the plain stdout capture",
-                  rc == 0 and "--json" not in argv and "-o" not in argv,
-                  f"rc={rc} argv={argv} err={err}")
 
             # ---- (k/l/m/n) change detection ----
             head_repo = make_repo("repo-head")
@@ -2846,21 +2829,6 @@ exit "$rc"
                   and "model=cli-default (identity unverified)" in out,
                   f"rc={rc} argv={calls[:1]} out={out}")
 
-            # ---- (F3) --resume passes NOTHING, not even --model ----
-            bin_dir = os.path.join(runner_tmp, "bin-claude-resume-model")
-            cap = os.path.join(runner_tmp, "cap-claude-resume-model")
-            make_stub(bin_dir, "claude", cap)
-            rc, out, err = run_script(claude_script,
-                                      ["--resume", brief_file("claude-resume-model-brief.md")], {
-                                          "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                                          "CLAUDE_MODEL": "some-model"})
-            calls = read_calls(cap)
-            check("claude --resume: --model is NOT passed even with CLAUDE_MODEL set",
-                  rc == 0 and bool(calls) and "--model" not in calls[0][0]
-                  and "some-model" not in calls[0][0]
-                  and "model=inherited (unverified)" in out,
-                  f"rc={rc} argv={calls[:1]} out={out}")
-
             # ---- --mode implement removed (both runners, both flag forms) ----
             for label, script in (("codex", codex_script), ("claude", claude_script)):
                 for flag_args in (["--mode", "implement"], ["--mode=implement"]):
@@ -2959,7 +2927,7 @@ exit "$rc"
             check("invalid CODEX_SANDBOX env: codex never invoked (fails before the call)",
                   len(read_calls(cap)) == 0, read_calls(cap))
 
-            # ---- claude runner: --disallowedTools present on normal AND resume runs ----
+            # ---- claude runner: --disallowedTools present on every run ----
             disallow_bin_dir = os.path.join(runner_tmp, "bin-claude-disallow")
             os.makedirs(disallow_bin_dir, exist_ok=True)
             env = {"PATH": disallow_bin_dir + os.pathsep + os.environ.get("PATH", "")}
@@ -2974,18 +2942,6 @@ exit "$rc"
                   "--disallowedTools" in argv, argv)
             check("claude normal run: Edit,Write,NotebookEdit value present",
                   "Edit,Write,NotebookEdit" in argv, argv)
-
-            cap2 = os.path.join(runner_tmp, "cap-claude-disallow-resume")
-            make_stub(disallow_bin_dir, "claude", cap2)
-            rc, out, err = run_script(claude_script, ["--resume", brief_path], env)
-            calls2 = read_calls(cap2)
-            argv2 = calls2[0][0] if calls2 else []
-            check("claude --resume run: --disallowedTools flag present",
-                  "--disallowedTools" in argv2, argv2)
-            check("claude --resume run: Edit,Write,NotebookEdit value present",
-                  "Edit,Write,NotebookEdit" in argv2, argv2)
-            check("claude --resume run: model disclosed as inherited (unverified)",
-                  "model=inherited (unverified)" in out, out)
 
             # ---- (B8) --snapshot: the reviewer reads a detached worktree
             # snapshot instead of the live working copy. Every fixture below
@@ -3381,21 +3337,18 @@ runpy.run_path(helper, run_name="__main__")
                       wrote_wt > 0 and worktree_count(wrote_repo) == wrote_wt,
                       f"{worktree_count(wrote_repo)} != {wrote_wt}")
 
-                # (v) --snapshot + --resume is incoherent: exit 2, zero calls.
+                # (v) --snapshot --resume: --resume is rejected FIRST, with
+                # the same 2.13 removal message — no combined-refusal wording
+                # survives, and the snapshot is never captured.
                 resume_repo = make_repo_committed(f"repo-snap-resume-{who}")
-                bin_dir = os.path.join(runner_tmp, f"bin-snap-resume-{who}")
-                cap = os.path.join(runner_tmp, f"cap-snap-resume-{who}")
-                make_stub(bin_dir, snap_cli, cap)
-                rc, out, err = run_script(
-                    snap_script, ["--snapshot", "--resume",
-                                  brief_file(f"snap-resume-{who}-brief.md")],
-                    {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
-                    cwd=resume_repo)
-                check(f"{who} --snapshot --resume: exit 2 naming the missing semantics",
-                      rc == 2 and "--snapshot has no resume semantics" in (out + err),
-                      f"rc={rc} out={out} err={err}")
-                check(f"{who} --snapshot --resume: the CLI is never invoked",
-                      len(read_calls(cap)) == 0, read_calls(cap))
+                resume_wt = worktree_count(resume_repo)
+                check_resume_removed(f"snap-resume-{who}",
+                                     f"{who} --snapshot --resume",
+                                     snap_script, snap_cli,
+                                     ["--snapshot", "--resume"], cwd=resume_repo)
+                check(f"{who} --snapshot --resume: no snapshot worktree is created",
+                      resume_wt > 0 and worktree_count(resume_repo) == resume_wt,
+                      f"{worktree_count(resume_repo)} != {resume_wt}")
 
                 # (vi) shapes a worktree snapshot cannot reproduce honestly
                 # are refused up front, unpaid, each with ITS OWN reason.

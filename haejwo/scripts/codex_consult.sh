@@ -23,13 +23,13 @@
 #   unanchored marker grep over the mixed log was removed entirely.
 #   *[origin: reviewer replies discussing sandbox/tool errors self-failed]*
 #
-# Every input the reviewer sees (initial run, --resume, the model fallback
-# retry) is prefixed with a standing REVIEWER CONTRACT (below) that forbids
+# Every input the reviewer sees (initial run, the model fallback retry) is
+# prefixed with a standing REVIEWER CONTRACT (below) that forbids
 # edits/installs/config changes — enforced by instruction here, and
 # backstopped by the post-run change-detection gate.
 #
 # Usage:
-#   codex_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
+#   codex_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
 #   echo "..." | codex_consult.sh --mode consult -   # stdin brief (deleted on exit)
 #
 # Mode (safety gate):
@@ -38,14 +38,9 @@
 #             cannot block edits — enforce in code). `--mode implement` was
 #             removed in 2.10 (cross-vendor worker routing is a non-goal) —
 #             use the standalone collab tool for manual implement runs.
-#   --resume  continues the most recent eligible codex thread at its original
-#             model/effort/sandbox (nothing is passed); concurrent sessions can
-#             select the wrong thread — prefer a NEW session with a summary
-#             brief; escalation is always a new session.
+#   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
 #   --snapshot  runs the reviewer in a DETACHED WORKTREE snapshot of this
 #             repository instead of the working copy — see "Snapshot" below.
-#             Incompatible with --resume (a live thread cannot be re-pointed at
-#             a new working root): the combination exits 2 before any CLI call.
 #
 # Snapshot (--snapshot, 2.11): HEAD plus the NET uncommitted working-tree
 #   changes (one `git diff --binary <SHA>` patch replayed with `git apply
@@ -106,8 +101,7 @@
 #                   an invalid CONFIG value notes and falls back to high.
 #   CODEX_MODEL     force a specific reviewer model (optional; overrides
 #                   config `codex.model`). Fixed for the whole consult
-#                   session — never swap models mid-thread on a --resume
-#                   call; escalation is always a NEW session. If codex
+#                   session; escalation is always a NEW session. If codex
 #                   pre-execution-rejects this model as unknown/unavailable,
 #                   this script retries ONCE (with `codex.fallback_model` if
 #                   configured, else the CLI default) and marks the reply —
@@ -118,9 +112,9 @@
 #                   event-stream classifier always stays on.
 #
 # Disclosure discipline: every model/effort value is printed with its SOURCE
-#   (env | config | runner-default | cli-default | inherited). An unselected
-#   model is `cli-default (identity unverified)` — the runner does not know
-#   which model answered; a --resume run inherits and verifies nothing.
+#   (env | config | runner-default | cli-default). An unselected model is
+#   `cli-default (identity unverified)` — the runner does not know which
+#   model answered.
 #
 # Change detection (scope, honestly): HEAD, tracked file status AND per-path
 #   working-tree fingerprints, `git diff` / `git diff --cached` digests, and
@@ -149,8 +143,8 @@
 set -uo pipefail
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to codex, on
-# every input path (initial run, --resume, model-fallback retry). Durable
-# owner policy — not brief-specific, do not let callers override it.
+# every input path (initial run, model-fallback retry). Durable owner policy
+# — not brief-specific, do not let callers override it.
 REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
@@ -162,20 +156,17 @@ print_help() {
 codex_consult.sh — feed a self-contained brief to codex exec; capture reply.
 
 Usage:
-  codex_consult.sh [--mode consult] [--resume] [--snapshot] [-o out.md] brief.md
+  codex_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
   echo "..." | codex_consult.sh --mode consult -
 
 Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.
-  --resume  continues the most recent eligible codex thread at its original
-            model/effort/sandbox (nothing is passed); concurrent sessions can
-            select the wrong thread — prefer a NEW session with a summary
-            brief; escalation is always a new session.
+  --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
   --snapshot  review a detached worktree snapshot (HEAD + net uncommitted
             changes + untracked non-ignored files, first 2000) instead of the
             live working copy. Ignored files are omitted; capture is not
             atomic (drift REFUSES); shared .git metadata means this is
-            isolation, not containment. Refuses with --resume.
+            isolation, not containment.
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
 non-goal); use the standalone collab tool for manual implement runs.
@@ -203,11 +194,15 @@ EOF
 # ---- argument parsing ----
 MODE=""
 OUT=""
-RESUME=0
 SNAPSHOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --resume) RESUME=1; shift ;;
+    # --resume was removed in 2.13: implicit latest-thread selection
+    # misroutes under concurrent sessions (the runner cannot tell which
+    # thread is the caller's). Rejected during PARSING — before any CLI
+    # call, snapshot capture or preflight work.
+    # *[origin: cross-vendor decision round 2026-09-21]*
+    --resume) echo "--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief" >&2; exit 2 ;;
     --snapshot) SNAPSHOT=1; shift ;;
     --mode)   [ $# -ge 2 ] || { echo "--mode requires a value (consult)" >&2; exit 2; }; MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#--mode=}"; shift ;;
@@ -233,16 +228,6 @@ case "$MODE" in
     exit 2
     ;;
 esac
-
-# --snapshot + --resume is incoherent, not merely unsupported: a resumed thread
-# already has a working root and this runner cannot re-point it at a new one,
-# so the reviewer would read the ORIGINAL while the disclosure claimed a
-# snapshot. Refuse BEFORE any CLI call — an incoherent run is never paid for.
-# *[origin: B8 snapshot spec 1 — escalation is always a new session]*
-if [ "$SNAPSHOT" = 1 ] && [ "$RESUME" = 1 ]; then
-  echo "--snapshot has no resume semantics (a resumed thread keeps its original working root); start a NEW session with --snapshot." >&2
-  exit 2
-fi
 
 BRIEF="${1:-}"
 [ -z "$BRIEF" ] && { echo "brief file required. usage: codex_consult.sh [--mode consult] [-o out] brief.md|-" >&2; exit 2; }
@@ -1051,13 +1036,6 @@ model_disp() {
 MODEL_DISP="$(model_disp "$MODEL" "$MODEL_SRC")"
 EFFORT_DISP="effort=$EFFORT ($EFFORT_SRC)"
 SANDBOX_DISP="sandbox=$SANDBOX"
-if [ "$RESUME" = 1 ]; then
-  # resume passes no flags: model, effort and sandbox all come from the
-  # original thread and this runner cannot verify any of them.
-  MODEL_DISP="model=inherited (unverified)"
-  EFFORT_DISP="effort=inherited (unverified)"
-  SANDBOX_DISP="sandbox=inherited (unverified)"
-fi
 
 command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex --version)" >&2; exit 3; }
 
@@ -1437,14 +1415,6 @@ PY
 }
 
 # ---- run ----
-# Does this codex support `--json` / `-o` on the resume path? Probed, not
-# assumed — an older CLI keeps the plain stdout capture (no event stream).
-RESUME_JSON=0
-if [ "$RESUME" = 1 ]; then
-  RESUME_HELP="$(bounded 20 codex exec resume --help 2>&1)"
-  case "$RESUME_HELP" in *--json*) case "$RESUME_HELP" in *-o,*|*"-o "*|*--output-last-message*) RESUME_JSON=1 ;; esac ;; esac
-fi
-
 run_attempt() {
   # $1 = attempt number, $2 = events sink, rest = command to run.
   local n="$1" sink="$2"; shift 2
@@ -1459,27 +1429,14 @@ run_attempt() {
   fi
 }
 
-echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, resume=$RESUME, brief=$BRIEF$START_EXTRA) ..." >&2
+echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF$START_EXTRA) ..." >&2
 START=$SECONDS
-EVENTS_MODE=1
 CUR_EVENTS="$EVENTS"
-if [ "$RESUME" = 1 ]; then
-  # Persistent session: continue the latest codex thread (model/effort/sandbox
-  # inherited from the original session — no flags). message=stdin.
-  if [ "$RESUME_JSON" = 1 ]; then
-    run_attempt 1 "$EVENTS" codex exec --skip-git-repo-check resume --last --json -o "$OUT"
-  else
-    EVENTS_MODE=0
-    CUR_EVENTS=""
-    run_attempt 1 "$OUT" codex exec --skip-git-repo-check resume --last
-  fi
-else
-  run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
-fi
+run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
 rc=$?
 DUR=$((SECONDS - START))
 
-# ---- model-unavailable fallback (non-resume only) ----
+# ---- model-unavailable fallback ----
 # A PRE-EXECUTION rejection of the requested model retries ONCE, never twice,
 # never persisted. Positive ID requires all four: rc!=0 (not a timeout), a
 # TOP-LEVEL failure event whose message both matches a known unknown-model
@@ -1490,10 +1447,8 @@ DUR=$((SECONDS - START))
 # double-charge and double-review.
 MODEL_FALLBACK=0
 FALLBACK_MODEL=""
-if [ "$EVENTS_MODE" = 1 ]; then
-  classify_events "$CUR_EVENTS" "$MODEL"
-fi
-if [ "$RESUME" = 0 ] && [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
+classify_events "$CUR_EVENTS" "$MODEL"
+if [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
    && [ "$CLS_MODEL_UNAVAIL" = 1 ] && [ "$CLS_PRE_EXEC" = 1 ] && [ "$CLS_MALFORMED_BEFORE" -eq 0 ]; then
   FALLBACK_MODEL="$CFG_FALLBACK_MODEL"
   FB_FLAG=(); [ -n "$FALLBACK_MODEL" ] && FB_FLAG=(-m "$FALLBACK_MODEL")
@@ -1534,14 +1489,12 @@ elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
 [ -s "$OUT" ] || fail "empty reply (codex produced no final answer)"
 
 # (iii) codex's own failure events
-if [ "$EVENTS_MODE" = 1 ]; then
-  echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($CUR_EVENTS) ----" >> "$LOG"
-  if [ -n "$CLS_FAIL_TYPE" ]; then
-    fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
-  fi
-  if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
-    fail "no event stream (rc=0) — cannot verify the run"
-  fi
+echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($CUR_EVENTS) ----" >> "$LOG"
+if [ -n "$CLS_FAIL_TYPE" ]; then
+  fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
+fi
+if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
+  fail "no event stream (rc=0) — cannot verify the run"
 fi
 
 # (iv) tracing errors on THIS attempt's stderr only, ANCHORED at column 0.

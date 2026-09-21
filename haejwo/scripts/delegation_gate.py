@@ -53,7 +53,11 @@ Envelope field semantics (v2) — one line per field:
                                                  from a subagent, or the host
                                                  is Codex (whose spawn_agent
                                                  never hits this matcher)
-                     "skip:config-unreadable"    config.json is malformed
+                     "skip:config-malformed"     config.json is unparseable:
+                                                 the WHOLE hook fails open,
+                                                 including the generic-agent
+                                                 deny (origin 2026-09-21
+                                                 audit item 1)
                      "skip:frontmatter-unreadable" agent file missing or its
                                                  frontmatter is malformed
                      "skip:fail-open"            an exception in the decision
@@ -80,7 +84,7 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
     allow, deny, gate_disabled_by_env, is_subagent, load_config_with_status,
-    observe, paths, read_payload,
+    malformed_note_once, observe, paths, read_payload,
 )
 
 KNOWN_GENERIC = {"general-purpose", "Explore"}
@@ -295,7 +299,7 @@ def _tier_pin_check(subagent_type, model, requested_model, cfg, cfg_status, root
         # a non-string model counts as no explicit model.)
         return "skip:fail-open", None, None
     if cfg_status == "malformed":
-        return "skip:config-unreadable", None, None
+        return "skip:config-malformed", None, None  # backstop; main() short-circuits
     if requested_model is not None:
         return "pass:explicit-model", None, None
     models = cfg.get("models")
@@ -359,13 +363,27 @@ def main():
     # the request only, in a separate emit from the eventual allow/deny).
     decision = "allow"
     deny_reason = None
+    context = None
     tier_pin_check = "pass:not-a-tier"  # "the check did not apply" bucket
     try:
         if not is_subagent(payload) and not gate_disabled_by_env():
             # ONE read serves both the decision and the tier check: the two
             # can never disagree about what the config said.
             cfg, cfg_status = load_config_with_status(data)
-            if cfg["gate"]["enabled"] and cfg["gate"]["delegation_guard"]:
+            if cfg_status == "malformed":
+                # P4, origin 2026-09-21 audit item 1: an unparseable config
+                # fails the WHOLE hook open. Not just the tier pin: the
+                # generic-agent deny steers with model names read from that
+                # same file, so denying here would name tiers the user may
+                # never have configured. An ABSENT config keeps defaults.
+                # The one-time session note is shared with gate.py and
+                # bash_guard.py (hjw_common.malformed_note_once): whichever
+                # hook fires first emits it, so a session that only delegates
+                # still learns enforcement is off (origin 2026-09-21 F2).
+                tier_pin_check = "skip:config-malformed"
+                context = malformed_note_once(
+                    data, payload.get("session_id", "unknown"))
+            elif cfg["gate"]["enabled"] and cfg["gate"]["delegation_guard"]:
                 # Host detection by plugin path: codex passes compat env/argv
                 # rooted under /.codex/plugins (measured heuristic, same test
                 # session_brief.py:87 uses to pick codex vs Claude wording).
@@ -381,8 +399,8 @@ def main():
                         next_action = CODEX_TIER_ONLY if on_codex else CLAUDE_TIER_ONLY
                     deny_reason = (
                         f"[haejwo gate] Delegation to generic agent '{subagent_type}' without an "
-                        f"explicit model — it would INHERIT the session model (judgment rates for "
-                        f"execution). {next_action} Emergency override: /haejwo:gate off."
+                        f"explicit model — it would INHERIT the session model instead of a "
+                        f"configured tier. {next_action} Emergency override: /haejwo:gate off."
                     )
                 else:
                     # Tier pin check — disjoint from the generic-agent check
@@ -393,11 +411,14 @@ def main():
                         root, on_codex)
                     if tier_pin_check == "deny":
                         decision = "deny"
+                        # Origin 2026-08-21 silent-downgrade (kept here, out of
+                        # the deny text: the user needs the next action, not
+                        # the incident that earned the rule).
                         deny_reason = (
                             f"[haejwo gate] Delegation to '{subagent_type}' without a model "
                             f"override — the agent file defaults to '{file_default}' but your "
                             f"config pins '{pin}' for this tier (omission would not honor the "
-                            f"pin; origin 2026-08-21 silent-downgrade). Pass model: '{pin}', or "
+                            f"pin). Pass model: '{pin}', or "
                             f"another explicit model if you intend to override the pin, or run "
                             f"/haejwo:setup to change it. Emergency override: /haejwo:gate off."
                         )
@@ -405,6 +426,7 @@ def main():
         # Any ambiguity in the decision path fails open — still record it.
         decision = "allow"
         deny_reason = None
+        context = None
         tier_pin_check = "skip:fail-open"
 
     # Envelope derivation must be exactly as fail-open as the decision path
@@ -430,7 +452,7 @@ def main():
 
     if decision == "deny":
         deny(deny_reason)
-    allow()
+    allow(context)
 
 
 if __name__ == "__main__":

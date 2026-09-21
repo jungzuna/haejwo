@@ -34,10 +34,11 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 - CAPS for absolute invariants (NEVER / MUST / ONLY), **bold** for key terms, `code` for identifiers, paths, and commands.
 
 ## Reporting shapes (host output during orchestration)
-- Table criterion: use a table whenever the reader would SCAN comparable fields (even 2 rows); never for narrative.
+Shapes are for the reader; P11 governs — use them when they fit, never as ritual.
+- Table criterion (discretionary): a table when the reader would SCAN comparable fields; never for narrative.
 - Batch plan (once, at start of long/multi-phase work): `phase | what | worker | expected`.
-- Milestone (per worker completion): one line — `✓ <phase> — verified via <diff/tests> — commit <sha> — next: <phase>`.
-- Long-run checkpoint (once, past the stated ETA): elapsed + active phase + "no result yet" + when the next update comes. Honest silence beats fake progress; never a timer loop.
+- Milestone (per worker completion, when it fits): one line — `✓ <phase> — verified via <diff/tests> — commit <sha> — next: <phase>`.
+- Long-run checkpoint (past the stated ETA, when it fits): elapsed + active phase + "no result yet" + when the next update comes. Honest silence beats fake progress; never a timer loop.
 - Consensus outcome (after a reviewer round ONLY): `Consensus: <decision one-liner> — accepted n / rejected m (key rejection: X, because Y) → carried into brief: <what>`. Use a 2-4 row table (`decision | rationale | dissent-resolution`) only when ≥2 material decisions. This REPLACES the prose summary; never emit it when no reviewer round ran. Append `(shape B)` when the independent-drafts shape was used.
 - Final scorecard (multi-phase/commit-bearing work only): shipped (user terms) / quality gates / commits / deviations from plan / pending decisions. Small work: two plain lines instead.
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.

@@ -6,7 +6,10 @@
 # Same contract as codex_consult.sh: feed a self-contained brief via stdin or
 # file, capture the final reply, NEVER trust the exit code alone — any of
 # {rc!=0 | empty reply | repository changed | change detection unavailable}
-# exits non-zero.
+# exits non-zero. Stated as a guarantee, narrowed to what is actually checked:
+# rc=0 with no reply or a changed repository is never reported as success;
+# there is no event classifier on this path (codex_consult.sh has one); a
+# failure the reviewer reports only in prose is not detected.
 #
 # Direct edit tools (Edit/Write/NotebookEdit) are disabled via
 # --disallowedTools on every run. Bash remains available to the reviewer
@@ -140,8 +143,10 @@ Env (env > config > default; empty env value = unset): CLAUDE_MODEL,
   elsewhere that key describes the other vendor's reviewer. Env wins.
 
 Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed,
-  change detection unavailable}. A silent rc=0 failure is never reported as
-  success.
+  change detection unavailable}. Guarantee, narrowed to what is actually
+  checked: rc=0 with no reply or a changed repository is never reported as
+  success; there is no event classifier on this path; a failure the reviewer
+  reports only in prose is not detected.
 
 Direct edit tools (Edit/Write/NotebookEdit) are disabled via
 --disallowedTools; Bash remains available and is covered by post-run change
@@ -1198,6 +1203,16 @@ if [ "$DETECT_OK" != 1 ]; then
 elif [ "$GIT_OK" = 1 ]; then
   git_snapshot "$SNAPDIR/before.json" 2>>"$SNAPDIR/detect.err" || DETECT_OK=0
   [ "$DETECT_OK" = 1 ] || detect_fail_now
+else
+  # Not a git repo: there is no before-snapshot to take, so the no-edit
+  # contract can never be verified for this run. Refuse BEFORE the paid call
+  # (exit 2, like an unavailable snapshot) — this used to be a post-run
+  # failure that still spent a reviewer call on a result it then discarded.
+  # *[origin 2026-09-21 audit item 3]*
+  REFUSE_MSG="consult outside a git repo — cannot verify the no-edit contract (claude -p is unsandboxed). Run inside a git repo."
+  printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
+  echo "$REFUSE_MSG" >&2
+  exit 2
 fi
 
 # ---- run ----
@@ -1236,6 +1251,8 @@ elif [ "$rc" -ne 0 ]; then fail "claude exit code $rc"; fi
 [ -s "$OUT" ] || fail "empty reply (claude produced no final answer)"
 
 # ---- mode gate (side-effect verification) ----
+# GIT_OK is necessarily 1 here: the non-git case exits 2 in the preflight
+# above, before any reviewer call.
 COVERAGE_NOTE=""
 if [ "$GIT_OK" = 1 ]; then
   CHANGED_LIST=""
@@ -1258,8 +1275,6 @@ if [ "$GIT_OK" = 1 ]; then
       fail "repository changed during the run — attribution unknown (concurrent writers are not distinguished); changed: $CHANGED_LIST; inspect 'git status'"
     fi
   fi
-else
-  fail "consult outside a git repo — cannot verify the no-edit contract (claude -p is unsandboxed). Run inside a git repo."
 fi
 
 # ---- result ----

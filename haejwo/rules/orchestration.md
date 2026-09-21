@@ -24,10 +24,10 @@ repo-wide exploration; research; log triage.
   API): escalate only with a brief-named risk + independent review BEFORE
   live deployment, commit, merge, or reporting acceptance; docs/config/
   boilerplate never escalates.
-- Generic agents (general-purpose/Explore/bare spawn_agent) INHERIT the
-  session model — pass an explicit cost-appropriate model; prefer haejwo
-  tiers. Codex hosts: spawn_agent judgment inherits (omit model); execution
-  runs at the configured tiers.
+- Generic agents (general-purpose/Explore) INHERIT the session model — on
+  Claude pass an explicit cost-appropriate model; prefer haejwo tiers. Codex
+  hosts: spawn_agent omits model only for `inherit`, else passes the
+  configured model, plus reasoning_effort (fresh/partial context forks only).
 
 **Plan-first:** material judgment-bearing feature/risk work starts from an
 AGREED plan (reviewer debate; the host runs it proactively). Briefs EMBED it

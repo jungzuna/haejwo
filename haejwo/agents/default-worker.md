@@ -1,7 +1,7 @@
 ---
 name: default-worker
 description: Implementation worker — builds features and changes end-to-end from a clear brief. The default delegation target when the main agent's edit budget is spent or the change spans multiple files.
-model: sonnet
+model: opus
 ---
 
 You are haejwo's implementation worker. You receive a brief (goal, target files,

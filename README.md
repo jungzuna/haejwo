@@ -37,7 +37,7 @@ Trust the hooks once in interactive codex via `/hooks`. Commands surface as `@ha
 
 Hooks load at session start, so restart the session (or run `/reload-plugins` on Claude Code) after install. `/haejwo:setup` is optional — it configures model tiers, edit budget, and the reviewer once and persists; safe defaults are already active before you run it, and on first use haejwo offers it automatically.
 
-**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). The default `deep-reasoner` tier inherits your session's model — no separate Opus dependency out of the box. **Want default-worker/task-worker off Sonnet/Haiku too?** Run `/haejwo:setup` and pick the `Quality`, `Budget`, or `Custom` tier preset.
+**Codex is optional** on a Claude Code host — without it, review falls back to the bundled `deep-reasoner` (same-family, weaker independence). The default `deep-reasoner` tier inherits your session's model, so judgment is never re-pointed; execution defaults to Opus (`default-worker`, and `task-worker` at low effort). **Want cheaper workers?** Run `/haejwo:setup` and pick the `Budget` or `Custom` tier preset.
 
 Local development install: clone, then `/plugin marketplace add <clone-path>` / `codex plugin marketplace add <clone-path>`.
 
@@ -45,10 +45,10 @@ Local development install: clone, then `/plugin marketplace add <clone-path>` / 
 
 | Feature | What it does |
 | --- | --- |
-| **Zero-config orchestration** | SessionStart injects a minimal operating core before setup, and the full rules + live config once configured. Safe defaults are active immediately either way: gate ON, 2 files/turn, bash-guard ON |
+| **Zero-config orchestration** | SessionStart injects the FULL orchestration rules from the very first session — with a setup nudge and a `defaults — not configured` summary until setup runs, and the live config summary afterwards. (A minimal operating core is the emergency degrade only: an unreadable or over-budget rules file.) Safe defaults are active immediately either way: gate ON, 2 files/turn, bash-guard ON |
 | **Judgment-first planning** | Feature-scale work starts with plan consensus: the host debates planning, analysis, and review decisions before implementation |
 | **Cross-vendor review when available** | With both CLIs installed, the reviewer is the other company's model — codex on Claude Code, claude on Codex |
-| **Cost-appropriate execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to the configured worker tiers (`spawn_agent` model mapping on Codex). On Claude Code, with haejwo's shipped agent definitions, `inherit` is meaningful for `deep-reasoner` only — `default-worker` and `task-worker` run at their agent file's default model unless an explicit model is passed, and the delegation gate steers an omitted override without verifying which model actually ran |
+| **Cost-appropriate execution tiers** | The host keeps judgment and stays whatever model your session is using — haejwo never overrides it. Implementation and chores route to the configured worker tiers: on Claude Code the defaults are Opus for `default-worker` and Opus at low effort for `task-worker`, with `Budget` (sonnet/haiku) as the cheaper opt-in (`spawn_agent` model mapping on Codex). On Claude Code, with haejwo's shipped agent definitions, `inherit` is meaningful for `deep-reasoner` only — `default-worker` and `task-worker` run at their agent file's default model unless an explicit model is passed, and the delegation gate steers an omitted override without verifying which model actually ran |
 | **Physical delegation gate** | A PreToolUse gate stops the main agent after **N distinct code files per turn** and blocks main-agent Bash writes to code files. Subagents are exempt; hook errors fail open |
 | **Push consent** | Workers never push or deploy. The host asks first unless you grant repo-level auto-push with `/haejwo:push auto` |
 
@@ -59,7 +59,7 @@ Normal use involves **zero haejwo commands** — commands exist only for setting
 | | Claude Code only | Codex only | Both CLIs |
 | --- | --- | --- | --- |
 | Gate + rules + plan-first + push consent | ✓ | ✓ | ✓ |
-| Model tiers (cost-appropriate execution, expensive judgment) | ✓ session model/sonnet/haiku (judgment inherits; execution runs at the configured tiers) | ✓ via `spawn_agent` model mapping (judgment inherits; execution runs at the configured tiers) | ✓ |
+| Model tiers (cost-appropriate execution, expensive judgment) | ✓ session model/opus/opus — chores at low effort, `Budget` opts down to sonnet/haiku (judgment inherits; execution runs at the configured tiers) | ✓ via `spawn_agent` model mapping (judgment inherits; execution runs at the configured tiers) | ✓ |
 | **Cross-vendor adversarial review** | fallback: same-family `deep-reasoner` | fallback: same-model subagent (weaker independence) | ✓ codex↔claude |
 
 Install the other CLI only if you want different-model review — that's what the second CLI buys (adding Claude Code also buys model tiers). Same-model fallbacks work, but a different model catches what self-review can't.
@@ -95,7 +95,7 @@ Boundaries that keep haejwo a lubricant layer on top of the host, not a harness:
 - Scheduler, durable task queue, or persistent agent roster
 - General DAG or recursive multi-agent runtime
 - Model gateway, billing optimizer, or price-based router
-- Cross-vendor WORKER routing — haejwo builds no cross-vendor worker bridge (worker vendor follows the host; want GPT execution? run the Codex host). The official `codex@openai-codex` plugin can coexist with haejwo; testing version 1.0.6 on 2026-09-21 found its rescue subagent exempt from haejwo's edit budget and bash guard, rescue blocked by that host's sandbox failure, and `/codex:review` reporting completion without inspecting changes, while adversarial review of an inlined diff succeeded. haejwo keeps its consult runner for reviews under its non-editing contract; leave the plugin's optional Stop review gate off pending loop testing
+- Cross-vendor WORKER routing — haejwo builds no cross-vendor worker bridge (worker vendor follows the host; want GPT execution? run the Codex host). The official `codex@openai-codex` plugin can coexist, but haejwo keeps its own consult runner for reviews under the non-editing contract — measured coexistence details: [`haejwo/README.md`](haejwo/README.md) → Reviewer runners
 - Worktree orchestration or patch merging for workers (the reviewer may run in a detached snapshot under the non-editing reviewer contract — not a replacement sandbox)
 - Hosted control plane or dashboard
 - Autonomous push/deploy/publish

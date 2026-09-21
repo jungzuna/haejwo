@@ -14,6 +14,7 @@ observations lock can never delay the decision while holding the session
 lock. `via` is the reason the decision was reached, in precedence order:
   subagent-exempt  the call came from inside a subagent (never gated)
   env-off          HAEJWO_GATE=off in the environment
+  config-malformed config.json is unparseable — allowed, gates fail open
   gate-off         config gate.enabled is false
   non-code         no code file in this call (non-code/temp/metadata paths)
   free-reedit      every file was already counted this turn (iteration free)
@@ -31,8 +32,8 @@ import time
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
     allow, canonical, deny, gate_disabled_by_env, is_code_file, is_subagent,
-    load_config, load_state, observe, paths, read_payload, save_state,
-    state_lock,
+    load_config_with_status, load_state, malformed_note_once, observe, paths,
+    read_payload, save_state, state_lock,
 )
 
 STALE_TURN_SECONDS = 7200  # fallback reset if both turn signals ever fail
@@ -50,7 +51,17 @@ def _decide(payload, data):
     if gate_disabled_by_env():
         return "allow", "env-off", None, None, None
 
-    cfg = load_config(data)
+    cfg, cfg_status = load_config_with_status(data)
+    if cfg_status == "malformed":
+        # P4, origin 2026-09-21 audit item 1: a config.json we could not parse
+        # must never DENY — enforcing a budget we could not read would brick a
+        # session over a stray comma. Allow, and say so ONCE, so the silence
+        # is not mistaken for a gate that is still working. The note is shared
+        # across all three enforcement hooks (hjw_common.malformed_note_once):
+        # whichever fires first emits it. An ABSENT config keeps the
+        # DEFAULT_CONFIG behavior (there is nothing broken to fix).
+        note = malformed_note_once(data, payload.get("session_id", "unknown"))
+        return "allow", "config-malformed", note, None, None
     if not cfg["gate"]["enabled"]:
         return "allow", "gate-off", None, None, None
 

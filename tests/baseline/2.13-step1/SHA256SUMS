@@ -1,0 +1,6 @@
+# haejwo golden differential baseline
+# frozen at commit 6d09729b6cdcec628941349fb2582c40650eea86
+# obtained with: git show 6d09729:haejwo/scripts/<name> > <name>
+commit 6d09729b6cdcec628941349fb2582c40650eea86
+c95846b8d3012b85fbf7698d7fb42d4655bb16b0f17d2a23876accc5e08f220d  codex_consult.sh
+2a838332e4fc2171a0f0e56832932bd97376ebd072f49974ecfd8834665c1873  claude_consult.sh

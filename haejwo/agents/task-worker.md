@@ -1,7 +1,7 @@
 ---
 name: task-worker
-description: Chore worker — bounded mechanical work with a clear expected output and deterministic verification, no behavior/risk/API/data-shape judgment. boilerplate, formatting, renames, simple transforms, doc updates, repetitive edits across files. Runs at the configured chore tier and low effort so mechanical work never spends judgment-tier budget.
-model: haiku
+description: Chore worker — bounded mechanical work with a clear expected output and deterministic verification, no behavior/risk/API/data-shape judgment. boilerplate, formatting, renames, simple transforms, doc updates, repetitive edits across files. Runs at the configured chore tier at low effort (the default chore tier is Opus at low effort; Budget preset chores on Haiku ignore the effort setting).
+model: opus
 # measured 2026-09-21 (opus: transcript records effort=low, enforced; haiku: no effort field, ignored, never an error; sonnet: not measured)
 effort: low
 ---

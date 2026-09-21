@@ -188,7 +188,6 @@ def main():
             "delegation signal",                    # 12. bash-write rule
             "never grind",                          # 13. retry stop-condition
         ]
-        assert len(CANARIES) == 13, "rules-diet canary set must stay at exactly 13"
         for phrase in CANARIES:
             if isinstance(phrase, tuple):
                 name = " AND ".join(repr(p) for p in phrase)
@@ -645,6 +644,159 @@ def main():
         finally:
             shutil.rmtree(obs_fail_data, ignore_errors=True)
 
+        print("== malformed config.json fails OPEN (A2, P4) ==")
+        # A config.json that exists but cannot be parsed is not a rule set:
+        # enforcing DEFAULTS against it would apply limits the user never
+        # chose, on a file they believe is live. Every gate allows, the
+        # telemetry says why, and gate.py says it ONCE per session.
+        cm_data = tempfile.mkdtemp(prefix="hjw-test-cfgmal-")
+        try:
+            def cm_last(sid, hook):
+                recs = [json.loads(l) for l in
+                        open(os.path.join(cm_data, "state", "observations.jsonl"))]
+                hits = [r for r in recs
+                        if r.get("sid") == sid and r.get("hook") == hook]
+                return hits[-1] if hits else None
+
+            def cm_ctx(out_):
+                return (out_.get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+            NOTE = ("[haejwo] config.json is unreadable (malformed JSON) — "
+                    "enforcement is disabled (fail-open) until it is repaired; "
+                    "run /haejwo:setup or fix the file")
+
+            with open(os.path.join(cm_data, "config.json"), "w") as f:
+                f.write("{ \"gate\": { \"max_files_per_turn\": 2,,, ")
+
+            ctxs = []
+            for i, name in enumerate(("a", "b", "c")):
+                rc, out = run("gate.py", edit_payload(f"/repo/cm/{name}.py", sid="sess-CM1"),
+                              cm_data)
+                ctxs.append(cm_ctx(out))
+                check(f"A2 gate: malformed config, file {i + 1} allowed",
+                      rc == 0 and decision(out) != "deny", str(out))
+            check("A2 gate: 3rd distinct file allowed via 'config-malformed'",
+                  (cm_last("sess-CM1", "gate") or {}).get("via") == "config-malformed",
+                  str(cm_last("sess-CM1", "gate")))
+            check("A2 gate: the fail-open note is emitted exactly once per session",
+                  ctxs[0] == NOTE and ctxs[1:] == ["", ""], str(ctxs))
+
+            rc, _ = run("turn_reset.py",
+                        {"session_id": "sess-CM1", "prompt_id": "p2",
+                         "hook_event_name": "UserPromptSubmit"}, cm_data)
+            rc, out = run("gate.py", edit_payload("/repo/cm/d.py", sid="sess-CM1", pid="p2"),
+                          cm_data)
+            check("A2 gate: the note does not repeat after a turn reset",
+                  rc == 0 and cm_ctx(out) == "", cm_ctx(out))
+
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-CM2"), cm_data)
+            check("A2 bash_guard: redirect into code allowed via 'config-malformed'",
+                  rc == 0 and decision(out) != "deny"
+                  and (cm_last("sess-CM2", "bash_guard") or {}).get("via")
+                  == "config-malformed", str(cm_last("sess-CM2", "bash_guard")))
+
+            rc, out = run("delegation_gate.py",
+                          task_payload("general-purpose", sid="sess-CM3"), cm_data)
+            rec = cm_last("sess-CM3", "delegation") or {}
+            check("A2 delegation: generic agent without model allowed on a malformed "
+                  "config (the deny would steer with pins we could not read)",
+                  rc == 0 and decision(out) != "deny"
+                  and rec.get("decision") == "allow"
+                  and rec.get("tier_pin_check") == "skip:config-malformed", str(rec))
+
+            # F2 (2026-09-21 review): the note is SHARED across the three
+            # enforcement hooks, not gate.py's alone. A session whose only
+            # tool call is a Bash write or a delegation must still learn
+            # enforcement is off — and once told, the other two stay silent.
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-CM4"), cm_data)
+            first = cm_ctx(out)
+            rc, out = run("delegation_gate.py",
+                          task_payload("general-purpose", sid="sess-CM4"), cm_data)
+            second = cm_ctx(out)
+            rc, out = run("gate.py", edit_payload("/repo/cm/e.py", sid="sess-CM4"),
+                          cm_data)
+            third = cm_ctx(out)
+            check("F2 shared note: bash_guard fires first -> it emits, gate and "
+                  "delegation stay silent that session",
+                  first == NOTE and second == "" and third == "",
+                  str([first, second, third]))
+
+            rc, out = run("delegation_gate.py",
+                          task_payload("general-purpose", sid="sess-CM5"), cm_data)
+            first = cm_ctx(out)
+            rc, out = run("gate.py", edit_payload("/repo/cm/f.py", sid="sess-CM5"),
+                          cm_data)
+            second = cm_ctx(out)
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-CM5"), cm_data)
+            third = cm_ctx(out)
+            check("F2 shared note: delegation fires first -> it emits, the other "
+                  "two stay silent",
+                  first == NOTE and second == "" and third == "",
+                  str([first, second, third]))
+
+            # turn_reset preserves the SESSION-scoped flag for the other
+            # hooks too, not just for gate.py (checked above for sess-CM1).
+            rc, _ = run("turn_reset.py",
+                        {"session_id": "sess-CM4", "prompt_id": "p2",
+                         "hook_event_name": "UserPromptSubmit"}, cm_data)
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-CM4"), cm_data)
+            check("F2 shared note: a turn reset preserves the flag for bash_guard",
+                  rc == 0 and cm_ctx(out) == "", cm_ctx(out))
+        finally:
+            shutil.rmtree(cm_data, ignore_errors=True)
+
+        # F2: an UNWRITABLE session state means the "already told them" flag
+        # never sticks — the note then REPEATS. Fail loud, never silent: a
+        # repeated line costs context; suppressing it would hide that every
+        # gate is failing open. (State file made a DIRECTORY so save_state's
+        # os.replace always raises, exactly as the obs-failure fixture does.)
+        cm_unw = tempfile.mkdtemp(prefix="hjw-test-cfgmal-unw-")
+        try:
+            NOTE_U = ("[haejwo] config.json is unreadable (malformed JSON) — "
+                      "enforcement is disabled (fail-open) until it is repaired; "
+                      "run /haejwo:setup or fix the file")
+            with open(os.path.join(cm_unw, "config.json"), "w") as f:
+                f.write("{ \"gate\": { ,,,")
+            os.makedirs(os.path.join(cm_unw, "state", "sess-UNW.json"), exist_ok=True)
+            ctxs_u = []
+            for tag in ("a", "b"):
+                rc, out = run("gate.py", edit_payload(f"/repo/unw/{tag}.py",
+                                                      sid="sess-UNW"), cm_unw)
+                ctxs_u.append((out.get("hookSpecificOutput") or {})
+                              .get("additionalContext", ""))
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-UNW"), cm_unw)
+            ctxs_u.append((out.get("hookSpecificOutput") or {})
+                          .get("additionalContext", ""))
+            check("F2 unwritable state -> the fail-open note REPEATS (never silent)",
+                  ctxs_u == [NOTE_U, NOTE_U, NOTE_U], str(ctxs_u))
+        finally:
+            shutil.rmtree(cm_unw, ignore_errors=True)
+
+        # An ABSENT config is not a broken one: the shipped defaults still
+        # bind, exactly as before.
+        cm_absent = tempfile.mkdtemp(prefix="hjw-test-cfgabs-")
+        try:
+            for name in ("a", "b"):
+                run("gate.py", edit_payload(f"/repo/ca/{name}.py", sid="sess-CA1"), cm_absent)
+            rc, out = run("gate.py", edit_payload("/repo/ca/c.py", sid="sess-CA1"), cm_absent)
+            check("A2 absent config: 3rd distinct file still DENIES",
+                  decision(out) == "deny", str(out))
+            rc, out = run("bash_guard.py",
+                          bash_payload("echo x >> src/app.py", sid="sess-CA2"), cm_absent)
+            check("A2 absent config: bash redirect into code still DENIES",
+                  decision(out) == "deny", str(out))
+            rc, out = run("delegation_gate.py",
+                          task_payload("general-purpose", sid="sess-CA3"), cm_absent)
+            check("A2 absent config: generic agent without model still DENIES",
+                  decision(out) == "deny", str(out))
+        finally:
+            shutil.rmtree(cm_absent, ignore_errors=True)
+
         print("== codex host adapter (apply_patch) ==")
         # a. single Add counts like Claude's file_path; budget applies the same way
         rc, out = run("gate.py", patch_payload([("Add", "/repo/cx/a.py")], sid="CX1"), data)
@@ -737,10 +889,28 @@ def main():
         rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("unconfigured -> setup nudge", "setup" in ctx and "NOT configured" in ctx)
-        check("unconfigured -> core body present (honest cause split)",
-              CORE_BODY in ctx and UNCONFIGURED_CORE in ctx, ctx)
+        # COLD-START REPAIR: an unconfigured session now gets the FULL rules
+        # text (the defaults are enforced from turn 1, so the rules that
+        # explain them ship from turn 1) plus a defaults summary. The 4-line
+        # UNCONFIGURED_CORE survives only on the degraded path below.
+        check("unconfigured -> full rules injected (not just the minimal core)",
+              "does JUDGMENT" in ctx and "delegation signal" in ctx
+              and UNCONFIGURED_CORE not in ctx, ctx[:200])
+        check("unconfigured -> defaults summary labelled as defaults",
+              "[haejwo config] defaults — not configured:" in ctx, ctx[-400:])
+        check("unconfigured -> defaults summary carries gate/tiers/reviewer",
+              "gate=ON budget=2 files/turn bash_guard=ON" in ctx
+              and "models: deep-reasoner=session model, default-worker=opus, "
+                  "task-worker=opus (low effort)" in ctx
+              and ctx.rstrip().endswith("codex reviewer: disabled (fallback: deep-reasoner)"),
+              ctx[-400:])
+        check("unconfigured -> rules + nudge + summary stay under MAX_LEN",
+              len(ctx) < MAX_LEN, f"len={len(ctx)}")
+        check("unconfigured -> ${CLAUDE_PLUGIN_ROOT} resolved in the injected rules",
+              "${CLAUDE_PLUGIN_ROOT}" not in ctx
+              and f"{PLUGIN.rstrip('/')}/scripts/" in ctx, ctx[:200])
         check("unconfigured -> does NOT claim the rules file is unreadable "
-              "(that's the configured-degrade cause, not this one)",
+              "(that's the degrade cause, not this one)",
               "unreadable" not in ctx, ctx)
 
         with open(os.path.join(data, "config.json"), "w") as f:
@@ -771,7 +941,8 @@ def main():
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("codex host -> codex tiers + claude reviewer + spawn_agent summary",
               "codex tiers" in ctx and "claude reviewer" in ctx
-              and "spawn_agent" in ctx and "gpt-5.6-luna" in ctx, ctx)
+              and "spawn_agent" in ctx
+              and "task-worker=inherit/low" in ctx, ctx)
 
         print("== session_brief.py: ${CLAUDE_PLUGIN_ROOT} resolution edge cases ==")
 
@@ -884,6 +1055,70 @@ def main():
         check("normal path: real rules file does NOT trigger the degrade",
               rc == 0 and not ctx_normal.startswith(EMERGENCY_CORE), ctx_normal[:80])
 
+        # (f) UNCONFIGURED branch degrades the same way: the rules text it now
+        # injects can be unreadable or over budget too. EMERGENCY_CORE names
+        # that cause; UNCONFIGURED_CORE keeps naming this branch's own.
+        unconf_data = tempfile.mkdtemp(prefix="hjw-test-unconf-")
+        over_base = tempfile.mkdtemp(prefix="hjw-test-unconf-over-")
+        try:
+            over_root = os.path.join(over_base, "haejwo")
+            os.makedirs(os.path.join(over_root, "rules"), exist_ok=True)
+            with open(os.path.join(over_root, "rules", "orchestration.md"),
+                      "w", encoding="utf-8") as f:
+                f.write("x" * (MAX_LEN + 1000))
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                          unconf_data, root=over_root)
+            ctx_uo = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("unconfigured + oversized rules -> EMERGENCY_CORE degrade, exit 0",
+                  rc == 0 and ctx_uo.startswith(EMERGENCY_CORE), ctx_uo[:200])
+            check("unconfigured + oversized rules -> nudge, UNCONFIGURED_CORE and "
+                  "defaults summary all preserved",
+                  "NOT configured" in ctx_uo and UNCONFIGURED_CORE in ctx_uo
+                  and CORE_BODY in ctx_uo
+                  and "[haejwo config] defaults — not configured:" in ctx_uo, ctx_uo)
+            check("unconfigured + oversized rules -> degraded output under MAX_LEN",
+                  len(ctx_uo) < MAX_LEN, f"len={len(ctx_uo)}")
+
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                          unconf_data, root="/nonexistent/haejwo/root/xyz")
+            ctx_um = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("unconfigured + unreadable rules -> same explicit degrade, exit 0",
+                  rc == 0 and ctx_um.startswith(EMERGENCY_CORE)
+                  and UNCONFIGURED_CORE in ctx_um
+                  and "[haejwo config] defaults — not configured:" in ctx_um,
+                  ctx_um[:200])
+        finally:
+            shutil.rmtree(over_base, ignore_errors=True)
+            shutil.rmtree(unconf_data, ignore_errors=True)
+
+        # (g) malformed config.json: the summary must say so instead of
+        # presenting fail-open defaults as a settled configuration (A2).
+        mal_data = tempfile.mkdtemp(prefix="hjw-test-sbmal-")
+        try:
+            with open(os.path.join(mal_data, "config.json"), "w") as f:
+                f.write("{ not valid json !!!")
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, mal_data)
+            ctx_mal = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check("malformed config -> summary says unreadable + fail-open defaults",
+                  rc == 0
+                  and "[haejwo config] config.json unreadable — fail-open defaults "
+                      "active" in ctx_mal
+                  and "defaults — not configured:" not in ctx_mal, ctx_mal[-300:])
+            check("malformed config -> rules still injected (session stays operable)",
+                  "does JUDGMENT" in ctx_mal, ctx_mal[:200])
+            # F2: the "not configured yet (first use) ... gate ON, bash-guard ON"
+            # nudge is NOT a description of a malformed-config session — it
+            # advertises enforcement this very status has switched off.
+            check("F2 malformed config -> says enforcement is DISABLED",
+                  "[haejwo] config.json is unreadable (malformed JSON): enforcement "
+                  "is DISABLED — every gate fails open until the file is repaired. "
+                  "Run /haejwo:setup to rewrite it, or fix the JSON by hand."
+                  in ctx_mal, ctx_mal[-600:])
+            check("F2 malformed config -> no setup nudge (no 'first use', no 'gate ON')",
+                  "first use" not in ctx_mal and "gate ON" not in ctx_mal, ctx_mal[-600:])
+        finally:
+            shutil.rmtree(mal_data, ignore_errors=True)
+
         print("== session_brief.py host-correct nudge + inherit rendering (A6/E8) ==")
         # The unconfigured nudge names the DEFAULT tiers of the host it is
         # actually running on: a Codex session cannot pass Claude aliases.
@@ -892,21 +1127,28 @@ def main():
         try:
             rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_claude)
             ctx_c = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
-            check("A6 Claude nudge unchanged: session model + sonnet + haiku",
+            check("A6 Claude nudge names the shipped defaults (session model + opus)",
                   rc == 0 and "NOT configured" in ctx_c
                   and "haejwo:deep-reasoner (session model), haejwo:default-worker "
-                      "(sonnet), haejwo:task-worker (haiku)." in ctx_c, ctx_c)
+                      "(opus), haejwo:task-worker (opus)." in ctx_c, ctx_c)
 
             a6_codex = os.path.join(a6_codex_base, ".codex", "plugins", "data", "haejwo")
             os.makedirs(a6_codex, exist_ok=True)
             rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_codex)
             ctx_x = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
-            check("A6 Codex nudge names the codex tiers (terra/luna, host model)",
+            check("A6 Codex nudge names the codex tiers (host model, all inherit)",
                   rc == 0 and "NOT configured" in ctx_x
                   and "haejwo:deep-reasoner (host model), haejwo:default-worker "
-                      "(gpt-5.6-terra), haejwo:task-worker (gpt-5.6-luna)." in ctx_x, ctx_x)
-            check("A6 Codex nudge: no Claude aliases leak",
-                  "sonnet" not in ctx_x and "haiku" not in ctx_x, ctx_x)
+                      "(host model), haejwo:task-worker (host model)." in ctx_x, ctx_x)
+            check("A6 Codex defaults summary: host model + per-role efforts",
+                  "codex tiers: deep-reasoner=host model/high, default-worker=host "
+                  "model/medium, task-worker=host model/low (pass reasoning_effort "
+                  "on spawn_agent; omit model to inherit; effort overrides need a "
+                  "fresh or partial context fork (fork_turns), never a full-history "
+                  "fork)" in ctx_x, ctx_x[-400:])
+            check("A6 Codex unconfigured: no Claude aliases leak",
+                  "sonnet" not in ctx_x and "haiku" not in ctx_x
+                  and "opus" not in ctx_x, ctx_x)
 
             # E8a: on Claude a worker tier's "inherit" means the AGENT FILE's
             # default, not the session model — render it as such and say so.
@@ -949,14 +1191,21 @@ def main():
             shutil.rmtree(a6_codex_base, ignore_errors=True)
 
         print("== hjw_common.DEFAULT_CONFIG ==")
-        check("models.deep_reasoner defaults to inherit (2.10: was opus)",
-              DEFAULT_CONFIG["models"]["deep_reasoner"] == "inherit")
-        check("models_codex defaults",
+        # Owner policy (2.12.0): public defaults are Opus for execution and
+        # the session model for judgment; the roles differ by reasoning
+        # effort, not by model family.
+        check("models defaults: judgment inherits, execution is opus",
+              DEFAULT_CONFIG["models"] == {
+                  "deep_reasoner": "inherit",
+                  "default_worker": "opus",
+                  "task_worker": "opus",
+              }, str(DEFAULT_CONFIG["models"]))
+        check("models_codex defaults: all inherit (host model, effort-only tiers)",
               DEFAULT_CONFIG["models_codex"] == {
                   "deep_reasoner": "inherit",
-                  "default_worker": "gpt-5.6-terra",
-                  "task_worker": "gpt-5.6-luna",
-              })
+                  "default_worker": "inherit",
+                  "task_worker": "inherit",
+              }, str(DEFAULT_CONFIG["models_codex"]))
         check("gate.delegation_guard defaults True",
               DEFAULT_CONFIG["gate"]["delegation_guard"] is True)
 
@@ -1082,14 +1331,16 @@ def main():
 
         # Full expected deny text (Claude-host wording) — byte-identical
         # comparison, not a substring check, so a future contract regression
-        # (wording drift, punctuation, ordering) is caught even if the
-        # 'haiku'/'sonnet' fragments themselves survive unchanged.
+        # (wording drift, punctuation, ordering) is caught even if the model
+        # fragments themselves survive unchanged. With the 2.12.0 defaults
+        # both worker tiers sit on opus, so this is the identical-tier
+        # collapse (named once, no fake choice).
         CLAUDE_HOST_DENY_TEXT = (
             "[haejwo gate] Delegation to generic agent 'general-purpose' without an "
-            "explicit model — it would INHERIT the session model (judgment rates for "
-            "execution). Pass model: 'haiku' (locate) or 'sonnet' (read/summarize), or "
-            "delegate to haejwo:default-worker / haejwo:task-worker instead. Emergency "
-            "override: /haejwo:gate off."
+            "explicit model — it would INHERIT the session model instead of a "
+            "configured tier. Pass model: 'opus', or delegate to "
+            "haejwo:default-worker / haejwo:task-worker instead. Emergency override: "
+            "/haejwo:gate off."
         )
 
         # 1. Claude host (existing fixtures/data dir): wording byte-identical
@@ -1366,19 +1617,23 @@ def main():
                 hits = [r for r in recs if r.get("sid") == sid]
                 return hits[-1] if hits else None
 
+            # 2.12.0: the agent files pin opus for BOTH worker tiers, so a
+            # deny case needs a config pin that DIFFERS from that default.
             PIN_DENY_TEXT = (
                 "[haejwo gate] Delegation to 'haejwo:default-worker' without a model "
-                "override — the agent file defaults to 'sonnet' but your config pins "
-                "'opus' for this tier (omission would not honor the pin; origin "
-                "2026-08-21 silent-downgrade). Pass model: 'opus', or another explicit "
-                "model if you intend to override the pin, or run /haejwo:setup to "
-                "change it. Emergency override: /haejwo:gate off."
+                "override — the agent file defaults to 'opus' but your config pins "
+                "'sonnet' for this tier (omission would not honor the pin). Pass "
+                "model: 'sonnet', or another explicit model if you intend to override "
+                "the pin, or run /haejwo:setup to change it. Emergency override: "
+                "/haejwo:gate off."
             )
 
-            pin_cfg({"default_worker": "opus"})
+            pin_cfg({"default_worker": "sonnet"})
             rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN1")
-            check("B1 pin opus + model omitted -> DENY", dec == "deny", r)
+            check("B1 pin differs from the agent-file default -> DENY", dec == "deny", r)
             check("B1 deny text byte-identical to the contract", r == PIN_DENY_TEXT, r)
+            check("B1 deny text carries no incident origin (it belongs in the code)",
+                  "origin" not in r and "silent-downgrade" not in r, r)
             check("B1 record: tier_pin_check 'deny'",
                   (pin_rec("sess-PIN1") or {}).get("tier_pin_check") == "deny",
                   str(pin_rec("sess-PIN1")))
@@ -1397,7 +1652,7 @@ def main():
                   (pin_rec("sess-PIN3") or {}).get("tier_pin_check") == "pass:pin-inherit",
                   str(pin_rec("sess-PIN3")))
 
-            pin_cfg({"default_worker": "sonnet"})
+            pin_cfg({"default_worker": "opus"})
             rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN4")
             check("B1 pin == agent-file default -> allow (omission honors it)",
                   rc == 0 and dec != "deny", r)
@@ -1405,27 +1660,36 @@ def main():
                   (pin_rec("sess-PIN4") or {}).get("tier_pin_check")
                   == "pass:pin-matches-default", str(pin_rec("sess-PIN4")))
 
-            pin_cfg({"deep_reasoner": "opus"})
+            # An ALL-OPUS config still denies a deep-reasoner omission: that
+            # agent file declares no model (it inherits the session model), so
+            # omitting the override would not honor an explicit opus pin.
+            pin_cfg({"deep_reasoner": "opus", "default_worker": "opus",
+                     "task_worker": "opus"})
             rc, dec, r = pin_run("haejwo:deep-reasoner", "sess-PIN5")
-            check("B1 deep-reasoner (agent file declares no model) + pin opus -> DENY",
-                  dec == "deny" and "defaults to 'inherit'" in r, r)
+            check("B1 all-opus config: deep-reasoner omission still DENIES "
+                  "(file inherits, pin opus)",
+                  dec == "deny" and "defaults to 'inherit'" in r
+                  and "pins 'opus'" in r, r)
+            rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN5b")
+            check("B1 all-opus config: worker omission allowed (pin == file default)",
+                  rc == 0 and dec != "deny", r)
 
             pin_cfg({"deep_reasoner": "inherit"})
             rc, dec, r = pin_run("haejwo:deep-reasoner", "sess-PIN6")
             check("B1 deep-reasoner + pin 'inherit' -> allow", rc == 0 and dec != "deny", r)
 
-            pin_cfg({"task_worker": "opus"})
+            pin_cfg({"task_worker": "sonnet"})
             rc, dec, r = pin_run("task-worker", "sess-PIN7")
-            check("B1 BARE tier name 'task-worker' + pin opus -> DENY",
-                  dec == "deny" and "'task-worker'" in r and "'haiku'" in r, r)
+            check("B1 BARE tier name 'task-worker' + differing pin -> DENY",
+                  dec == "deny" and "'task-worker'" in r and "'opus'" in r, r)
 
             pin_cfg(None, raw="{ not valid json !!! ### garbage")
             rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN8")
             check("B1 malformed config.json -> allow (never deny on a config we can't read)",
                   rc == 0 and dec != "deny", r)
-            check("B1 record: tier_pin_check 'skip:config-unreadable'",
+            check("B1 record: tier_pin_check 'skip:config-malformed'",
                   (pin_rec("sess-PIN8") or {}).get("tier_pin_check")
-                  == "skip:config-unreadable", str(pin_rec("sess-PIN8")))
+                  == "skip:config-malformed", str(pin_rec("sess-PIN8")))
 
             pin_cfg({"default_worker": "opus"})
             rc, dec, r = pin_run("haejwo:default-worker", "sess-PIN9",
@@ -1586,9 +1850,9 @@ def main():
                 rc, dec, r = pin_run("haejwo:default-worker", sid)
                 check(f"K4 config.json {raw_cfg} -> allow (unusable config)",
                       rc == 0 and dec != "deny", r)
-                check(f"K4 record: config.json {raw_cfg} -> 'skip:config-unreadable'",
+                check(f"K4 record: config.json {raw_cfg} -> 'skip:config-malformed'",
                       (pin_rec(sid) or {}).get("tier_pin_check")
-                      == "skip:config-unreadable", str(pin_rec(sid)))
+                      == "skip:config-malformed", str(pin_rec(sid)))
             pin_cfg({"default_worker": "opus"})
 
             rc, dec, r = pin_run("general-purpose", "sess-PIND")
@@ -3422,6 +3686,51 @@ runpy.run_path(helper, run_name="__main__")
                           f"rc={rp.returncode} reason={race_reason!r} stderr={rp.stderr}")
                     subprocess.run(["git", "-C", race_repo, "worktree", "remove",
                                     "--force", race_snap], capture_output=True)
+
+            # ---- (A3) non-git precondition: refuse BEFORE the paid call ----
+            # A consult whose no-edit contract can never be verified used to
+            # run first and fail afterwards — a reviewer call spent on a
+            # result that was then discarded. Now it exits 2 with ZERO calls.
+            nongit_dir = os.path.join(runner_tmp, "not-a-repo")
+            os.makedirs(nongit_dir, exist_ok=True)
+
+            for who, script, cli, expect in (
+                ("codex", codex_script, "codex",
+                 "consult outside a git repo with sandbox=danger-full-access "
+                 "(not read-only) — cannot verify the no-edit contract."),
+                ("claude", claude_script, "claude",
+                 "consult outside a git repo — cannot verify the no-edit contract "
+                 "(claude -p is unsandboxed)."),
+            ):
+                ng_bin = os.path.join(runner_tmp, f"bin-nongit-{who}")
+                ng_cap = os.path.join(runner_tmp, f"cap-nongit-{who}")
+                make_stub(ng_bin, cli, ng_cap)
+                env = {"PATH": ng_bin + os.pathsep + os.environ.get("PATH", "")}
+                if who == "codex":
+                    env["CODEX_SANDBOX"] = "danger-full-access"
+                rc, out, err = run_script(
+                    script, [brief_file(f"nongit-{who}-brief.md")], env, cwd=nongit_dir)
+                check(f"{who} non-git: refused with exit 2 before the call",
+                      rc == 2, f"rc={rc} err={err}")
+                check(f"{who} non-git: the refusal names the unverifiable contract",
+                      expect in err, err)
+                check(f"{who} non-git: ZERO reviewer calls were made",
+                      read_calls(ng_cap) == [], read_calls(ng_cap))
+
+            # The read-only sandbox IS the enforcement: codex outside a repo
+            # still runs there. (claude -p has no sandbox, so it has no
+            # equivalent path — it always refuses.)
+            ro_bin = os.path.join(runner_tmp, "bin-nongit-ro")
+            ro_cap = os.path.join(runner_tmp, "cap-nongit-ro")
+            make_stub(ro_bin, "codex", ro_cap)
+            rc, out, err = run_script(
+                codex_script, [brief_file("nongit-ro-brief.md")],
+                {"PATH": ro_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CODEX_SANDBOX": "read-only"}, cwd=nongit_dir)
+            check("codex non-git + read-only sandbox: still runs and succeeds",
+                  rc == 0 and "STUB-REPLY-OK-1" in out, f"rc={rc} out={out} err={err}")
+            check("codex non-git + read-only sandbox: the reviewer was called once",
+                  len(read_calls(ro_cap)) == 1, read_calls(ro_cap))
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
 

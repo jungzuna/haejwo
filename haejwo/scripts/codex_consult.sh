@@ -10,7 +10,10 @@
 #   codex can fail silently with rc=0 (measured on sandbox-constrained hosts).
 #   Any of {rc!=0 | empty reply | codex-reported failure EVENT | missing event
 #   stream | codex tracing error | repository changed | change detection
-#   unavailable} exits non-zero.
+#   unavailable} exits non-zero. Stated as a guarantee, narrowed to what is
+#   actually checked: rc=0 with no reply, a reported failure event, or a
+#   changed repository is never reported as success; a failure the reviewer
+#   reports only in prose is not detected.
 #
 # Classification provenance (2.11): failures are read from codex's own JSONL
 #   event stream (`codex exec --json`), not from a grep over mixed stdout.
@@ -190,7 +193,10 @@ Config keys (codex.consult_sandbox, codex.model, codex.effort,
 
 Exit code: non-zero on ANY of {codex rc!=0, empty reply, codex failure event,
   missing event stream, codex tracing error, repository changed, change
-  detection unavailable}. A silent rc=0 failure is never reported as success.
+  detection unavailable}. Guarantee, narrowed to what is actually checked:
+  rc=0 with no reply, a reported failure event, or a changed repository is
+  never reported as success; a failure the reviewer reports only in prose is
+  not detected.
 EOF
 }
 
@@ -1326,6 +1332,17 @@ if [ "$DETECT_OK" != 1 ]; then
 elif [ "$GIT_OK" = 1 ]; then
   git_snapshot "$SNAPDIR/before.json" 2>>"$SNAPDIR/detect.err" || DETECT_OK=0
   [ "$DETECT_OK" = 1 ] || detect_fail_now
+elif [ "$SANDBOX" != read-only ]; then
+  # Not a git repo AND the sandbox cannot block writes: nothing would verify
+  # the no-edit contract for this run. Refuse BEFORE the paid call (exit 2,
+  # like an unavailable snapshot) — this used to be a post-run failure that
+  # still spent a reviewer call on a result it then discarded. A read-only
+  # sandbox outside a repo stays allowed: the sandbox IS the enforcement.
+  # *[origin 2026-09-21 audit item 3]*
+  REFUSE_MSG="consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
+  printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
+  echo "$REFUSE_MSG" >&2
+  exit 2
 fi
 
 # ---- event-stream classifier (provenance: codex's own JSONL events) ----
@@ -1577,12 +1594,10 @@ if [ "$GIT_OK" = 1 ]; then
       fail "repository changed during the run — attribution unknown (concurrent writers are not distinguished); changed: $CHANGED_LIST; inspect 'git status'"
     fi
   fi
-else
-  # Not a git repo: change detection unavailable.
-  if [ "$SANDBOX" != read-only ]; then
-    fail "consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
-  fi
 fi
+# No else: outside a git repo only the read-only sandbox reaches this point
+# (every other sandbox exits 2 in the preflight, before the paid call), and
+# there the sandbox itself enforces the contract.
 
 # ---- result ----
 if [ "$FAILED" = 1 ]; then

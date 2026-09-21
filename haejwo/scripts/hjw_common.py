@@ -35,19 +35,25 @@ DEFAULT_CONFIG = {
     # Temp files are exempted by resolved-prefix against the system tempdir,
     # NOT by substring — a repo's own tmp/ subdir still counts as code.
     "exempt_dir_components": [".git", "node_modules", ".claude", ".codex"],
+    # Owner policy (2026-09-21): EXECUTION defaults to Opus and the roles
+    # differ by reasoning EFFORT, not by model family — only task-worker
+    # pins an effort (low, in agents/task-worker.md); default-worker and
+    # deep-reasoner run at the host's default (high) effort. The cheaper
+    # Budget preset is opt-in via /haejwo:setup. Codex analog: the host
+    # model at high/medium/low reasoning_effort.
     "models": {
         "deep_reasoner": "inherit",
-        "default_worker": "sonnet",
-        "task_worker": "haiku",
+        "default_worker": "opus",
+        "task_worker": "opus",
     },
     # Codex-host tiers (native spawn_agent model/reasoning_effort params).
-    # "inherit" = omit the model param so judgment never silently downgrades;
-    # execution downshifts — that's the economic point. Exact names are
-    # release-tested pins; setup edits them; never auto-rewrite user pins.
+    # "inherit" = omit the model param, so every role runs on the host model
+    # and only reasoning_effort separates them. setup edits these; never
+    # auto-rewrite user pins.
     "models_codex": {
         "deep_reasoner": "inherit",
-        "default_worker": "gpt-5.6-terra",
-        "task_worker": "gpt-5.6-luna",
+        "default_worker": "inherit",
+        "task_worker": "inherit",
     },
     "codex": {"enabled": False, "verified_at": None},
 }
@@ -171,6 +177,36 @@ def save_state(data_dir, session_id, state):
         os.replace(tmp, path)
     except Exception:
         pass  # fail open
+
+
+CONFIG_MALFORMED_NOTE = (
+    "[haejwo] config.json is unreadable (malformed JSON) — enforcement is "
+    "disabled (fail-open) until it is repaired; run /haejwo:setup or fix the "
+    "file"
+)
+
+
+def malformed_note_once(data_dir, session_id):
+    """The malformed-config note, ONCE per session; None on later calls.
+
+    Shared by gate.py, bash_guard.py and delegation_gate.py: whichever hook
+    fires first spends the one emission, the others stay silent that session.
+    The "already told them" flag lives in the session state file (turn_reset
+    preserves it across turns). If that state is unwritable the flag never
+    sticks and the note repeats — the fail-open direction: a repeated note
+    costs a line of context, suppressing it would hide that enforcement is
+    off.
+    """
+    try:
+        with state_lock(data_dir, session_id):
+            state = load_state(data_dir, session_id)
+            if state.get("cfg_malformed_noted"):
+                return None
+            state["cfg_malformed_noted"] = True
+            save_state(data_dir, session_id, state)
+        return CONFIG_MALFORMED_NOTE
+    except Exception:
+        return CONFIG_MALFORMED_NOTE
 
 
 def prune_state(data_dir, max_age_days=7):

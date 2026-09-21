@@ -3,14 +3,21 @@
 
 Injects the operating layer into every session:
 - configured   -> orchestration rules + current config summary
-- unconfigured -> a one-time setup nudge (defaults still enforced meanwhile)
+- unconfigured -> the SAME rules + a one-time setup nudge + a defaults summary
+  (origin 2026-09-21 audit item 2: the defaults are enforced from the first
+  turn, so the rules that explain them must ship from the first turn too —
+  cold-start sessions used to get a 4-line core and nothing else)
+- malformed config -> the SAME rules + a fail-open notice (NOT the setup
+  nudge: nothing is enforced) + an "unreadable" summary
 """
 import json
 import os
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from hjw_common import DEFAULT_CONFIG, load_config, paths, read_payload  # noqa: E402
+from hjw_common import (  # noqa: E402
+    DEFAULT_CONFIG, load_config_with_status, paths, read_payload,
+)
 
 # Self-imposed injection budget (not a platform limit). Keep rules DISCIPLINED
 # regardless — injected context costs tokens every session; the cap is a
@@ -38,6 +45,16 @@ CORE_BODY = (
 EMERGENCY_CORE = "[haejwo] emergency core (rules file unreadable or over budget): " + CORE_BODY
 UNCONFIGURED_CORE = "[haejwo] not configured — minimal operating core active: " + CORE_BODY
 
+# A config.json that exists but cannot be parsed is a THIRD state, and the
+# unconfigured nudge is actively wrong there: it would advertise "gate ON,
+# bash-guard ON" while this very status makes every hook fail open. Say what
+# is true instead, and name the repair (origin 2026-09-21 review F2).
+MALFORMED_NOTICE = (
+    "[haejwo] config.json is unreadable (malformed JSON): enforcement is "
+    "DISABLED — every gate fails open until the file is repaired. Run "
+    "/haejwo:setup to rewrite it, or fix the JSON by hand."
+)
+
 
 def resolve_plugin_root(text, root):
     """Substitute the literal PLACEHOLDER in injected rules text with the
@@ -56,10 +73,20 @@ def resolve_plugin_root(text, root):
     return text
 
 
+def read_rules(root):
+    """The full orchestration rules text, or None when it can't be trusted."""
+    try:
+        with open(os.path.join(root, "rules", "orchestration.md"),
+                  encoding="utf-8-sig") as f:
+            return resolve_plugin_root(f.read().strip(), root)
+    except Exception:
+        return None
+
+
 def main():
     read_payload()  # consume stdin; content unused
     root, data = paths(sys.argv)
-    cfg = load_config(data)
+    cfg, cfg_status = load_config_with_status(data)
 
     # Host detection by plugin path: codex passes compat env/argv rooted under
     # /.codex/plugins (measured) — no extra probe needed. Detected BEFORE the
@@ -89,24 +116,76 @@ def main():
             "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
             "bash-guard ON, subagents exempt. Delegation targets: " + targets
         )
-        context = (nudge + "\n\n" + UNCONFIGURED_CORE).strip()
+        # Defaults summary: the same gate/tiers/reviewer fields the configured
+        # summary carries, computed from DEFAULT_CONFIG — what is ACTUALLY
+        # enforced right now, labelled as defaults rather than as a choice.
+        if on_codex:
+            tiers = (
+                f"codex tiers: deep-reasoner={_default_tier(defaults['deep_reasoner'])}/high, "
+                f"default-worker={_default_tier(defaults['default_worker'])}/medium, "
+                f"task-worker={_default_tier(defaults['task_worker'])}/low "
+                f"(pass reasoning_effort on spawn_agent; omit model to inherit"
+                f"; effort overrides need a fresh or partial context fork "
+                f"(fork_turns), never a full-history fork)"
+            )
+            reviewer_label = "claude reviewer"
+            fallback = "disabled (fallback: native subagent, same-model)"
+        else:
+            tiers = (
+                f"models: deep-reasoner={_default_tier(defaults['deep_reasoner'])}, "
+                f"default-worker={_default_tier(defaults['default_worker'])}, "
+                f"task-worker={_default_tier(defaults['task_worker'])} (low effort)"
+            )
+            reviewer_label = "codex reviewer"
+            fallback = "disabled (fallback: deep-reasoner)"
+        dg = DEFAULT_CONFIG["gate"]
+        summary = (
+            f"[haejwo config] defaults — not configured: "
+            f"gate={'ON' if dg['enabled'] else 'OFF'} "
+            f"budget={dg['max_files_per_turn']} files/turn "
+            f"bash_guard={'ON' if dg['bash_guard'] else 'OFF'} | {tiers} | "
+            f"{reviewer_label}: "
+            f"{'enabled' if DEFAULT_CONFIG['codex'].get('enabled') else fallback}"
+        )
+        malformed = cfg_status == "malformed"
+        if malformed:
+            # A config file that exists but cannot be parsed is NOT a fresh
+            # install: never report defaults as a settled state while the
+            # hooks are failing open past a file the user believes is live.
+            # The setup nudge goes too — it would claim enforcement that this
+            # status has switched off.
+            nudge = MALFORMED_NOTICE
+            summary = ("[haejwo config] config.json unreadable — "
+                       "fail-open defaults active")
+        rules = read_rules(root)
+        context = "\n\n".join((rules, nudge, summary)).strip() if rules else ""
+        if not rules or len(context) > MAX_LEN:
+            # Same explicit degrade as the configured branch — never a
+            # mid-sentence cut. Both causes are true on this path and each
+            # keeps its own honest prefix. UNCONFIGURED_CORE is dropped on the
+            # malformed path: "not configured" is the wrong diagnosis there,
+            # and EMERGENCY_CORE already carries the same core body.
+            parts = ((EMERGENCY_CORE, nudge, summary) if malformed
+                     else (EMERGENCY_CORE, nudge, UNCONFIGURED_CORE, summary))
+            context = "\n\n".join(parts).strip()
     else:
-        try:
-            with open(os.path.join(root, "rules", "orchestration.md"),
-                      encoding="utf-8-sig") as f:
-                rules = f.read().strip()
-            rules = resolve_plugin_root(rules, root)
-        except Exception:
+        rules = read_rules(root)
+        if rules is None:
             rules = EMERGENCY_CORE
         g = cfg["gate"]
         if on_codex:
             mc = cfg.get("models_codex", {})
+            # Missing keys fall back to the SHIPPED defaults, never to a
+            # hard-coded model name that a release bump would silently strand.
+            _mcx = DEFAULT_CONFIG["models_codex"]
             tiers = (
                 f"codex tiers (pass model + reasoning_effort on spawn_agent; "
-                f"'inherit' = omit model): "
-                f"deep-reasoner={mc.get('deep_reasoner', 'inherit')}/high, "
-                f"default-worker={mc.get('default_worker', 'gpt-5.6-terra')}/medium, "
-                f"task-worker={mc.get('task_worker', 'gpt-5.6-luna')}/low"
+                f"'inherit' = omit model; effort overrides need a fresh or "
+                f"partial context fork (fork_turns), never a full-history "
+                f"fork): "
+                f"deep-reasoner={mc.get('deep_reasoner', _mcx['deep_reasoner'])}/high, "
+                f"default-worker={mc.get('default_worker', _mcx['default_worker'])}/medium, "
+                f"task-worker={mc.get('task_worker', _mcx['task_worker'])}/low"
             )
             reviewer_label = "claude reviewer"
             fallback = "disabled (fallback: native subagent, same-model)"

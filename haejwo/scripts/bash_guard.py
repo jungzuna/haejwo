@@ -17,6 +17,7 @@ and the FIRST segment that denies wins — so a command whose earlier segment
 only had an unresolved target still denies on a later literal one:
   subagent-exempt    the call came from inside a subagent (never gated)
   env-off            HAEJWO_GATE=off in the environment
+  config-malformed   config.json is unparseable — allowed, guard fails open
   gate-off           config gate.enabled or gate.bash_guard is false
   redirect           DENIED: `>`/`>>` into a literal code file
   tee                DENIED: `tee` into a literal code file
@@ -38,7 +39,7 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
     allow, deny, gate_disabled_by_env, is_code_file, is_subagent,
-    load_config, observe, paths, read_payload,
+    load_config_with_status, malformed_note_once, observe, paths, read_payload,
 )
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\|")
@@ -161,19 +162,28 @@ def code_words(segment, cfg, cwd="", mask=None):
 
 
 def _decide(payload, data):
-    """Compute (decision, via, target, reason) without emitting."""
+    """Compute (decision, via, target, reason, context) without emitting."""
     if is_subagent(payload):
-        return "allow", "subagent-exempt", None, None
+        return "allow", "subagent-exempt", None, None, None
     if gate_disabled_by_env():
-        return "allow", "env-off", None, None
+        return "allow", "env-off", None, None, None
 
-    cfg = load_config(data)
+    cfg, cfg_status = load_config_with_status(data)
+    if cfg_status == "malformed":
+        # P4, origin 2026-09-21 audit item 1: never deny on a config we could
+        # not parse. The one-time session note is SHARED with gate.py and
+        # delegation_gate.py (hjw_common.malformed_note_once) — whichever
+        # hook fires first emits it, so a session whose only tool call is a
+        # Bash write still learns enforcement is off (origin 2026-09-21
+        # review F2). An ABSENT config keeps the DEFAULT_CONFIG behavior.
+        note = malformed_note_once(data, payload.get("session_id", "unknown"))
+        return "allow", "config-malformed", None, None, note
     if not (cfg["gate"]["enabled"] and cfg["gate"]["bash_guard"]):
-        return "allow", "gate-off", None, None
+        return "allow", "gate-off", None, None, None
 
     command = (payload.get("tool_input") or {}).get("command") or ""
     if not command:
-        return "allow", "no-command", None, None
+        return "allow", "no-command", None, None, None
     cwd = payload.get("cwd", "")
 
     cleaned = re.sub(r"2>&1", " ", command)
@@ -201,7 +211,7 @@ def _decide(payload, data):
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
                         f"The main agent must not modify code via Bash — use Edit/Write "
                         f"within the turn budget, or delegate to 'haejwo:default-worker'."
-                    )
+                    ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
         #    find/xargs where targets are invisible to regex (write intent).
         for pattern, label in (
@@ -220,12 +230,12 @@ def _decide(payload, data):
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
                             f"The main agent must not modify code via Bash — use "
                             f"Edit/Write within budget, or delegate to 'haejwo:default-worker'."
-                        )
+                        ), None
     # Precedence: a literal code target always wins (it returned a deny
     # above); the unresolved exemption only applies when nothing literal did.
     if first_unresolved is not None:
-        return "allow", "unresolved-target", first_unresolved, None
-    return "allow", "ok", None, None
+        return "allow", "unresolved-target", first_unresolved, None, None
+    return "allow", "ok", None, None, None
 
 
 def main():
@@ -247,9 +257,10 @@ def main():
         pass
 
     try:
-        decision, via, target, reason = _decide(payload, data)
+        decision, via, target, reason, context = _decide(payload, data)
     except Exception:
-        decision, via, target, reason = "allow", "fail-open", None, None
+        decision, via, target, reason, context = ("allow", "fail-open", None,
+                                                  None, None)
 
     record["decision"] = decision
     record["via"] = via
@@ -263,7 +274,7 @@ def main():
 
     if decision == "deny":
         deny(reason)
-    allow()
+    allow(context)
 
 
 if __name__ == "__main__":

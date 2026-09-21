@@ -21,6 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 SCRIPTS = os.path.join(PLUGIN, "scripts")
 sys.path.insert(0, SCRIPTS)
+sys.path.insert(0, HERE)
+import golden_diff  # noqa: E402  (tests/golden_diff.py — the runner differential)
 from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
 from session_brief import CORE_BODY, EMERGENCY_CORE, MAX_LEN, UNCONFIGURED_CORE  # noqa: E402
 from delegation_gate import CLAUDE_TIER_ONLY, CODEX_TIER_ONLY  # noqa: E402
@@ -1887,8 +1889,10 @@ def main():
         print("== runner stub tests (codex_consult.sh / claude_consult.sh) ==")
         runner_tmp = tempfile.mkdtemp(prefix="hjw-test-runners-")
         try:
-            def make_repo(name):
-                d = os.path.join(runner_tmp, name)
+            def make_repo(name, base=None):
+                # `base` lets a caller (the golden differential) build its repos
+                # under its OWN per-run root instead of the shared one.
+                d = os.path.join(base or runner_tmp, name)
                 os.makedirs(d, exist_ok=True)
                 subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
                 for k, v in (("user.email", "stub@example.invalid"), ("user.name", "stub")):
@@ -1913,16 +1917,26 @@ def main():
             # second-attempt-fails fixtures expressible.
             STUB_BODY = r'''#!/usr/bin/env bash
 set +u
+CAP="__CAP__"
+mkdir -p "$CAP"
 if [ "${1:-}" = "--version" ]; then
+  # The probe is still not a reviewer call — but it is COUNTED, in a file of
+  # its own, so a differential can compare probes and calls separately
+  # instead of conflating them.
+  vf="$CAP/_version_calls"
+  if [ -f "$vf" ]; then printf '%s\n' "$(( $(cat "$vf") + 1 ))" > "$vf"; else echo 1 > "$vf"; fi
   echo "stub-version 0.0.0"
   exit 0
 fi
-CAP="__CAP__"
-mkdir -p "$CAP"
 idx_file="$CAP/_idx"
 if [ -f "$idx_file" ]; then idx=$(( $(cat "$idx_file") + 1 )); else idx=1; fi
 echo "$idx" > "$idx_file"
 printf '%s\n' "$@" > "$CAP/call_${idx}.argv"
+# NUL-delimited argv alongside the newline form: an argument that CONTAINS a
+# newline is indistinguishable from two arguments in the line-based file, and
+# the golden differential compares argv byte-exactly. The old file stays for
+# the fixtures that already read it.
+printf '%s\0' "$@" > "$CAP/call_${idx}.argv0"
 cat > "$CAP/call_${idx}.stdin"
 cd_dir=""
 out=""; model=""; json=0; prev=""
@@ -1939,6 +1953,17 @@ done
 # relative STUB_TOUCH_FILE) would describe the caller instead of the reviewer.
 if [ -n "$cd_dir" ]; then cd "$cd_dir" || exit 97; fi
 pwd -P > "$CAP/call_${idx}.cwd"
+# The exported environment the reviewer ACTUALLY receives and the umask it
+# inherits are part of the contract too — a refactor that drops an export or
+# changes the mask is invisible in stdout/stderr. `sort` may be absent from a
+# minimal PATH fixture, so its absence must not break the dump (the reader
+# sorts as well).
+if command -v sort >/dev/null 2>&1; then
+  env -0 | sort -z > "$CAP/call_${idx}.env0"
+else
+  env -0 > "$CAP/call_${idx}.env0"
+fi
+umask > "$CAP/call_${idx}.umask"
 pick() {
   local per="${1}_${idx}"
   local v="${!per}"
@@ -1971,6 +1996,24 @@ if [ -n "$gitc" ]; then git commit --allow-empty -q -m "stub commit $idx" >/dev/
 # wait for "capture is over, the run has begun" instead of racing a sleep.
 rel="$(pick STUB_RELEASE_FILE)"
 if [ -n "$rel" ]; then printf 'released\n' > "$rel"; fi
+# STUB_WAIT_ACK: the other half of the handshake. The host writes into the
+# ORIGINAL after seeing the readiness marker and then drops this file; the
+# reviewer BLOCKS until it appears and records what it saw, so "the write
+# landed while the review was still running" is proven by the reviewer's own
+# record instead of inferred from wall-clock ordering.
+ackf="$(pick STUB_WAIT_ACK)"
+if [ -n "$ackf" ]; then
+  waited=0
+  while [ ! -f "$ackf" ] && [ "$waited" -lt 1200 ]; do
+    python3 -c 'import time; time.sleep(0.05)'
+    waited=$((waited + 1))
+  done
+  if [ -f "$ackf" ]; then
+    printf 'observed contents=%s\n' "$(cat "$ackf")" > "$CAP/call_${idx}.ack"
+  else
+    printf 'never-observed\n' > "$CAP/call_${idx}.ack"
+  fi
+fi
 spawn="$(pick STUB_SPAWN_PIDFILE)"
 if [ -n "$spawn" ]; then
   python3 -c 'import time; time.sleep(60)' &
@@ -2997,21 +3040,21 @@ exit "$rc"
                 env.update({k: v for k, v in extra_env.items() if v is not None})
                 return env
 
-            def make_repo_committed(name):
+            def make_repo_committed(name, base=None):
                 """A repo with one commit — `make_repo` leaves HEAD unborn,
                 which --snapshot refuses by design."""
-                d = make_repo(name)
+                d = make_repo(name, base)
                 write_file(os.path.join(d, "seed.txt"), "seed\n")
                 subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
                 subprocess.run(["git", "-C", d, "commit", "-q", "-m", "seed"],
                                check=True, capture_output=True)
                 return d
 
-            def dirty_snap_repo(name):
+            def dirty_snap_repo(name, base=None):
                 """Every working-tree shape the snapshot must reproduce —
                 staged, unstaged, binary, deletion, untracked, symlink — plus
                 an ignored file it must NOT carry."""
-                d = make_repo(name)
+                d = make_repo(name, base)
                 write_file(os.path.join(d, "staged.txt"), "committed\n")
                 write_file(os.path.join(d, "unstaged.txt"), "committed\n")
                 with open(os.path.join(d, "binary.dat"), "wb") as f:
@@ -3033,8 +3076,8 @@ exit "$rc"
                 write_file(os.path.join(d, "ignored.txt"), "ignored\n")
                 return d
 
-            def gitlink_repo(name):
-                d = make_repo_committed(name)
+            def gitlink_repo(name, base=None):
+                d = make_repo_committed(name, base)
                 sha = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
                                      capture_output=True, text=True).stdout.strip()
                 subprocess.run(["git", "-C", d, "update-index", "--add",
@@ -3042,16 +3085,16 @@ exit "$rc"
                                check=True, capture_output=True)
                 return d
 
-            def embedded_repo(name):
-                d = make_repo_committed(name)
+            def embedded_repo(name, base=None):
+                d = make_repo_committed(name, base)
                 subprocess.run(["git", "init", "-q", os.path.join(d, "vendor")],
                                check=True, capture_output=True)
                 return d
 
-            def conflict_repo(name):
-                d = make_repo_committed(name)
-                base = subprocess.run(["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
-                                      capture_output=True, text=True).stdout.strip()
+            def conflict_repo(name, base=None):
+                d = make_repo_committed(name, base)
+                branch = subprocess.run(["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
+                                        capture_output=True, text=True).stdout.strip()
                 write_file(os.path.join(d, "c.txt"), "base\n")
                 subprocess.run(["git", "-C", d, "add", "c.txt"], check=True, capture_output=True)
                 subprocess.run(["git", "-C", d, "commit", "-q", "-m", "base"],
@@ -3061,7 +3104,7 @@ exit "$rc"
                 write_file(os.path.join(d, "c.txt"), "side\n")
                 subprocess.run(["git", "-C", d, "commit", "-q", "-am", "side"],
                                check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "checkout", "-q", base],
+                subprocess.run(["git", "-C", d, "checkout", "-q", branch],
                                check=True, capture_output=True)
                 write_file(os.path.join(d, "c.txt"), "main\n")
                 subprocess.run(["git", "-C", d, "commit", "-q", "-am", "main"],
@@ -3069,8 +3112,8 @@ exit "$rc"
                 subprocess.run(["git", "-C", d, "merge", "side"], capture_output=True)
                 return d
 
-            def big_untracked_repo(name):
-                d = make_repo_committed(name)
+            def big_untracked_repo(name, base=None):
+                d = make_repo_committed(name, base)
                 for i in range(2001):
                     write_file(os.path.join(d, "untracked", f"f{i:05d}.txt"), "x\n")
                 return d
@@ -3684,6 +3727,23 @@ runpy.run_path(helper, run_name="__main__")
                   rc == 0 and "STUB-REPLY-OK-1" in out, f"rc={rc} out={out} err={err}")
             check("codex non-git + read-only sandbox: the reviewer was called once",
                   len(read_calls(ro_cap)) == 1, read_calls(ro_cap))
+
+            # ---- golden differential: every scenario above, replayed against
+            # the FROZEN runners of 6d09729 and compared byte for byte. It
+            # gates the shared-internals extraction that follows. ----
+            print(f"== golden differential (baseline {golden_diff.BASELINE_SHORT}) ==")
+            golden_diff.run(check, {
+                "tmp_root": runner_tmp,
+                "scripts_dir": SCRIPTS,
+                "make_stub": make_stub,
+                "make_snapshot_git_stub": make_snapshot_git_stub,
+                "make_mktemp_stub": make_mktemp_stub,
+                "write_file": write_file,
+                "repos": {"plain": make_repo, "committed": make_repo_committed,
+                          "dirty": dirty_snap_repo, "gitlink": gitlink_repo,
+                          "embedded": embedded_repo, "conflict": conflict_repo,
+                          "big": big_untracked_repo},
+            })
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
 

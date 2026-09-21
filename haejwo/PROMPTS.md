@@ -18,7 +18,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 - Frontmatter key order: `name`, `description`, `model?`, `effort?`, `tools?` —
   `model` is optional; omit it to inherit the session model.
 - `description` is the routing signal: role + when to use, one sentence.
-- Body shape: one role paragraph → imperative behavior bullets → a final **`Report back:`** contract with a length cap, ending with `Judgment calls:` (behavioral choices the brief didn't settle, or `none`).
+- Body shape: one role paragraph → imperative behavior bullets → a final **`Report back:`** contract with a proportionality rule (no fixed cap; lead with what changed and the verification evidence), ending with `Judgment calls:` (behavioral choices the brief didn't settle, or `none`).
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
@@ -38,7 +38,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 - Batch plan (once, at start of long/multi-phase work): `phase | what | worker | expected`.
 - Milestone (per worker completion): one line — `✓ <phase> — verified via <diff/tests> — commit <sha> — next: <phase>`.
 - Long-run checkpoint (once, past the stated ETA): elapsed + active phase + "no result yet" + when the next update comes. Honest silence beats fake progress; never a timer loop.
-- Consensus outcome (after a reviewer round ONLY): `Consensus: <decision one-liner> — accepted n / rejected m (key rejection: X, because Y) → carried into brief: <what>`. Use a 2-4 row table (`decision | rationale | dissent-resolution`) only when ≥2 material decisions. This REPLACES the prose summary; never emit it when no reviewer round ran.
+- Consensus outcome (after a reviewer round ONLY): `Consensus: <decision one-liner> — accepted n / rejected m (key rejection: X, because Y) → carried into brief: <what>`. Use a 2-4 row table (`decision | rationale | dissent-resolution`) only when ≥2 material decisions. This REPLACES the prose summary; never emit it when no reviewer round ran. Append `(shape B)` when the independent-drafts shape was used.
 - Final scorecard (multi-phase/commit-bearing work only): shipped (user terms) / quality gates / commits / deviations from plan / pending decisions. Small work: two plain lines instead.
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.
 

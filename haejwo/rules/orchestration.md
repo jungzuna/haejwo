@@ -15,7 +15,7 @@ repo-wide exploration; research; log triage.
   `haejwo:task-worker`; else default-worker.
 - Isolated deep analysis or same-model verification -> `haejwo:deep-reasoner`
   (fresh context, NOT independent authority — judgment stays with the host).
-- Independent review -> the OTHER vendor's runner:
+- Independent review / co-analysis -> the OTHER vendor's runner:
   `${CLAUDE_PLUGIN_ROOT}/scripts/{codex,claude}_consult.sh` (non-editing;
   post-run change detection). Effort medium routine / high default /
   xhigh ONLY for architecture forks, security-critical, deadlock rounds; model
@@ -25,9 +25,9 @@ repo-wide exploration; research; log triage.
   live deployment, commit, merge, or reporting acceptance; docs/config/
   boilerplate never escalates.
 - Generic agents (general-purpose/Explore/bare spawn_agent) INHERIT the
-  session model — pass a cheaper model explicitly; prefer haejwo tiers.
-  Codex hosts: spawn_agent judgment inherits (omit model); execution
-  downshifts to configured tiers.
+  session model — pass an explicit cost-appropriate model; prefer haejwo
+  tiers. Codex hosts: spawn_agent judgment inherits (omit model); execution
+  runs at the configured tiers.
 
 **Plan-first:** material judgment-bearing feature/risk work starts from an
 AGREED plan (reviewer debate; the host runs it proactively). Briefs EMBED it
@@ -52,8 +52,8 @@ push or deploy. Ask first unless the repo has auto-push consent
 **Recovery (host's job, never the user's):** reviewer down -> one-sentence
 fallback (Claude: deep-reasoner isolated critique, host stays sole
 authority; Codex: native subagent). Worker failure: diagnose brief/skipped
-checks/tier/environment -> fix, retry once or escalate tier once; never
-grind.
+checks/tier/environment -> fix, retry once or escalate tier once (no higher
+tier: re-brief or decompose); never grind.
 
 **Hard rules (gate-enforced):** max N distinct code files/turn for the main
 agent (default 2); more deny -> delegate. The main agent NEVER modifies code

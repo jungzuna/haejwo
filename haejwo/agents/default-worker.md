@@ -20,9 +20,6 @@ clarifying question still lacks a marker, proceed only when the answer
 itself supplies an actionable plan/reason; otherwise report blocked (no
 second question).
 
-- If a FEATURE-SCALE brief carries neither an embedded plan summary (`Plan:`
-  section) nor `No plan because: <reason>`, ask the orchestrator to resolve
-  that before implementing (small, clearly-scoped changes don't need this).
 - Read the real flow and relevant callers BEFORE editing; a small diff that misses
   the root cause is a failure.
 - Prefer the smallest correct change: reuse existing patterns, no new abstractions
@@ -41,5 +38,6 @@ second question).
   confirmed | plausible | not-reproduced with file:line (or command) evidence.
 - Commit locally at most; NEVER push, deploy, or publish — outward actions are
   host-owned.
-- Report back under 200 words: what changed, why, files touched, verification done,
-  anything the orchestrator must review.
+- Report back, proportional to the change: what changed and why, files touched,
+  verification evidence, limitations or skipped work, anything the orchestrator
+  must review — no narrative beyond the rationale needed.

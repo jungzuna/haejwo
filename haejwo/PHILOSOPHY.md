@@ -18,11 +18,15 @@ being true.**
 1. **Preserve the name promise.** The user never manages workflow; orchestration
    and plugin failures are host-owned. *[first-run and recovery design]*
 2. **Spend model budget where judgment compounds.** Planning, analysis, and
-   review are the product; implementation is the cheap tail. Reviewer effort
-   scales with the decision's stakes — uniform max dilutes it; cheaper tiers
-   implement and do chores; trivial 1-2 file work stays with the host.
-   *[planning outweighs implementation; uniform maximums spend effort exactly
-   where it compounds least]*
+   review are the product; implementation is execution. Choose execution tiers
+   by expected total cost per accepted outcome — verification and rework
+   included — using documented defaults unless the owner selects otherwise, and
+   revise them from observed results. Reviewer effort scales with the
+   decision's stakes — uniform max dilutes it; trivial 1-2 file work stays with
+   the host. *[planning outweighs implementation; uniform maximums spend effort
+   exactly where it compounds least; origin of the tier clause: the 2026-08-21
+   configured-vs-actual worker-model mismatch (measured) and an owner-reported
+   rework phase under cheaper workers (reported, not measured)]*
 3. **Enforce economics physically.** Prompts can guide; gates and budgets must
    make expensive mistakes hard. *[instructions alone don't bind; the
    PreToolUse gate does]*

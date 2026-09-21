@@ -95,7 +95,7 @@ Boundaries that keep haejwo a lubricant layer on top of the host, not a harness:
 - Scheduler, durable task queue, or persistent agent roster
 - General DAG or recursive multi-agent runtime
 - Model gateway, billing optimizer, or price-based router
-- Cross-vendor WORKER routing — worker vendor follows the host; only review crosses vendors (want GPT execution? run the Codex host)
+- Cross-vendor WORKER routing — haejwo builds no cross-vendor worker bridge (worker vendor follows the host; want GPT execution? run the Codex host). The official `codex@openai-codex` plugin can coexist with haejwo; testing version 1.0.6 on 2026-09-21 found its rescue subagent exempt from haejwo's edit budget and bash guard, rescue blocked by that host's sandbox failure, and `/codex:review` reporting completion without inspecting changes, while adversarial review of an inlined diff succeeded. haejwo keeps its consult runner for reviews under its non-editing contract; leave the plugin's optional Stop review gate off pending loop testing
 - Worktree orchestration or patch merging for workers (the reviewer may run in a detached snapshot under the non-editing reviewer contract — not a replacement sandbox)
 - Hosted control plane or dashboard
 - Autonomous push/deploy/publish

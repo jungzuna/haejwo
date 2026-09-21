@@ -2694,13 +2694,17 @@ exit "$rc"
                   rc != 0 and "note file.txt" in err, f"rc={rc} err={err}")
 
             # ---- (G5a) the wall clock must hold with NO `timeout` binary ----
-            def make_minimal_bin(name, capture_dir, stub_name="codex"):
-                """A PATH with everything the runner needs EXCEPT timeout(1)."""
+            def make_minimal_bin(name, capture_dir, stub_name="codex", omit=()):
+                """A PATH with everything the runner needs EXCEPT timeout(1),
+                minus anything `omit` names (the no-realpath fixtures below
+                drop `realpath` to exercise the python3 resolver)."""
                 d = os.path.join(runner_tmp, name)
                 os.makedirs(d, exist_ok=True)
                 for tool in ("python3", "git", "bash", "sh", "sed", "awk", "grep",
                              "cat", "head", "tail", "rm", "mv", "mkdir", "mktemp",
                              "date", "realpath", "chmod", "env"):
+                    if tool in omit:
+                        continue
                     src = shutil.which(tool)
                     dst = os.path.join(d, tool)
                     if src and not os.path.exists(dst):
@@ -3210,14 +3214,16 @@ exit "$rc"
                 os.chmod(path, 0o755)
                 return path
 
-            def extract_capture_helper(script_path):
-                """The runner embeds its capture helper as a python heredoc.
-                Pulling that exact source out lets a fixture run it in
-                isolation and drive a race the shell cannot reach."""
-                text = open(script_path, encoding="utf-8").read()
-                m = re.search(r"snapshot_build\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}",
-                              text, re.S)
-                return m.group(1) if m else ""
+            def capture_helper_path(script_path):
+                """The capture helper is a FILE in the runner's library since
+                2.13 (`scripts/lib/snapshot.py`), not a heredoc embedded in the
+                entrypoint. Resolved exactly the way the runner resolves it —
+                from its OWN resolved directory — so the fixture runs the
+                shipped file, not a copy of it, and can drive a race the shell
+                cannot reach."""
+                lib = os.path.join(os.path.dirname(os.path.realpath(script_path)),
+                                   "lib", "snapshot.py")
+                return lib if os.path.isfile(lib) else ""
 
             RACE_DRIVER = '''import runpy, shutil, sys
 
@@ -3654,9 +3660,12 @@ runpy.run_path(helper, run_name="__main__")
 
                 # (Z6) the copy/hash race itself. The shell cannot reach the
                 # window between shutil.copy2 and the destination hash, so the
-                # fixture extracts the runner's OWN capture helper and runs it
-                # with a copy that loses the race.
-                helper_src = extract_capture_helper(snap_script)
+                # fixture runs the runner's OWN capture helper — the shipped
+                # scripts/lib/snapshot.py, under runpy — with a copy that
+                # loses the race.
+                helper_path = capture_helper_path(snap_script)
+                helper_src = (open(helper_path, encoding="utf-8").read()
+                              if helper_path else "")
                 check(f"{who} snapshot: the capture helper source is extractable",
                       bool(helper_src) and "untracked file changed during capture" in helper_src,
                       len(helper_src))
@@ -3664,15 +3673,13 @@ runpy.run_path(helper, run_name="__main__")
                     race_repo = dirty_snap_repo(f"repo-snap-race-{who}")
                     race_sha = subprocess.run(["git", "-C", race_repo, "rev-parse", "HEAD"],
                                               capture_output=True, text=True).stdout.strip()
-                    helper_path = write_file(os.path.join(runner_tmp, f"capture-{who}.py"),
-                                             helper_src + "\n")
                     driver_path = write_file(os.path.join(runner_tmp, f"race-driver-{who}.py"),
                                              RACE_DRIVER)
                     race_meta = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-meta-{who}-")
                     race_snap = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-snap-{who}-")
                     rp = subprocess.run(
-                        [sys.executable, driver_path, helper_path, race_repo, race_sha,
-                         race_snap, race_meta],
+                        [sys.executable, driver_path, helper_path, "build", race_repo,
+                         race_sha, race_snap, race_meta],
                         capture_output=True, text=True, timeout=120)
                     race_refuse = os.path.join(race_meta, "refuse")
                     race_reason = open(race_refuse).read() if os.path.isfile(race_refuse) else ""
@@ -3727,6 +3734,84 @@ runpy.run_path(helper, run_name="__main__")
                   rc == 0 and "STUB-REPLY-OK-1" in out, f"rc={rc} out={out} err={err}")
             check("codex non-git + read-only sandbox: the reviewer was called once",
                   len(read_calls(ro_cap)) == 1, read_calls(ro_cap))
+
+            # ---- (2.13) the shared library is a REQUIRED part of the runner ----
+            # Every lib file is checked BEFORE any artifact is created: an
+            # incomplete install must fail loudly and cheaply, naming the file
+            # it could not find — never half-run a paid review on a runner
+            # whose mechanics are missing. One file is renamed in a COPY of
+            # the tree, so the check binds on the real resolution path.
+            for who, cli in (("codex", "codex"), ("claude", "claude")):
+                lm_tree = os.path.realpath(os.path.join(runner_tmp, f"libmissing-{who}"))
+                shutil.copytree(SCRIPTS, lm_tree,
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                lm_gone = os.path.join(lm_tree, "lib", "snapshot.py")
+                os.rename(lm_gone, lm_gone + ".moved")
+                lm_bin = os.path.join(runner_tmp, f"bin-libmissing-{who}")
+                lm_cap = os.path.join(runner_tmp, f"cap-libmissing-{who}")
+                make_stub(lm_bin, cli, lm_cap)
+                lm_dir = os.path.join(runner_tmp, f"libmissing-brief-{who}")
+                lm_brief = brief_file(f"libmissing-brief-{who}/brief.md")
+                rc, out, err = run_script(
+                    os.path.join(lm_tree, f"{who}_consult.sh"), [lm_brief],
+                    {"PATH": lm_bin + os.pathsep + os.environ.get("PATH", "")})
+                check(f"{who} lib missing: exit 3 naming the missing file",
+                      rc == 3 and f"consult runner library missing: {lm_gone}" in err,
+                      f"rc={rc} out={out} err={err}")
+                check(f"{who} lib missing: the CLI is never invoked",
+                      read_calls(lm_cap) == [], read_calls(lm_cap))
+                check(f"{who} lib missing: no reply/log/events artifact is written",
+                      sorted(os.listdir(lm_dir)) == ["brief.md"],
+                      sorted(os.listdir(lm_dir)))
+
+            # ---- (2.13) $HJW_LIB is ABSOLUTE and PHYSICAL, with no realpath ----
+            # $0 is the only anchor the runner has, and $HJW_LIB is used again
+            # AFTER the process chdirs — into the snapshot for the reviewer
+            # call, and back to $ORIG during cleanup — so a relative value
+            # would be looked up wherever the runner happened to land, and an
+            # unresolved symlink would look for `lib/` beside the LINK. This
+            # PATH deliberately omits realpath: the python3 resolver is what
+            # is under test.
+            for who, cli in (("codex", "codex"), ("claude", "claude")):
+                nr_repo = make_repo_committed(f"repo-norealpath-{who}")
+                shutil.copytree(SCRIPTS, os.path.join(nr_repo, "haejwo", "scripts"),
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                os.makedirs(os.path.join(nr_repo, "sub", "dir"), exist_ok=True)
+                # a RELATIVE symlink, resolved against the link's own directory
+                os.symlink(os.path.join("haejwo", "scripts", f"{who}_consult.sh"),
+                           os.path.join(nr_repo, f"link-{who}.sh"))
+                subprocess.run(["git", "-C", nr_repo, "add", "-A"],
+                               check=True, capture_output=True)
+                subprocess.run(["git", "-C", nr_repo, "commit", "-q", "-m", "scripts"],
+                               check=True, capture_output=True)
+                nr_wt = worktree_count(nr_repo)
+                nr_out = os.path.join(runner_tmp, f"norealpath-{who}.reply.md")
+                nr_brief = brief_file(f"norealpath-{who}-brief.md")
+                for i, (tag, rel, cwd, extra) in enumerate((
+                        ("relative from the repo root",
+                         f"./haejwo/scripts/{who}_consult.sh", nr_repo, []),
+                        ("relative from a subdirectory",
+                         f"../../haejwo/scripts/{who}_consult.sh",
+                         os.path.join(nr_repo, "sub", "dir"), []),
+                        ("through a symlink", f"./link-{who}.sh", nr_repo, []),
+                        ("--snapshot (chdir + cleanup)",
+                         f"./haejwo/scripts/{who}_consult.sh", nr_repo, ["--snapshot"]))):
+                    # hermetic per invocation: fresh symlink farm, fresh capture
+                    nr_cap = os.path.join(runner_tmp, f"cap-norealpath-{who}-{i}")
+                    nr_bin = make_minimal_bin(f"bin-norealpath-{who}-{i}", nr_cap,
+                                              stub_name=cli, omit=("realpath",))
+                    if i == 0:
+                        check(f"{who} no-realpath PATH: the `realpath` binary really "
+                              "is absent",
+                              shutil.which("realpath", path=nr_bin) is None, nr_bin)
+                    rc, out, err = run_script(rel, extra + ["-o", nr_out, nr_brief],
+                                              {"PATH": nr_bin}, cwd=cwd)
+                    check(f"{who} no-realpath PATH, {tag}: the run succeeds",
+                          rc == 0 and "STUB-REPLY-OK-1" in out,
+                          f"rc={rc} out={out} err={err}")
+                check(f"{who} no-realpath PATH: the snapshot left no worktree behind",
+                      nr_wt > 0 and worktree_count(nr_repo) == nr_wt,
+                      f"{worktree_count(nr_repo)} != {nr_wt}")
 
             # ---- golden differential: every scenario above, replayed against
             # the FROZEN runners of 6d09729 and compared byte for byte. It

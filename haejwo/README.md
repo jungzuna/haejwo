@@ -67,6 +67,8 @@ Optional hardening (README-only, not auto-applied): add `permissions.deny` rules
 
 `codex_consult.sh` (Claude host) and `claude_consult.sh` (Codex host) run the independent reviewer.
 
+- Shared internals live in `scripts/lib`; the two entrypoints keep vendor policy.
+
 **Guarantees**
 - The standing non-editing REVIEWER CONTRACT is prepended to every brief; `claude_consult.sh` also disables the direct edit tools (Edit/Write/NotebookEdit) via `--disallowedTools`.
 - Post-run change detection FAILS the run: HEAD, tracked file status, per-path working-tree fingerprints, `git diff` / `git diff --cached`, and untracked files (presence for all, contents for the first 2000 sorted). Runner-owned artifacts are excluded from all of those, digests included.

@@ -20,7 +20,7 @@
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
-/reload-plugins   # 이미 열려 있는 세션이 있을 때만
+/reload-plugins   # 이미 열려 있는 세션이 있을 때만 (훅과 명령어를 갱신; 주입된 규칙은 재시작 필요)
 /haejwo:setup     # 선택 — 안 해도 안전 기본값으로 동작합니다
 ```
 

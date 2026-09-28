@@ -11,7 +11,7 @@ Underneath, it keeps the expensive main model on **judgment** (plan, delegate, d
 | Layer | Artifact | What it does |
 |---|---|---|
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the full orchestration rules from the first session — plus a setup nudge and a `defaults — not configured` summary until setup runs, the live config summary after; a minimal operating core only on the emergency degrade (rules file unreadable or over budget) |
-| Roles | `agents/` | `deep-reasoner` (session model) · `default-worker` (opus) · `task-worker` (opus, low effort) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — outside perspective, non-editing contract with post-run change detection) |
+| Roles | `agents/` | `deep-reasoner` (session model, session effort) · `default-worker` (opus) · `task-worker` (opus, low effort) + reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex — outside perspective, non-editing contract with post-run change detection) |
 | Criteria | `rules/orchestration.md` | When the main agent handles directly vs must delegate |
 | **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied** with a delegation instruction; Bash writes to code files are denied outright |
 
@@ -51,7 +51,7 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 
 Env override for a single command: `HAEJWO_GATE=off <cmd>`.
 
-**Reasoning policy:** The orchestrating host is always your session's model (`/model` in Claude Code, the model picker in Codex); haejwo configures only worker tiers and reviewer selection. Reviewer effort scales with the decision's stakes — `medium` for routine checks, `high` (runner default) for standard consults, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. Claude-host same-family fallback uses `deep-reasoner`; other-CLI review uses the configured runner. Uniform max dilutes budget exactly where judgment compounds.
+**Reasoning policy:** The orchestrating host is always your session's model (`/model` in Claude Code, the model picker in Codex); haejwo configures only worker tiers and reviewer selection. Reviewer effort scales with the decision's stakes — `medium` is the default (and the runner default) for routine checks, `high` for design/plan rounds and diff reviews, `xhigh` reserved for architecture forks / security-critical calls / final deadlock rounds; non-reasoning probes stay explicit `low`. The reviewer's wall clock does not follow effort: the timeout default is 600s at every level (`CODEX_TIMEOUT` overrides). `deep-reasoner` pins no effort either — it inherits the session's, so raising your own effort raises it too. Claude-host same-family fallback uses `deep-reasoner`; other-CLI review uses the configured runner. Uniform max dilutes budget exactly where judgment compounds.
 
 ## Install
 
@@ -82,16 +82,18 @@ Optional hardening (README-only, not auto-applied): add `permissions.deny` rules
 - Never covered by change detection: package installs, MCP / user / global config changes, ignored files, out-of-repo files, and an edit-then-restore sequence.
 - Under concurrent writers, a detected change means "something changed" — **attribution unknown**.
 - A failure the reviewer reports only in its prose is NOT detected — measured 2026-09-21 on both this runner and the official `codex@openai-codex` plugin (a read-only sandbox failure produced rc 0 and "I cannot read it…" on both paths). The host reads the reply, always.
+- No validated event-only detector exists for a reviewer that reports failure only in prose (measured: such a run had no command events and trivial reasoning tokens) — the host reads the reply.
 - `claude_consult.sh` has no event-stream classifier.
 - An unselected model is a **`cli-default (identity unverified)`** — the runner does not know which model answered.
 - The Codex-host side (`claude_consult.sh`, `spawn_agent` tiers) is less exercised in the field than the Claude Code side (spawn_agent effort inheritance measured once on 2026-09-21; the rest of the Codex-host path remains less exercised).
 
 **Knobs**
-- `codex.model` / `codex.effort` / `codex.fallback_model` in config; env (`CODEX_MODEL` / `CODEX_EFFORT` / `CLAUDE_MODEL`) wins. That `codex` block describes the reviewer of the **host that owns the data dir**, so it is read host-relative: the codex runner ignores it under a `/.codex/` config path, the claude runner reads it only there.
+- `codex.model` / `codex.effort` / `codex.fallback_model` in config; env (`CODEX_MODEL` / `CODEX_EFFORT` / `CLAUDE_MODEL`) wins; the runner default effort is **`medium`**. That `codex` block describes the reviewer of the **host that owns the data dir**, so it is read host-relative: the codex runner ignores it under a `/.codex/` config path, the claude runner reads it only there.
 - `--snapshot` — review a detached worktree instead of the live working copy (below).
 - `CODEX_SANDBOX` — `read-only` (default) / `workspace-write` / `danger-full-access`; the claude runner takes no sandbox argument.
-- `CODEX_TIMEOUT` (`CLAUDE_TIMEOUT` on the claude runner) — seconds; `0` = unlimited.
-- `CODEX_ALLOW_MARKERS=1` — disables ONLY the anchored tracing scan, nothing else.
+- `CODEX_TIMEOUT` (`CLAUDE_TIMEOUT` on the claude runner) — seconds; default 600 at every effort (2.14: decoupled from effort), `0` = unlimited.
+- The anchored tracing scan has **no opt-out**: `CODEX_ALLOW_MARKERS` was deleted in 2.14 (the only thing it ever suppressed in the field was a hook block, which is a note rather than a failure now). Rollback trigger, in the code: an anchored-scan failure on a run whose reply was complete and valid.
+- Consult telemetry: one JSON line per run in `state/consults.jsonl` (outcome, attempts, effort with its source, duration, usage; 200 KB → `.1`). Best effort — a telemetry failure is a log line, never a run outcome — and written only into haejwo's OWN data dir, never wherever `CLAUDE_PLUGIN_DATA` happens to point. `outcome=ok` is RUNNER success, not host acceptance; accepted-outcome economics is deferred.
 
 **Snapshot (`--snapshot`, both runners)**
 - A detached worktree of HEAD plus the **net** uncommitted changes (one `git diff --binary <SHA>` patch replayed with `git apply --index` — staged and unstaged states are not reproduced separately) plus untracked non-ignored files (first 2000 sorted; symlinks copied **as links**, never followed) — so you can keep editing while the reviewer works.

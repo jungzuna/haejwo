@@ -12,6 +12,9 @@
 #   HJW_LIB          directory holding this file and the python helpers
 #   HJW_RUNNER_KIND  codex|claude — temp-file prefixes, host-relative config
 #                    reading, usage text and failure labels
+#   HJW_SELF         the runner's OWN absolute physical path — the telemetry
+#                    data-dir ownership rule and the recorded plugin version
+#                    are both derived from it, never from the environment alone
 # and OWNS (never inferred here): the REVIEWER CONTRACT text, print_help, the
 # CLI argv and its redirections, both effective-brief writes, the timeout
 # default, the event classifier + stderr scan + effort/sandbox (codex only),
@@ -121,10 +124,22 @@ hjw_parse_args() {
 }
 
 cleanup() {
+  # The FIRST statement: the run's final exit status, captured before any
+  # command below can overwrite $?. Nothing else may run ahead of it.
+  local _hjw_rc=$?
   # Snapshot removal runs FIRST: it needs `bounded`, and the temp state the
   # very next lines delete. Guarded by $SNAP so the early exits above — which
   # run before the traps are even armed — stay silent.
   if [ -n "$SNAP" ]; then snapshot_cleanup; report_snapshot_cleanup; fi
+  # THEN the telemetry record, from this one place — the single owner of the
+  # traps — so a run produces exactly one record whether it succeeded, failed,
+  # refused or was signalled. It comes AFTER the removal on purpose: a leftover
+  # worktree is a real outcome, and `cleanup-failed` has to be observable on a
+  # FAILURE or REFUSAL exit too, not only after a successful review (which
+  # removes the snapshot itself, before its result line). And it comes BEFORE
+  # the deletions below because they destroy its inputs — the effective brief
+  # it measures; the events stream it reads is a caller artifact and survives.
+  hjw_telemetry_emit "$_hjw_rc"
   [ -n "$TMPBRIEF" ] && rm -f "$TMPBRIEF"
   [ -n "$EFFECTIVE_BRIEF" ] && rm -f "$EFFECTIVE_BRIEF"
   [ -n "$SNAPMETA" ] && rm -rf "$SNAPMETA"
@@ -144,6 +159,9 @@ hjw_common_init() {
   TMPBRIEF=""
   EFFECTIVE_BRIEF=""
   SNAPDIR=""
+  # Reset BEFORE the traps are armed: cleanup reads this state, so it must
+  # exist before anything can fire it.
+  hjw_telemetry_state
   # --snapshot state. ORIG is the ORIGINAL repository root, SNAP the detached
   # worktree, SNAPMETA the capture scratch dir (patch + computed disclosure).
   # Who owns SNAP is never inferred from a marker this script wrote — cleanup
@@ -171,8 +189,12 @@ hjw_common_init() {
   trap cleanup EXIT
   # A snapshot worktree must not outlive an interrupted run either; bash does not
   # fire the EXIT trap for an uncaught INT/TERM, so catch both and exit through it.
-  trap 'cleanup; exit 130' INT
-  trap 'cleanup; exit 143' TERM
+  # Each signal path names ITSELF for the telemetry record: the status the trap
+  # sees belongs to whatever was interrupted, so the runner's own 130/143 is
+  # what gets recorded, and the once-flag keeps the INT -> EXIT re-entry from
+  # writing a second record.
+  trap 'HJW_TEL_SIGNAL=INT; HJW_TEL_SIGNAL_RC=130; cleanup; exit 130' INT
+  trap 'HJW_TEL_SIGNAL=TERM; HJW_TEL_SIGNAL_RC=143; cleanup; exit 143' TERM
   if [ "$BRIEF" = "-" ]; then
     BRIEF="$(mktemp "${TMPDIR:-/tmp}/${HJW_RUNNER_KIND}_brief.XXXXXX.md")" || {
       echo "cannot create a temp file (is ${TMPDIR:-/tmp} writable?)" >&2; exit 4; }
@@ -187,6 +209,8 @@ hjw_common_init() {
   # its own name so the runner never overwrites the answer it captured.
   # *[origin: ship review Z4]*
   [ "$LOG" = "$OUT" ] && LOG="$OUT.log"
+  # LAST: from here on every exit path emits exactly one telemetry record.
+  hjw_telemetry_arm
   return 0
 }
 
@@ -211,9 +235,9 @@ hjw_canonicalize() {
   # (the claude runner has no events paths to resolve).
   local _v _canon
   for _v in "$@"; do
-    _canon="$(canon_path "${!_v}")" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
-    strip_sentinel "$_canon" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
-    [ -n "$META_VAL" ] || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    _canon="$(canon_path "${!_v}")" || { hjw_telemetry_refused snapshot-unavailable; echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    strip_sentinel "$_canon" || { hjw_telemetry_refused snapshot-unavailable; echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
+    [ -n "$META_VAL" ] || { hjw_telemetry_refused snapshot-unavailable; echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
     printf -v "$_v" '%s' "$META_VAL"
   done
   # Canonicalization can make two textually different paths the SAME file
@@ -233,6 +257,10 @@ hjw_canonicalize() {
 snapshot_refuse() {
   local reason="$1"
   [ -n "$reason" ] || reason="capture failed (no reason recorded)"
+  # A refusal is a deliberate non-run, not a reviewer failure: the telemetry
+  # record says `refused` so the two can never be counted together. The REASON
+  # is a fixed class; the human reason text below stays in $LOG and on stderr.
+  hjw_telemetry_refused snapshot-unavailable
   # Best effort into the log as well: a caller who keeps only $LOG must still
   # learn why the snapshot was refused.
   printf '# ---- snapshot unavailable: %s ----\n' "$reason" >> "$LOG" 2>/dev/null
@@ -480,6 +508,10 @@ detect_fail_now() {
   # The log is opened BEFORE the preflight so git's own explanation survives
   # here too — a caller who only keeps $LOG must still learn why the gate
   # could not run.
+  # This path fails the run WITHOUT going through fail() (there is no report
+  # block to assemble), so it contributes its class explicitly — otherwise the
+  # most informative pre-call failure would be recorded as a bare exit code.
+  hjw_telemetry_fail_class detection-unavailable
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && { echo "# ---- change detection stderr ----"; cat "$SNAPDIR/detect.err"; } >> "$LOG"
   echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, 0s${RESULT_EXTRA:-}):${COVERAGE_NOTE:-}" >&2
   echo "  - $DETECT_MSG" >&2
@@ -510,7 +542,11 @@ hjw_detect_after() {
   return 0
 }
 
-fail() { FAILED=1; FAIL_MSG="${FAIL_MSG}  - $1"$'\n'; }
+# $1 = the fixed failure CLASS (one of HJW_TEL_CLASSES), $2 = the human message.
+# The class is what telemetry records; the message never leaves $LOG/stderr.
+# Two arguments rather than one so a new failure site cannot forget the class
+# and silently fall back to recording vendor text.
+fail() { FAILED=1; FAIL_MSG="${FAIL_MSG}  - $2"$'\n'; hjw_telemetry_fail_class "$1"; }
 
 hjw_change_verdict() {
   # The change-detection verdict plus the coverage notes it discloses.
@@ -525,7 +561,7 @@ hjw_change_verdict() {
       # Surface WHY into the log — the failure message is a contract string, the
       # git error behind it is the diagnostic the operator actually needs.
       [ -s "$SNAPDIR/detect.err" ] && { echo "# ---- change detection stderr ----"; cat "$SNAPDIR/detect.err"; } >> "$LOG"
-      fail "$DETECT_MSG"
+      fail detection-unavailable "$DETECT_MSG"
     else
       TRUNCATED="$(printf '%s\n' "$CMP" | sed -n 's/^truncated=//p')"
       UNREADABLE="$(printf '%s\n' "$CMP" | sed -n 's/^unreadable=//p')"
@@ -533,10 +569,229 @@ hjw_change_verdict() {
       [ "${TRUNCATED:-0}" = 1 ] && COVERAGE_NOTE="$COVERAGE_NOTE (untracked coverage partial: >2000 files)"
       [ "${UNREADABLE:-0}" -gt 0 ] 2>/dev/null && COVERAGE_NOTE="$COVERAGE_NOTE (some files unreadable: $UNREADABLE)"
       if [ -n "$CHANGED_LIST" ]; then
-        fail "repository changed during the run — attribution unknown (concurrent writers are not distinguished); changed: $CHANGED_LIST; inspect 'git status'"
+        HJW_TEL_CHANGED=1
+        fail repo-changed "repository changed during the run — attribution unknown (concurrent writers are not distinguished); changed: $CHANGED_LIST; inspect 'git status'"
       fi
     fi
   fi
+  return 0
+}
+
+# ---- consult telemetry (D4-lite) ----
+# ONE JSON line per armed run, appended by `lib/telemetry.py` to
+# <data-dir>/state/consults.jsonl (200 KB -> `.1`, like observe()). BOUNDED and
+# BEST EFFORT in the strict sense: any failure becomes a log line and NEVER
+# changes the runner's behavior, output or exit code — the audit path never
+# decides anything (P4).
+#
+# What it answers: how many consults ran, how they ended, at which effort, how
+# many needed a second attempt. What it does NOT answer: whether the HOST
+# accepted the reply. `outcome=ok` is RUNNER success only; accepted-outcome
+# economics needs a host-side acceptance signal that does not exist yet and is
+# explicitly DEFERRED (see the header of lib/telemetry.py).
+#
+# OWNERSHIP — why this does NOT reuse the config path: in a subagent's shell
+# CLAUDE_PLUGIN_DATA can point at ANOTHER plugin's data dir (measured), and
+# haejwo's audit trail written into someone else's data dir is worse than no
+# audit trail at all. So the directory is derived from the runner's OWN resolved
+# location first; CLAUDE_PLUGIN_DATA is honored only when it actually names
+# haejwo's data dir; and when neither holds telemetry is SKIPPED — never
+# written somewhere else, and never guessed. Config precedence
+# (hjw_config_path) is untouched by any of this.
+#
+# ABSOLUTE, AT INIT: the destination is resolved once, in hjw_common_init, while
+# the process is still in the caller's directory. A relative CLAUDE_PLUGIN_DATA
+# (`haejwo-haejwo`, `./haejwo-haejwo`) is made absolute against THAT cwd — the
+# record is written from the EXIT trap, long after --snapshot may have chdir'd
+# the process into a worktree that is then deleted, and a relative destination
+# would have followed the cwd.
+#
+# SYMLINK POLICY: the data dir itself MAY be a symlink (an operator relocating
+# plugin state is legitimate), so the path is resolved and the RESOLVED basename
+# must still be `haejwo-haejwo`. A link named `haejwo-haejwo` whose target is
+# someone else's directory is exactly the hazard this rule exists for, and it is
+# skipped. The cache-path branch keeps using the runner's own realpath ($HJW_SELF).
+hjw_telemetry_resolve() {
+  HJW_TEL_DIR=""
+  local dir root base data resolved
+  dir="${HJW_SELF%/*}"
+  case "$dir" in */scripts) ;; *) dir="" ;; esac
+  if [ -n "$dir" ]; then
+    root="${dir%/scripts}"   # the installed plugin root
+    base="${root%/*}"        # .../cache/haejwo/haejwo, on a marketplace install
+    case "$base" in
+      # The ONLY layout that proves ownership by location:
+      # <plugins>/cache/haejwo/haejwo/<ver>/scripts/<runner>.sh
+      # $HJW_SELF is already absolute AND realpath-resolved, so this branch
+      # needs no further resolution.
+      */plugins/cache/haejwo/haejwo)
+        HJW_TEL_DIR="${base%/cache/haejwo/haejwo}/data/haejwo-haejwo"
+        return 0
+        ;;
+    esac
+  fi
+  # Trailing slashes first: `.../haejwo-haejwo/` names the same directory and
+  # must not fail the basename test.
+  data="${CLAUDE_PLUGIN_DATA:-}"
+  while [ -n "$data" ] && [ "$data" != "${data%/}" ]; do data="${data%/}"; done
+  [ -n "$data" ] || return 0
+  # The name the CALLER gave must be haejwo's — a bare name has no slash.
+  case "$data" in haejwo-haejwo|*/haejwo-haejwo) ;; *) return 0 ;; esac
+  resolved="$(hjw_telemetry_abs "$data")" || return 0
+  # strip_sentinel lands in $META_VAL. Safe here: this runs at the END of
+  # hjw_common_init, and every later consumer (hjw_canonicalize, the capture)
+  # writes $META_VAL before it reads it.
+  strip_sentinel "$resolved" || return 0
+  [ -n "$META_VAL" ] || return 0
+  # ...and so must the name it RESOLVES to.
+  case "$META_VAL" in */haejwo-haejwo) HJW_TEL_DIR="$META_VAL" ;; esac
+  return 0
+}
+
+hjw_telemetry_abs() {
+  # $1 -> absolute, symlink-resolved, sentinel-terminated (a directory name may
+  # legally end in a newline — the SENTINEL marks the end, not the shell).
+  # python3 rather than `realpath`: the data dir need NOT exist yet on a first
+  # run, os.path.realpath resolves what does exist and keeps the rest, and
+  # python3 is already a hard dependency while `realpath -m` is not everywhere.
+  python3 -c 'import os, sys
+sys.stdout.write(os.path.realpath(os.path.abspath(sys.argv[1])) + sys.argv[2])' \
+    "$1" "$SNAP_META_END"
+}
+
+# ---- failure CLASSES: fixed identifiers, never vendor text ----
+# A telemetry record must be safe to keep and safe to share. A reviewer's error
+# message is VENDOR TEXT — it can quote a file, a command line, a token — so it
+# never enters a record: it goes to $LOG and stderr, where the operator reads it,
+# and the record keeps a fixed identifier from this closed set instead.
+# *[origin: cross-vendor review 2026-09-28 — a 40-character prefix of a vendor
+# error is still vendor text, and a secret can be shorter than 40 characters]*
+#
+#   timeout                the reviewer exceeded the wall clock
+#   exit-code              the CLI exited non-zero for another reason
+#   empty-reply            rc=0 with no final answer
+#   event-failure          codex's own turn.failed / error event
+#   no-event-stream        rc=0 with nothing to verify the run by
+#   tracing-error          an anchored `ERROR codex_core` line
+#   repo-changed           the no-edit contract was broken
+#   detection-unavailable  the contract could not be verified at all
+#   non-git                refused: outside a repo with no sandbox to rely on
+#   snapshot-unavailable   refused: the capture could not be made honestly
+#   cleanup-failed         a snapshot worktree outlived the run (outcome only)
+#   interrupted            a signal ended the run (outcome only)
+#   model-unavailable      an attempt's model was rejected pre-execution
+#                          (an attempt RESULT, never a failure class)
+#   other                  anything unmapped — recorded as such, never guessed
+HJW_TEL_CLASSES="timeout exit-code empty-reply event-failure no-event-stream \
+tracing-error repo-changed detection-unavailable non-git snapshot-unavailable \
+cleanup-failed interrupted model-unavailable other"
+
+hjw_telemetry_state() {
+  # Reset per run, before the traps are armed — cleanup reads all of it.
+  HJW_TEL_ARMED=0
+  HJW_TEL_DONE=0
+  HJW_TEL_DIR=""
+  HJW_TEL_T0=""
+  HJW_TEL_ATTEMPTS=0
+  HJW_TEL_FIELDS=()
+  HJW_TEL_FAILS=()
+  HJW_TEL_REFUSED=0
+  HJW_TEL_CHANGED=0
+  HJW_TEL_SIGNAL=""
+  HJW_TEL_SIGNAL_RC=""
+  HJW_TEL_DUR_TOTAL=""
+  # Vendor disclosures the entrypoint fills in when it HAS them (the claude
+  # runner has no sandbox knob, so its record carries null).
+  HJW_TEL_SANDBOX=""
+}
+
+hjw_telemetry_arm() {
+  # Armed as the LAST step of hjw_common_init. Exits BEFORE this point — bad
+  # arguments, a removed flag, a missing library, an unusable temp dir, a brief
+  # that is not there — write NOTHING: there is no run to account for yet, and
+  # no $LOG to note a skip in either.
+  hjw_telemetry_resolve
+  # $EPOCHSECONDS (bash 5) avoids a process; `date` is the fallback. An
+  # unavailable clock means the helper stamps ts_start with its own now.
+  HJW_TEL_T0="${EPOCHSECONDS:-}"
+  [ -n "$HJW_TEL_T0" ] || HJW_TEL_T0="$(date -u +%s 2>/dev/null)"
+  HJW_TEL_ARMED=1
+}
+
+hjw_telemetry_attempt() {
+  # $@ = `key=value` fields for ONE attempt: model, model_src, effort,
+  # effort_src, child_rc, result and — codex only — events=<path>, from which
+  # the helper reads the thread id and the turn.completed usage verbatim. The
+  # ordinal is added here so a caller can never misnumber an attempt.
+  HJW_TEL_ATTEMPTS=$((HJW_TEL_ATTEMPTS + 1))
+  local f
+  HJW_TEL_FIELDS+=("a${HJW_TEL_ATTEMPTS}.n=$HJW_TEL_ATTEMPTS")
+  for f in "$@"; do HJW_TEL_FIELDS+=("a${HJW_TEL_ATTEMPTS}.$f"); done
+  return 0
+}
+
+hjw_telemetry_fail_class() {
+  # $1 = a fixed class from $HJW_TEL_CLASSES. Validated HERE, not trusted: an
+  # identifier that is not in the set is recorded as `other`, so even a future
+  # caller that passes a message by mistake cannot persist it.
+  case " $HJW_TEL_CLASSES " in
+    *" $1 "*) HJW_TEL_FAILS+=("$1") ;;
+    *)        HJW_TEL_FAILS+=("other") ;;
+  esac
+  return 0
+}
+
+hjw_telemetry_refused() {
+  # $1 = the refusal's class. The OUTCOME stays `refused` (a refusal is not a
+  # reviewer failure); the class says WHICH refusal, in fail_classes.
+  HJW_TEL_REFUSED=1
+  hjw_telemetry_fail_class "$1"
+  return 0
+}
+
+hjw_telemetry_emit() {
+  # $1 = the exit status captured at the TOP of the EXIT trap, before cleanup
+  # ran. Called ONLY from cleanup() — the single owner of the traps — and
+  # guarded by a once-flag, so the INT/TERM -> EXIT re-entry cannot write a
+  # second record for the same run.
+  local rc="$1" outcome out trc f
+  local fc_args=()
+  [ "${HJW_TEL_ARMED:-0}" = 1 ] || return 0
+  [ "${HJW_TEL_DONE:-0}" = 1 ] && return 0
+  HJW_TEL_DONE=1
+  # A signal path ran: the status the trap saw belongs to whatever was
+  # interrupted, so the runner's OWN exit status (130/143) is recorded instead.
+  [ -n "${HJW_TEL_SIGNAL_RC:-}" ] && rc="$HJW_TEL_SIGNAL_RC"
+  if [ -n "${HJW_TEL_SIGNAL:-}" ]; then outcome="interrupted"
+  elif [ "${SNAP_CLEANUP_FAILED:-0}" = 1 ]; then outcome="cleanup-failed"
+  elif [ "${HJW_TEL_REFUSED:-0}" = 1 ]; then outcome="refused"
+  elif [ "${#HJW_TEL_FAILS[@]}" -gt 0 ]; then outcome="failed:${HJW_TEL_FAILS[0]}"
+  elif [ "$rc" = 0 ]; then outcome="ok"
+  # Non-zero with no recorded class: an exit that bypassed both fail() and the
+  # refusal paths (invalid caller input, a missing CLI). `other` — the status
+  # itself is already in runner_rc, and nothing here invents a class for it.
+  else outcome="failed:other"
+  fi
+  if [ -z "${HJW_TEL_DIR:-}" ]; then
+    # Say so once, and only where the caller already has a log: a telemetry
+    # note may never CREATE an artifact the run itself did not produce.
+    [ -f "$LOG" ] && printf '# telemetry: skipped (no haejwo data dir)\n' >> "$LOG" 2>/dev/null
+    return 0
+  fi
+  for f in "${HJW_TEL_FAILS[@]}"; do fc_args+=("fc=$f"); done
+  out="$(bounded 20 python3 "$HJW_LIB/telemetry.py" record "$HJW_TEL_DIR" \
+    "self=$HJW_SELF" "runner=$HJW_RUNNER_KIND" "t0=$HJW_TEL_T0" \
+    "duration_total_s=${HJW_TEL_DUR_TOTAL:-}" \
+    "host_session=${CLAUDE_CODE_SESSION_ID:-}" \
+    "host_effort=${CLAUDE_EFFORT:-}" \
+    "brief_file=${EFFECTIVE_BRIEF:-}" \
+    "snapshot=${SNAPSHOT:-0}" \
+    "sandbox=${HJW_TEL_SANDBOX:-}" \
+    "runner_rc=$rc" "outcome=$outcome" "changed=${HJW_TEL_CHANGED:-0}" \
+    "${fc_args[@]}" "${HJW_TEL_FIELDS[@]}" 2>&1)"
+  trc=$?
+  [ "$trc" -eq 0 ] || [ -n "$out" ] || out="write failed (helper rc=$trc)"
+  [ -n "$out" ] && [ -f "$LOG" ] && printf '# telemetry: %s\n' "$out" >> "$LOG" 2>/dev/null
   return 0
 }
 

@@ -121,7 +121,11 @@ def main():
         # enforced right now, labelled as defaults rather than as a choice.
         if on_codex:
             tiers = (
-                f"codex tiers: deep-reasoner={_default_tier(defaults['deep_reasoner'])}/high, "
+                # deep-reasoner carries NO effort of its own (2.14): it runs at
+                # the HOST's effort, so spawn_agent omits reasoning_effort for it
+                # and the host's own level is what applies.
+                f"codex tiers: deep-reasoner={_default_tier(defaults['deep_reasoner'])}"
+                f"/host effort (omit reasoning_effort), "
                 f"default-worker={_default_tier(defaults['default_worker'])}/medium, "
                 f"task-worker={_default_tier(defaults['task_worker'])}/low "
                 f"(pass reasoning_effort on spawn_agent; omit model to inherit"
@@ -183,7 +187,8 @@ def main():
                 f"'inherit' = omit model; effort overrides need a fresh or "
                 f"partial context fork (fork_turns), never a full-history "
                 f"fork): "
-                f"deep-reasoner={mc.get('deep_reasoner', _mcx['deep_reasoner'])}/high, "
+                f"deep-reasoner={mc.get('deep_reasoner', _mcx['deep_reasoner'])}"
+                f"/host effort (omit reasoning_effort), "
                 f"default-worker={mc.get('default_worker', _mcx['default_worker'])}/medium, "
                 f"task-worker={mc.get('task_worker', _mcx['task_worker'])}/low"
             )

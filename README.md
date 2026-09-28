@@ -7,7 +7,7 @@
 <p align="center"><strong>haejwo — "just handle it."</strong><br><em>you talk; the models work it out among themselves.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/v/tag/jungzuna/haejwo?label=release&color=111111&style=flat-square" alt="release">
+  <img src="https://img.shields.io/github/v/tag/jungzuna/haejwo?label=version&color=111111&style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%C2%B7%20Codex-111111?style=flat-square" alt="hosts">
   <img src="https://img.shields.io/badge/license-Apache--2.0-111111?style=flat-square" alt="Apache-2.0">
 </p>
@@ -16,9 +16,11 @@
 
 [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex) are the official coding harnesses; haejwo doesn't replace them. Install it and it's on — the **cold-start plugin** that makes **multiple models run well on top of them**, with no configuration or workflow commands.
 
-You write the ask as a prompt, however roughly (that's the 해줘); the host plans, delegates across tiers, debates with an independent reviewer, and verifies.
+You write the ask as a prompt, however roughly (that's the 해줘); the host plans, delegates across tiers and verifies — and, once setup enables the reviewer, debates with the other vendor's model.
 
 ## Install
+
+Requires `python3` (CI tests 3.10); the reviewer runners also use Bash and git. Cross-vendor review needs the other vendor's CLI and `/haejwo:setup` verification.
 
 **Claude Code:**
 ```
@@ -28,7 +30,7 @@ You write the ask as a prompt, however roughly (that's the 해줘); the host pla
 /haejwo:setup     # optional — safe defaults already work
 ```
 
-**Codex CLI** (same repo, same hooks — measured-compatible):
+**Codex CLI** (same repo, same hooks; hook compatibility measured live, not yet exercised in real project work):
 ```
 codex plugin marketplace add https://github.com/jungzuna/haejwo
 codex plugin add haejwo@haejwo
@@ -41,9 +43,9 @@ Hooks load at session start — restart the session after install. Local install
 
 **Judgment stays expensive.** The host is always your session's model — haejwo never re-points it — and keeps planning, deciding and review. Feature-scale work starts from a debated plan, and a `PreToolUse` hook **physically** denies the main agent past **N distinct code files per turn** (default 2) and blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
 
-**Execution gets cheap.** Implementation and chores route to configured worker tiers — Opus for `default-worker`, Opus at low effort for `task-worker`, `Budget` (sonnet/haiku) as the opt-in on Claude Code; `spawn_agent` mapping on Codex. Safe defaults (gate ON, 2 files/turn, bash-guard ON) run from the first session, so `/haejwo:setup` is optional.
+**Execution runs at configured tiers.** Implementation and chores route to configured worker tiers — Opus for `default-worker`, Opus at low effort for `task-worker`, `Budget` (sonnet/haiku) as the opt-in on Claude Code; `spawn_agent` mapping on Codex. Safe defaults (gate ON, 2 files/turn, bash-guard ON) run from the first session, so `/haejwo:setup` is optional.
 
-**Review comes from another vendor.** With both CLIs installed — and `/haejwo:setup` run to enable and verify the reviewer, which is OFF by default — the reviewer is the other company's model: codex on Claude Code, claude on Codex. In haejwo's own development the cross-vendor reviewer found six containment gaps that the host's own checks had passed (2.14, three review rounds). Without the second CLI, or before that verification, review falls back to the same-family `deep-reasoner` (weaker independence).
+**Review comes from another vendor.** With both CLIs installed — and `/haejwo:setup` run to enable and verify the reviewer, which is OFF by default — the reviewer is the other company's model: codex on Claude Code, claude on Codex. Without the second CLI, or before that verification, review falls back to the same-family `deep-reasoner` (weaker independence).
 
 Deep dive: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
 
@@ -80,18 +82,13 @@ Boundaries that keep haejwo a lubricant layer, not a harness:
 - Autonomous push/deploy/publish
 - Workflow DSL or ontology framework
 - A second operating architecture (advisor-style cheap-main mode)
-
-**Not planned** (closed, not pending):
-
-- Accepted-outcome economics (cost-per-accepted-outcome scoring)
-- Push-consent nudges beyond the ask-once registry
-- Plan-marker or word-count gates
-- Adaptive or price-based model routing
-- A third host adapter
+- Hard gates on judgment calls (plan markers, report length) — norms and nudges only
 
 ## Verification
 
 `python3 tests/test_hooks.py` — a hermetic, stdlib-only contract suite: gate counting and deny wording, concurrency, bash-guard, codex `apply_patch`, turn reset, manifest sync, mirror drift, rule canaries. Gate any commit on its UNPIPED exit code; CI runs it on every push.
+
+See [Releases](https://github.com/jungzuna/haejwo/releases) for release notes and [tags](https://github.com/jungzuna/haejwo/tags) for every version.
 
 ## License
 

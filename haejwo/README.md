@@ -43,7 +43,7 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 |---|---|
 | `/haejwo:plan <topic>` | Pre-implementation consensus: independent-reviewer debate → agreed plan (conversation-first; file only on request); feature-scale briefs embed it (`Plan:` section) |
 | `/haejwo:setup` | First-run (or re-run) interactive configuration + reviewer probe |
-| `/haejwo:status` | Config, this turn's counter, reviewer readiness, subagent-hook observations |
+| `/haejwo:status` | Config, this turn's counter, reviewer readiness, and this session's observations, anomalies and delegations, plus one machine-wide summary line. |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |
 | `/haejwo:push [auto\|ask]` | Per-repo push consent — outward actions are host-owned, ask-first until granted (registry, not a gate) |
 
@@ -84,7 +84,7 @@ Optional hardening (README-only, not auto-applied): add `permissions.deny` rules
 - A failure the reviewer reports only in its prose is NOT detected, and no validated event-only detector exists for one (measured 2026-09-21 on this runner and the official `codex@openai-codex` plugin: a read-only sandbox failure produced rc 0 and "I cannot read it…" on both paths, with no command events and trivial reasoning tokens). The host reads the reply, always.
 - `claude_consult.sh` has no event-stream classifier.
 - An unselected model is a **`cli-default (identity unverified)`** — the runner does not know which model answered.
-- The Codex-host side (`claude_consult.sh`, `spawn_agent` tiers) is less exercised in the field than the Claude Code side (spawn_agent effort inheritance measured once on 2026-09-21; the rest of the Codex-host path remains less exercised).
+- Codex hook compatibility was measured live, but the Codex-host workflow has not yet been exercised in real project work.
 
 **Knobs**
 - Env wins over config: `CODEX_MODEL`, `CODEX_EFFORT` (runner default **`medium`**), `CODEX_SANDBOX` (`read-only` default / `workspace-write` / `danger-full-access`), `CODEX_TIMEOUT` (seconds; 600 at every effort, `0` = unlimited) — `CLAUDE_MODEL` / `CLAUDE_TIMEOUT` on the claude runner, which has no sandbox or effort knob.
@@ -105,4 +105,4 @@ Optional hardening (README-only, not auto-applied): add `permissions.deny` rules
 The constitution lives in [`PHILOSOPHY.md`](PHILOSOPHY.md) — 13 principles with their origin cases, the precedence order for conflicts, and the docs map. Read it before changing ANYTHING. Prompt & style policy lives in [`PROMPTS.md`](PROMPTS.md) — every prompt surface (commands, agents, rules, hook-emitted messages, script text) follows it; deny-message strings are a tested contract.
 
 ## Verification
-`scripts/` are plain python3 (stdlib only). Run `python3 tests/test_hooks.py` and gate on the UNPIPED exit code — a pipe hides the failure exactly when it matters. The live proof: 3 Edit calls on 3 code files in one turn ⇒ the 3rd denied with the delegation message, and `/haejwo:status` shows whether hooks fire inside subagents on this CLI version.
+Hooks and runner helpers use Python's standard library; the reviewer entrypoints are Bash scripts. Run `python3 tests/test_hooks.py` and gate on the UNPIPED exit code — a pipe hides the failure exactly when it matters. The live proof: 3 Edit calls on 3 code files in one turn ⇒ the 3rd denied with the delegation message, and `/haejwo:status` shows whether hooks fire inside subagents on this CLI version.

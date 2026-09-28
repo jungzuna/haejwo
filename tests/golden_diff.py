@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Golden differential harness for the two reviewer runners (2.13 step 2).
+"""Golden differential harness for the two reviewer runners (2.14.0 baseline).
 
 WHY
-    tests/baseline/2.13-step1/ holds a byte-exact copy of
-    `haejwo/scripts/codex_consult.sh` and `claude_consult.sh` as they stood at
-    commit 6d09729 — the two runners BEFORE the shared-internals extraction.
-    Every scenario below runs TWICE, once against that frozen baseline and
-    once against the working-tree scripts, in two separately built, identical
-    environments; every observable byte is then compared. Anything the
-    refactor changes that is not explained by one of the documented
-    normalizations below is a FAILURE.
+    tests/baseline/2.14.0/ holds a byte-exact copy of the reviewer
+    ENTRYPOINTS (`haejwo/scripts/codex_consult.sh`, `claude_consult.sh`) AND of
+    the complete `haejwo/scripts/lib/` they resolve, as they stood at commit
+    94eadbc — the validated 2.14.0 release. Every scenario below runs TWICE,
+    once against that frozen baseline and once against the working-tree
+    scripts, in two separately built, identical environments; every observable
+    byte is then compared. Anything a later change makes differ that is not
+    explained by one of the documented normalizations below is a FAILURE.
 
-    It exists to gate the extraction: the extraction must be provably
-    behavior-preserving, not plausibly so.
+    It exists to gate refactors: a refactor must be provably
+    behavior-preserving, not plausibly so. The baseline is re-frozen only
+    against a release that this harness has already validated, and re-freezing
+    it retires the ledger (see WHAT IS ACCEPTED) — the frozen bytes and the
+    working tree agree again, so nothing is accepted.
+
+    The bundle carries `lib/` because an entrypoint resolves `$HJW_LIB` next to
+    ITSELF (`${HJW_SELF%/*}/lib`): the baseline therefore executes the frozen
+    library, never the working tree's. `_verify_baseline` proves that rather
+    than assuming it.
 
 WHAT IS COMPARED (G3/H4)
     exit code; stdout and stderr as SEPARATE channels (plus, for the cleanup
@@ -52,35 +60,43 @@ WHAT IS NORMALIZED (G4/H1) — and NOTHING else
     N4  (folded into N3's designation list) the recorded descendant pid.
     N5  native shell diagnostic source locations (`<script>: line N:`), and
         ONLY for the explicitly enumerated relocated operations in
-        N5_RELOCATED. The 2.13 extraction moved mechanics into scripts/lib but
-        left every operation a fixture drives into bash's OWN diagnostics in
-        the ENTRYPOINT, so the source FILE NAME is unchanged on both sides and
-        only the line number moved. Scope, three conditions, ALL required:
-        the scenario is flagged `native_diagnostics`; the item is one of the
-        runner's own channels (stdout/stderr/combined) or the artifact that
-        IS its log, identified by the log's own header line rather than by a
-        `.log` suffix (`-o x.log` puts that suffix on the REPLY);
-        and the prefix is the RECORDED runner script path — the `{scripts}`
-        token followed by `/codex_consult.sh: line ` or
-        `/claude_consult.sh: line `, never a bare filename. A quoted
-        `codex_consult.sh: line 10:` in a reply, in a captured brief, or in a
-        scenario that asserts no diagnostics is compared byte for byte.
+        N5_RELOCATED — EMPTY at the 2.14.0 baseline, because nothing has moved
+        since it was frozen: every line number is compared exactly. The
+        machinery stays for the next refactor that relocates an operation bash
+        names in its own diagnostics, and `_N5_PROBE` keeps it honest (see
+        below). Scope, three conditions, ALL required: the scenario is flagged
+        `native_diagnostics`; the item is one of the runner's own channels
+        (stdout/stderr/combined) or the artifact that IS its log, identified by
+        the log's own header line rather than by a `.log` suffix (`-o x.log`
+        puts that suffix on the REPLY); and the prefix is the RECORDED runner
+        script path — the `{scripts}` token followed by
+        `/codex_consult.sh: line ` or `/claude_consult.sh: line `, never a bare
+        filename. A quoted `codex_consult.sh: line 10:` in a reply, in a
+        captured brief, or in a scenario that asserts no diagnostics is
+        compared byte for byte.
 
-WHAT IS ACCEPTED (2.13, 2.14) — and nothing else
+WHAT IS ACCEPTED (2.14.0: NOTHING)
     ACCEPTED_DIFFERENCES is the complete, hand-written ledger of differences
     the working tree is allowed to show against the frozen baseline, keyed by
-    scenario + item with a predicate. It is asserted to hold exactly its
-    documented entries, and the run reports how many of them it actually needed.
-    Each 2.14 entry enumerates its substitution LITERALLY and then demands byte
-    equality, so an unrelated change in the same item still fails.
+    scenario + item with a predicate. Re-freezing the baseline on the 2.14.0
+    release retired every entry the 2.13/2.14 work had earned (the bounded
+    wrapper, the runner-default effort substitution): the frozen bytes ARE the
+    working tree's, so the ledger is EMPTY and the run reports 0 accepted
+    differences exercised. A future refactor adds entries here by hand; each
+    must enumerate its substitution LITERALLY and then demand byte equality, so
+    an unrelated change in the same item still fails. `_LEDGER_PROBE` — a
+    self-test fixture, never consulted by a real comparison — keeps that
+    machinery proven while the live ledger is empty.
 
 OUTSIDE THE BYTE COMPARISON (2.14)
-    The consult-telemetry record is NOT a compared item — the baseline runners
-    have none, so comparing it would be meaningless. What IS asserted per
-    scenario is its CONTAINMENT: no `consults.jsonl` anywhere under the artifact
-    or temp directories, on either side. Two scenarios pin the non-vacuity of
-    that assertion (a clean run writes exactly one record; a pre-init refusal
-    writes none).
+    The consult-telemetry record is NOT a compared item: it carries a wall
+    clock and a host session id, so comparing it byte for byte would compare
+    noise. What IS asserted per scenario is its CONTAINMENT: no
+    `consults.jsonl` anywhere under the artifact or temp directories, on either
+    side. Two scenarios pin the non-vacuity of that assertion — a clean run
+    writes exactly ONE record on EACH side, into that side's own haejwo-named
+    config dir (which is also how the baseline proves it executed the BUNDLED
+    `lib/telemetry.py`), and a pre-init refusal writes none.
 
     Tokens are emitted between private-use-area markers (U+E000/U+E001) that
     cannot occur in the captured bytes, and any item that ALREADY carries a
@@ -107,18 +123,32 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-BASELINE_COMMIT = "6d09729b6cdcec628941349fb2582c40650eea86"
-BASELINE_SHORT = "6d09729"
-# H3: the expected bytes are pinned HERE, in code, as well as in the bundle's
-# SHA256SUMS. A bundle edited together with its own checksum file still fails.
-BASELINE_SHA256 = {
-    "codex_consult.sh": "c95846b8d3012b85fbf7698d7fb42d4655bb16b0f17d2a23876accc5e08f220d",
-    "claude_consult.sh": "2a838332e4fc2171a0f0e56832932bd97376ebd072f49974ecfd8834665c1873",
-}
+BASELINE_COMMIT = "94eadbc477013c58315c60432554b854e4bd4dd3"
+BASELINE_SHORT = "94eadbc"
 HERE = os.path.dirname(os.path.abspath(__file__))
-BASELINE_DIR = os.path.join(HERE, "baseline", "2.13-step1")
+BASELINE_DIR = os.path.join(HERE, "baseline", "2.14.0")
 REPO_ROOT = os.path.dirname(HERE)
+# The two entrypoints and the complete library they resolve. `LIB_FILES` is
+# spelled in the order the entrypoints' own preflight checks it, and the bundle
+# mirrors `haejwo/scripts/` exactly (`lib/` included), so a baseline run
+# resolves the FROZEN library — see `_verify_baseline`.
 RUNNER_FILES = ("codex_consult.sh", "claude_consult.sh")
+LIB_FILES = ("lib/consult_common.sh", "lib/bounded.py", "lib/snapshot.py",
+             "lib/detect.py", "lib/config.py", "lib/telemetry.py")
+BUNDLED_FILES = RUNNER_FILES + LIB_FILES
+# H3: the expected bytes are pinned HERE, in code, for EVERY bundled file, as
+# well as in the bundle's SHA256SUMS. A bundle edited together with its own
+# checksum file still fails.
+BASELINE_SHA256 = {
+    "codex_consult.sh": "3fa7a8532b6c67e3dedcc3ee706d3c8b2c204537b1637cd419246c3f3f865488",
+    "claude_consult.sh": "68eb59ef864be73d38ffb284d5fd9ab19668d3225a52b463127848797b96377f",
+    "lib/consult_common.sh": "bc5b83d771b1b463a319c2510b96b97a9a384fabdfb972ae4d8c5d0bd77cc73f",
+    "lib/bounded.py": "a82b562a6a54798ac5d4b5f151906c09df5ccd5cf5d6d09e43fd8dc516b63a71",
+    "lib/snapshot.py": "94fce1b9ee18c7d9a2d501fcd801cce1e21cc7747bece133d0b64be71351baff",
+    "lib/detect.py": "073a40b6bcb1a1b43550505250b9e1cc226a37cb780e535121113c92d619be2b",
+    "lib/config.py": "6daf21dc7fb1b2b77ff560e3e602e5bd3933debd26909e9b146a77209685c8e5",
+    "lib/telemetry.py": "7a0dc4942ab610183b33ae6a3d759db9e8fa73dc2c6f29b3b4b4c568cb4fe51d",
+}
 
 # Fixed git identity AND dates. The scratch repositories' commit ids are part
 # of the compared output (`snapshot=<sha7>`, `HEAD a→b`, `git worktree list`),
@@ -135,10 +165,11 @@ GIT_FIXED = {
 
 # Every env var either runner reads: popped from the inherited environment so
 # an ambient value can never reach one side only. CODEX_ALLOW_MARKERS stays on
-# this list although 2.14 deleted it from the working-tree runner — the FROZEN
-# baseline still reads it, so an ambient value would reach exactly one side.
-# CLAUDE_CODE_SESSION_ID / CLAUDE_EFFORT are read by the 2.14 telemetry record
-# (candidate side only), and popping them keeps that record deterministic too.
+# this list although 2.14 deleted the knob from both sides: popping a variable
+# neither side reads costs nothing, and it keeps the list a superset while any
+# older tree is ever compared. CLAUDE_CODE_SESSION_ID / CLAUDE_EFFORT are read
+# by the telemetry record both sides now write, and popping them keeps that
+# record deterministic too.
 RUNNER_ENV_VARS = ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX", "CLAUDE_MODEL",
                    "CODEX_ALLOW_MARKERS", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
                    "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT")
@@ -180,12 +211,39 @@ def _dec(data):
 # --------------------------------------------------------------------------
 # G1/H3 — baseline provenance
 # --------------------------------------------------------------------------
+def _lib_resolution_is_script_relative(check, scripts_root):
+    """PROVE that an entrypoint resolves `lib/` next to ITSELF, so the mirror's
+    complete `lib/` is necessarily the one a baseline run executes and the
+    working tree's can never be reached: the same two frozen entrypoints,
+    copied WITHOUT a lib/, must refuse with THAT COPY's own path.
+
+    The preflight runs before any argument is parsed, so no fixture, stub or
+    repository is needed — and the refusal names the directory it looked in,
+    which is the assertion."""
+    probe = os.path.join(scripts_root, "lib-resolution-probe", "scripts")
+    os.makedirs(probe, exist_ok=True)
+    bad = []
+    for name in RUNNER_FILES:
+        shutil.copy2(os.path.join(BASELINE_DIR, name), os.path.join(probe, name))
+    for name in RUNNER_FILES:
+        p = subprocess.run(["bash", os.path.join(probe, name)],
+                           capture_output=True, cwd=scripts_root, timeout=60)
+        want = "consult runner library missing: %s/%s" % (probe, LIB_FILES[0])
+        if p.returncode != 3 or want not in _dec(p.stderr):
+            bad.append("%s: rc=%d stderr=%r" % (name, p.returncode, _dec(p.stderr)[:200]))
+    check("golden: a baseline entrypoint resolves lib/ next to ITSELF (a copy "
+          "without lib/ refuses, naming its own directory)", not bad, "; ".join(bad))
+    return not bad
+
+
 def _verify_baseline(check, scripts_root):
-    """Verify the bundled baseline against the digests pinned in THIS file and
-    against the bundle's SHA256SUMS, and — when the git history is present —
-    against the commit itself. CI checks out shallow, so `git show <old sha>`
-    is NOT available there; that case prints one line and continues on the
-    bundled bytes, which both digest sources still pin."""
+    """Verify the bundled baseline — both entrypoints AND the complete lib/ they
+    resolve — against the digests pinned in THIS file and against the bundle's
+    SHA256SUMS, and, when the git history is present, against the commit itself:
+    that the bytes match AND that the bundle is COMPLETE (every file under
+    `haejwo/scripts/lib/` at that commit is in it). CI checks out shallow, so
+    `git show <old sha>` is NOT available there; that case prints one line and
+    continues on the bundled bytes, which both digest sources still pin."""
     sums_path = os.path.join(BASELINE_DIR, "SHA256SUMS")
     try:
         sums_text = open(sums_path, encoding="utf-8").read()
@@ -201,19 +259,25 @@ def _verify_baseline(check, scripts_root):
             want[line.split()[-1]] = line.split()[0]
     check("golden: SHA256SUMS pins the frozen baseline commit %s" % BASELINE_SHORT,
           commit == BASELINE_COMMIT, commit)
+    # Neither digest source may cover a different file set than the other, or a
+    # forgotten pin would silently leave a bundled file unverified.
+    check("golden: every bundled file is pinned in code AND listed in SHA256SUMS",
+          sorted(BASELINE_SHA256) == sorted(BUNDLED_FILES) == sorted(want),
+          "code=%s sums=%s" % (sorted(BASELINE_SHA256), sorted(want)))
 
     bad = []
-    for name in RUNNER_FILES:
+    for name in BUNDLED_FILES:
         try:
             got = hashlib.sha256(_read_bytes(os.path.join(BASELINE_DIR, name))).hexdigest()
         except Exception as exc:
             bad.append("%s: %s" % (name, exc))
             continue
-        if got != BASELINE_SHA256[name]:
-            bad.append("%s: %s != pinned %s" % (name, got, BASELINE_SHA256[name]))
+        if got != BASELINE_SHA256.get(name):
+            bad.append("%s: %s != pinned %s" % (name, got, BASELINE_SHA256.get(name)))
         if got != want.get(name):
             bad.append("%s: %s != SHA256SUMS %s" % (name, got, want.get(name)))
-    check("golden: bundled baseline matches BOTH the pinned digests and SHA256SUMS",
+    check("golden: all %d bundled baseline files match BOTH the pinned digests "
+          "and SHA256SUMS" % len(BUNDLED_FILES),
           not bad and commit == BASELINE_COMMIT, "; ".join(bad))
     if bad or commit != BASELINE_COMMIT:
         return False, ""
@@ -223,7 +287,7 @@ def _verify_baseline(check, scripts_root):
         cwd=REPO_ROOT, capture_output=True).returncode == 0
     if have_history:
         drift = []
-        for name in RUNNER_FILES:
+        for name in BUNDLED_FILES:
             p = subprocess.run(["git", "show", "%s:haejwo/scripts/%s" % (BASELINE_COMMIT, name)],
                                cwd=REPO_ROOT, capture_output=True)
             if p.returncode != 0:
@@ -234,15 +298,36 @@ def _verify_baseline(check, scripts_root):
               not drift, "; ".join(drift))
         if drift:
             return False, ""
+        # COMPLETENESS: the commit's own tree decides what `lib/` contains, so a
+        # library file added there but never bundled is caught here rather than
+        # by a baseline that silently ran with a shorter library.
+        p = subprocess.run(["git", "ls-tree", "-r", "--name-only", BASELINE_COMMIT,
+                            "--", "haejwo/scripts/"], cwd=REPO_ROOT, capture_output=True)
+        tree = [n[len("haejwo/scripts/"):] for n in _dec(p.stdout).split("\n") if n]
+        expect = sorted(set(RUNNER_FILES) | set(n for n in tree if n.startswith("lib/")))
+        check("golden: the bundle holds both entrypoints and EVERY lib/ file of %s"
+              % BASELINE_SHORT, p.returncode == 0 and expect == sorted(BUNDLED_FILES),
+              "tree=%s bundled=%s" % (expect, sorted(BUNDLED_FILES)))
+        if expect != sorted(BUNDLED_FILES):
+            return False, ""
     else:
         print("  baseline: bundled bytes only (git history unavailable)")
 
-    # The baseline runs from a directory that MIRRORS haejwo/scripts/, so any
-    # relative lookup a runner makes behaves exactly as it does in the repo.
+    # The baseline runs from a directory that MIRRORS haejwo/scripts/ — lib/
+    # INCLUDED — so every lookup a runner makes behaves exactly as it does in
+    # the repo, and the library it resolves is the FROZEN one.
     mirror = os.path.join(scripts_root, "haejwo", "scripts")
-    os.makedirs(mirror, exist_ok=True)
-    for name in RUNNER_FILES:
-        shutil.copy2(os.path.join(BASELINE_DIR, name), os.path.join(mirror, name))
+    for name in BUNDLED_FILES:
+        dest = os.path.join(mirror, name)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(os.path.join(BASELINE_DIR, name), dest)
+    missing = [n for n in BUNDLED_FILES if not os.path.isfile(os.path.join(mirror, n))]
+    check("golden: the baseline mirror reproduces haejwo/scripts/ including lib/ "
+          "(lib/telemetry.py present)",
+          not missing and os.path.isfile(os.path.join(mirror, "lib", "telemetry.py")),
+          str(missing))
+    if missing or not _lib_resolution_is_script_relative(check, scripts_root):
+        return False, ""
     return True, mirror
 
 
@@ -310,28 +395,31 @@ _PID_RE = re.compile(r"\A\d+\Z")
 RUNNER_CHANNELS = ("stdout", "stderr", "combined")
 
 # N5: shell diagnostics (`<script>: line N: ...`) whose line number legitimately
-# moves because the operation was RELOCATED by the extraction. Each entry names
-# the operations it covers and is reviewed by hand.
+# moves because the operation was RELOCATED since the baseline was frozen. Each
+# entry names the operations it covers and is reviewed by hand.
 #
-# 2.13 (shared internals -> scripts/lib) moved code OUT of both entrypoints,
-# which shifts the line numbers of everything below it. Three operations are
-# driven into bash's own diagnostics by the fixtures, and ALL THREE stayed in
-# the entrypoint — they are redirections whose target is the caller's own
-# artifact, and the vendor-owned $LOG / REVIEWER CONTRACT are what they write:
-#   1. the log header write        `} > "$LOG"`               (artifact-inside)
-#   2. the effective brief write   `} > "$EFFECTIVE_BRIEF"`   (brief-unwritable)
-#   3. the snapshot-note rewrite   `} > "$EFFECTIVE_BRIEF"`   (brief-unwritable)
-# So the source FILE NAME is `<runner>_consult.sh` on both sides and only the
-# number moved. The pattern is anchored to the RECORDED scripts directory (the
-# N1 token, so a bare `codex_consult.sh` in prose can never match), to the
-# runner file name, and to bash's cannot-open-this-redirection message — so
-# nothing else (a command that failed to run, a library diagnostic, a quoted
-# example) is normalized by it. `_n5_shell_lines` adds the two remaining
-# scope conditions: the scenario must be flagged `native_diagnostics` and the
-# item must be a runner channel or the runner's log. A diagnostic that moved
-# INTO scripts/lib would still fail the comparison, which is the point: the
-# `native_diagnostics` assertion below must keep binding.
-N5_RELOCATED = (
+# EMPTY at the 2.14.0 baseline: the frozen entrypoints ARE the working tree's,
+# so every source location is compared exactly, line number included. The 2.13
+# entry (the extraction shifted the line numbers of three redirections that
+# stayed in the entrypoint — the log header write and the two effective-brief
+# writes) is retired with the re-freeze; git history keeps it.
+#
+# A future entry must keep the same anchoring, which the invariant in `run()`
+# asserts: the RECORDED scripts directory (the N1 token, so a bare
+# `codex_consult.sh` in prose can never match), the runner file name, and the
+# specific diagnostic — so nothing else (a command that failed to run, a library
+# diagnostic, a quoted example) is normalized by it. `_n5_shell_lines` adds the
+# two remaining scope conditions: the scenario must be flagged
+# `native_diagnostics` and the item must be a runner channel or the runner's
+# log. A diagnostic that moved INTO scripts/lib would still fail the comparison,
+# which is the point: the `native_diagnostics` assertion below must keep binding.
+N5_RELOCATED = ()
+
+# The retired 2.13 pattern, kept as a SELF-TEST fixture only: with the live
+# enumeration empty, this is what keeps `_n5_shell_lines` proven to map a line
+# number where its three conditions hold — and to leave everything else alone
+# (see `_negative_controls`). It is never consulted by a real comparison.
+_N5_PROBE = (
     r"(?m)" + re.escape(_tok("scripts"))
     + r"/(?:codex|claude)_consult\.sh: line \d+:"
       r"(?=[^\n]*: (?:Is a directory|No such file or directory)$)",
@@ -363,25 +451,16 @@ def _log_items(capture):
 _ACCEPTED_USED = []
 
 
-def _only_bounded_wrapper_removed(base_text, cand_text, ctx):
-    """2.13: the wall clock is `scripts/lib/bounded.py`, a file the runner
-    READS — the baseline wrote a per-run copy (`hjw_bounded.XXXXXX.py`) and
-    deleted it again. A clean run therefore shows the same (empty) inventory
-    on both sides; this predicate only tolerates the case where a fixture ever
-    catches the wrapper mid-life, and it tolerates NOTHING else in the item."""
-    base_lines = base_text.split("\n")
-    kept = [l for l in base_lines if "hjw_bounded." not in l]
-    return len(kept) != len(base_lines) and kept == cand_text.split("\n")
-
-
-# 2.14 (owner effort policy): the runner-default reviewer effort is `medium`,
-# not `high`. These three tokens are the COMPLETE list of bytes that may move
-# with it — the start/result lines, the log header and attempt lines, the
+# The 2.14 effort substitution, now a SELF-TEST fixture only (see _LEDGER_PROBE):
+# the runner-default reviewer effort was `high` at the 2.13 baseline and is
+# `medium` from 2.14 on. These three tokens are the COMPLETE list of bytes that
+# moved with it — the start/result lines, the log header and attempt lines, the
 # `-c model_reasoning_effort` argv element, and the invalid-config note. Each
 # predicate applies exactly these substitutions to the BASELINE text and then
 # demands byte equality, so nothing else can ride along inside the same item.
-# The wall clock is NOT in this list: 2.14 decoupled the timeout from effort and
-# the default is still 600s, so every `timeout=600s` token stays exact.
+# The re-freeze retired these entries from the live ledger; they stay here as the
+# worked example the probes exercise, so the machinery cannot rot before the next
+# refactor needs it.
 _EFFORT_2_14 = (
     ("effort=high (runner-default)", "effort=medium (runner-default)"),
     ('model_reasoning_effort="high"', 'model_reasoning_effort="medium"'),
@@ -474,10 +553,21 @@ def _log_entry_grew(base_text, cand_text, ctx):
     return changed == 1
 
 
-ACCEPTED_DIFFERENCES = (
-    ("*", "tmp/inventory(name,type,mode,size)", _only_bounded_wrapper_removed,
-     "2.13: the bounded wrapper is scripts/lib/bounded.py, not a temp copy the "
-     "runner allocates and deletes on every run"),
+# EMPTY at the 2.14.0 baseline: the frozen bytes ARE the working tree's, so
+# there is nothing to accept and the run must report 0 exercised. The 2.13/2.14
+# entries it used to hold — the bounded wrapper's temp copy, the runner-default
+# effort substitution in four items, and the note that the missing-library
+# refusal is a NEW scenario with no counterpart (covered by tests/test_hooks.py)
+# — are retired with the re-freeze; git history keeps them. A future refactor
+# adds its own entries here, by hand.
+ACCEPTED_DIFFERENCES = ()
+
+# The retired 2.14 effort entries, kept as a SELF-TEST fixture: the ledger
+# machinery (`_accepted`, `_item_named`, the predicates and their ctx) is only
+# worth having if it is proven to bind for an enumerated entry and to REJECT its
+# neighbours, and an empty live ledger cannot prove either. The probes in
+# `_negative_controls` install THIS tuple; no real comparison ever sees it.
+_LEDGER_PROBE = (
     ("*", re.compile(r"\A(?:stdout|stderr|combined)\Z"), _effort_default_medium,
      "2.14: runner-default effort high -> medium, on the runner's own start / "
      "result / invalid-config-note lines"),
@@ -490,13 +580,6 @@ ACCEPTED_DIFFERENCES = (
     ("*", "tmp/inventory(name,type,mode,size)", _log_entry_grew,
      "2.14: the stdin-brief fixture's log lives in TMPDIR, so the effort token "
      "above moves its recorded size"),
-    # The missing-library failure path (`consult runner library missing: <path>`,
-    # exit 3, zero CLI calls) is a NEW scenario, not a changed one: the 6d09729
-    # runners had no library to miss, so there is no baseline counterpart to
-    # compare against. Both runners' fixtures for it live in tests/test_hooks.py.
-    ("*", None, None,
-     "2.13: `consult runner library missing:` has no 6d09729 counterpart — it is "
-     "a NEW scenario, covered by tests/test_hooks.py, never by this differential"),
 )
 
 
@@ -748,6 +831,28 @@ def _differences(base, cand, scenario=None):
 def _compare(base, cand, scenario=None):
     ok, detail, _ = _differences(base, cand, scenario)
     return ok, detail
+
+
+def _probe_differences(base, cand, scenario=None, accepted=(), n5=()):
+    """SELF-TESTS ONLY: compare with an INJECTED enumeration in place of the live
+    (empty) ACCEPTED_DIFFERENCES / N5_RELOCATED.
+
+    Both enumerations are empty at a freshly frozen baseline, so neither can be
+    exercised by a real run — and a mechanism nothing exercises is a mechanism
+    nobody notices breaking. The probes therefore install a hand-written
+    enumeration (`_LEDGER_PROBE`, `_N5_PROBE`), assert that it BINDS and that its
+    neighbours are still REPORTED, and hand the live tuples back. `_ACCEPTED_USED`
+    is restored too, so a probe's acceptance can never be counted among the
+    accepted differences this run needed. Single-threaded by construction: every
+    caller is in `_negative_controls`, which runs before the pool starts."""
+    global ACCEPTED_DIFFERENCES, N5_RELOCATED
+    live = (ACCEPTED_DIFFERENCES, N5_RELOCATED, list(_ACCEPTED_USED))
+    ACCEPTED_DIFFERENCES, N5_RELOCATED = accepted, n5
+    try:
+        return _differences(base, cand, scenario)
+    finally:
+        ACCEPTED_DIFFERENCES, N5_RELOCATED = live[0], live[1]
+        _ACCEPTED_USED[:] = live[2]
 
 
 # --------------------------------------------------------------------------
@@ -1048,7 +1153,7 @@ def _prepare(scen, runner, side, scripts_dir, root, tk):
     args += list(scen.get("args", []))
     args.append(brief_arg)
 
-    # relocation (H7): the COMPLETE tree travels, so a future lib/ goes with it
+    # relocation (H7): the COMPLETE tree travels, so scripts/lib goes with it
     eff_scripts = scripts_dir
     if scen.get("relocate") == "space":
         eff_scripts = os.path.join(run_dir, "re located tree", "haejwo", "scripts")
@@ -1481,49 +1586,63 @@ def _negative_controls(check):
     check("golden: the capture window IS normalized on the runner's snapshot-note line",
           ok, detail)
 
-    # (J2) N5 scope. The mapping applies ONLY in a scenario that asserts
-    # native diagnostics, ONLY in the runner's own channels / its log, and
-    # ONLY behind the RECORDED runner script path. Each control below breaks
-    # exactly one of those three conditions and must be REPORTED.
+    # (J2) N5 scope, probed against the INJECTED `_N5_PROBE` enumeration: the
+    # live one is empty at the 2.14.0 baseline (nothing has moved), and a scope
+    # control that runs with the mechanism switched off proves nothing. The
+    # mapping applies ONLY in a scenario that asserts native diagnostics, ONLY in
+    # the runner's own channels / its log, and ONLY behind the RECORDED runner
+    # script path. Each control below breaks exactly one of those three
+    # conditions and must be REPORTED.
     scripts = "/golden/haejwo/scripts"
     scripts_known = [(scripts, "scripts")]
     real = "%s/codex_consult.sh: line %d: /blk: Is a directory\n"
     quoted = "Quoted example: codex_consult.sh: line %d: x: Is a directory\n"
 
-    ok, detail, _ = _differences(
+    ok, detail, _ = _probe_differences(
+        _synthetic([("stderr", real % (scripts, 340))], known=scripts_known,
+                   native_diag=True),
+        _synthetic([("stderr", real % (scripts, 242))], known=scripts_known,
+                   native_diag=True), n5=_N5_PROBE)
+    check("golden: N5 maps the line number of the RECORDED runner path in a "
+          "native-diagnostics scenario", ok, detail)
+    # ...and with the LIVE (empty) enumeration it maps nothing at all.
+    ok, _, diffs = _differences(
         _synthetic([("stderr", real % (scripts, 340))], known=scripts_known,
                    native_diag=True),
         _synthetic([("stderr", real % (scripts, 242))], known=scripts_known,
                    native_diag=True))
-    check("golden: N5 maps the line number of the RECORDED runner path in a "
-          "native-diagnostics scenario", ok, detail)
+    check("golden: with N5_RELOCATED empty, a moved line number is REPORTED",
+          not ok and diffs == ["stderr"], "diffs=%s" % (diffs,))
 
     for label, item in (("a reply artifact", "artifacts@%s/brief.reply.md" % scripts),
                         ("captured stdin", "calls/1.stdin")):
-        ok, _, _ = _differences(
+        ok, _, _ = _probe_differences(
             _synthetic([(item, real % (scripts, 340))], known=scripts_known,
                        native_diag=True),
             _synthetic([(item, real % (scripts, 242))], known=scripts_known,
-                       native_diag=True))
+                       native_diag=True), n5=_N5_PROBE)
         check("golden negative control: N5 never reaches %s" % label, not ok,
               "the harness called two different line numbers identical")
-        ok, _, _ = _differences(
+        ok, _, _ = _probe_differences(
             _synthetic([(item, quoted % 10)], known=scripts_known, native_diag=True),
-            _synthetic([(item, quoted % 999)], known=scripts_known, native_diag=True))
+            _synthetic([(item, quoted % 999)], known=scripts_known, native_diag=True),
+            n5=_N5_PROBE)
         check("golden negative control: a QUOTED `codex_consult.sh: line N:` in %s "
               "is not normalized away" % label, not ok,
               "the harness called two different quoted examples identical")
 
-    ok, _, _ = _differences(
+    ok, _, _ = _probe_differences(
         _synthetic([("stdout", quoted % 10)], known=scripts_known, native_diag=True),
-        _synthetic([("stdout", quoted % 999)], known=scripts_known, native_diag=True))
+        _synthetic([("stdout", quoted % 999)], known=scripts_known, native_diag=True),
+        n5=_N5_PROBE)
     check("golden negative control: a QUOTED bare `codex_consult.sh: line N:` on the "
           "runner's own stdout is not normalized away", not ok,
           "a bare filename matched without the recorded scripts path")
 
-    ok, _, _ = _differences(
+    ok, _, _ = _probe_differences(
         _synthetic([("stdout", real % (scripts, 340))], known=scripts_known),
-        _synthetic([("stdout", real % (scripts, 242))], known=scripts_known))
+        _synthetic([("stdout", real % (scripts, 242))], known=scripts_known),
+        n5=_N5_PROBE)
     check("golden negative control: N5 is inert in a scenario that asserts no native "
           "diagnostics", not ok, "N5 fired outside a native_diagnostics scenario")
 
@@ -1533,22 +1652,22 @@ def _negative_controls(check):
     hdr = "# codex_consult v0.4  mode=consult timeout=600s  Thu Jan  1 00:00:00 2026\n"
     alias_reply = "artifacts@%s/x.log" % scripts
     alias_log = "artifacts@%s/x.log.log" % scripts
-    ok, _, _ = _differences(
+    ok, _, _ = _probe_differences(
         _synthetic([(alias_reply, real % (scripts, 340)),
                     (alias_log, hdr + real % (scripts, 340))],
                    known=scripts_known, native_diag=True),
         _synthetic([(alias_reply, real % (scripts, 242)),
                     (alias_log, hdr + real % (scripts, 340))],
-                   known=scripts_known, native_diag=True))
+                   known=scripts_known, native_diag=True), n5=_N5_PROBE)
     check("golden negative control: N5 never reaches a reply written to x.log",
           not ok, "a `-o x.log` reply was normalized as if it were the log")
-    ok, detail, _ = _differences(
+    ok, detail, _ = _probe_differences(
         _synthetic([(alias_reply, real % (scripts, 340)),
                     (alias_log, hdr + real % (scripts, 340))],
                    known=scripts_known, native_diag=True),
         _synthetic([(alias_reply, real % (scripts, 340)),
                     (alias_log, hdr + real % (scripts, 242))],
-                   known=scripts_known, native_diag=True))
+                   known=scripts_known, native_diag=True), n5=_N5_PROBE)
     check("golden: N5 still maps the line number inside the REAL log (x.log.log)",
           ok, detail)
 
@@ -1575,11 +1694,14 @@ def _negative_controls(check):
     check("golden token: tokens are emitted inside private-use markers",
           MARK_OPEN in norm and MARK_CLOSE in norm and "hjw_snap.aaaaaa" not in norm, norm)
 
-    # (S4) LEDGER REJECTION PROBES. Each accepted difference is an enumerated
-    # substitution, so each must be shown to REJECT the neighbouring case — a
-    # ledger that tolerates the wrong number, the wrong scenario or the wrong
-    # item is not an enumeration, it is a hole. The ledger is ON for all of
-    # these (a scenario dict is passed); every one must still be REPORTED.
+    # (S4) LEDGER REJECTION PROBES, against the INJECTED `_LEDGER_PROBE`
+    # enumeration: the live ledger is empty at the 2.14.0 baseline, so the
+    # machinery has no live entry to exercise and these probes are what keep it
+    # honest. Each accepted difference is an enumerated substitution, so each must
+    # be shown to REJECT the neighbouring case — a ledger that tolerates the wrong
+    # number, the wrong scenario or the wrong item is not an enumeration, it is a
+    # hole. The ledger is ON for all of these (a scenario dict is passed); every
+    # rejection probe must still be REPORTED.
     rd = {"name": "file-brief-clean"}                       # runner-default
     pinned = {"name": "file-brief-clean", "env": {"CODEX_EFFORT": "high"}}
     cfg_pinned = {"name": "file-brief-clean",
@@ -1600,11 +1722,16 @@ def _negative_controls(check):
 
     # the size predicate ACCEPTS only the exact delta the substitution implies
     a, b = _inv_pair(100, 102)
-    ok, detail, _ = _differences(a, b, rd)
+    ok, detail, _ = _probe_differences(a, b, rd, accepted=_LEDGER_PROBE)
     check("golden ledger: the log's size moving by EXACTLY the substituted bytes "
           "is accepted", ok, detail)
-    a, b = _inv_pair(100, 999999)
+    # ...and with the LIVE (empty) ledger the very same pair is REPORTED.
     ok, _, diffs = _differences(a, b, rd)
+    check("golden: with ACCEPTED_DIFFERENCES empty, an enumerated 2.14 difference is "
+          "REPORTED", not ok and "tmp/inventory(name,type,mode,size)" in diffs,
+          "diffs=%s" % (diffs,))
+    a, b = _inv_pair(100, 999999)
+    ok, _, diffs = _probe_differences(a, b, rd, accepted=_LEDGER_PROBE)
     check("golden ledger PROBE: a log size of 100 -> 999999 is REPORTED",
           not ok and "tmp/inventory(name,type,mode,size)" in diffs,
           "a wrong size delta was accepted: %s" % (diffs,))
@@ -1618,7 +1745,7 @@ def _negative_controls(check):
                     ("tmp/inventory(name,type,mode,size)",
                      "%s type=file mode=0600 size=102"
                      % repr(reply_item[len("artifacts@"):]))])
-    ok, _, diffs = _differences(a, b, rd)
+    ok, _, diffs = _probe_differences(a, b, rd, accepted=_LEDGER_PROBE)
     check("golden ledger PROBE: a NON-log entry changing size is REPORTED",
           not ok and "tmp/inventory(name,type,mode,size)" in diffs,
           "a reply artifact's size change was accepted: %s" % (diffs,))
@@ -1626,31 +1753,41 @@ def _negative_controls(check):
     # the token substitutions apply ONLY where the runner default is what shows
     argv_hi = 'codex\nexec\n-c\nmodel_reasoning_effort="high"\n'
     argv_md = 'codex\nexec\n-c\nmodel_reasoning_effort="medium"\n'
-    ok, detail, _ = _differences(_synthetic([("calls/1.argv", argv_hi)]),
-                                 _synthetic([("calls/1.argv", argv_md)]), rd)
+    ok, detail, _ = _probe_differences(_synthetic([("calls/1.argv", argv_hi)]),
+                                       _synthetic([("calls/1.argv", argv_md)]), rd,
+                                       accepted=_LEDGER_PROBE)
     check("golden ledger: the argv effort element is accepted in a runner-default "
           "scenario", ok, detail)
     for label, scen in (("CODEX_EFFORT set in env", pinned),
                         ("codex.effort set in config", cfg_pinned)):
-        ok, _, diffs = _differences(_synthetic([("calls/1.argv", argv_hi)]),
-                                    _synthetic([("calls/1.argv", argv_md)]), scen)
+        ok, _, diffs = _probe_differences(_synthetic([("calls/1.argv", argv_hi)]),
+                                          _synthetic([("calls/1.argv", argv_md)]), scen,
+                                          accepted=_LEDGER_PROBE)
         check("golden ledger PROBE: the argv effort element is REPORTED when %s"
               % label, not ok and "calls/1.argv" in diffs,
               "an effort-selected scenario was softened by the ledger: %s" % (diffs,))
     out_hi = "=== Codex reply (/x) — mode=consult, 1s, effort=high (runner-default) ===\n"
     out_md = "=== Codex reply (/x) — mode=consult, 1s, effort=medium (runner-default) ===\n"
-    ok, _, diffs = _differences(_synthetic([("stdout", out_hi)]),
-                                _synthetic([("stdout", out_md)]), pinned)
+    ok, _, diffs = _probe_differences(_synthetic([("stdout", out_hi)]),
+                                      _synthetic([("stdout", out_md)]), pinned,
+                                      accepted=_LEDGER_PROBE)
     check("golden ledger PROBE: the stdout effort token is REPORTED outside a "
           "runner-default scenario", not ok and "stdout" in diffs,
           "the stdout token was accepted where effort was pinned: %s" % (diffs,))
     # and the enumeration is an enumeration: a NEIGHBOURING value is not covered
-    ok, _, diffs = _differences(
+    ok, _, diffs = _probe_differences(
         _synthetic([("stdout", out_hi)]),
-        _synthetic([("stdout", out_md.replace("medium", "xhigh"))]), rd)
+        _synthetic([("stdout", out_md.replace("medium", "xhigh"))]), rd,
+        accepted=_LEDGER_PROBE)
     check("golden ledger PROBE: high -> xhigh (not the enumerated substitution) "
           "is REPORTED", not ok and "stdout" in diffs,
           "an unenumerated effort value was accepted: %s" % (diffs,))
+    # The probes must leave the live state untouched: an injected acceptance can
+    # never be counted among the differences this RUN needed.
+    check("golden: the ledger probes restore the live (empty) enumerations",
+          ACCEPTED_DIFFERENCES == () and N5_RELOCATED == () and not _ACCEPTED_USED,
+          "accepted=%r n5=%r used=%r" % (ACCEPTED_DIFFERENCES, N5_RELOCATED,
+                                         _ACCEPTED_USED))
 
 
 
@@ -1697,7 +1834,7 @@ SIDE_KEYS = {"baseline": "b", "candidate": "c", "copy-control": "0"}
 
 
 def _mutant_tree(scripts_dir, dest, edits):
-    """A COMPLETE copy of the candidate tree (so a future lib/ travels with
+    """A COMPLETE copy of the candidate tree (so scripts/lib travels with
     it), with `edits` applied to codex_consult.sh. Returns "" when an edit does
     not apply exactly once — a self-test that silently changed nothing would be
     worthless."""
@@ -1806,11 +1943,17 @@ def run(check, tk):
                 check("golden %s: no consults.jsonl among the artifacts or in TMPDIR"
                       % name, not stray, str(stray[:4]))
                 if scen["name"] == "file-brief-clean":
-                    # Non-vacuity: the containment assertion above only means
-                    # something if a record was actually written somewhere.
+                    # Non-vacuity, twice over. The containment assertion above
+                    # only means something if a record was actually written
+                    # somewhere — and the BASELINE's record can only have been
+                    # written by the BUNDLED lib/telemetry.py, in the baseline
+                    # run's own haejwo-named config dir. That is the proof that
+                    # the frozen library is the one executing, not the working
+                    # tree's: nothing else in the baseline run would write it.
                     got = (base["telemetry"]["records"], cand["telemetry"]["records"])
-                    check("golden %s: exactly one telemetry record on the candidate "
-                          "side, none on the baseline's" % name, got == (0, 1), str(got))
+                    check("golden %s: exactly one telemetry record per side, each in "
+                          "that side's own config dir (the baseline's proves the "
+                          "BUNDLED lib/telemetry.py ran)" % name, got == (1, 1), str(got))
                 if scen["name"] == "resume-refusal":
                     # A pre-init refusal accounts for no run: no record at all.
                     got = (base["telemetry"]["records"], cand["telemetry"]["records"])
@@ -1881,14 +2024,16 @@ def run(check, tk):
               len(PARITY_EXCLUDED) == 4, str(PARITY_EXCLUDED))
 
         # ---- H6 non-vacuity: the comparison binds, in the right channel ----
-        # The reference for the self-tests is the CANDIDATE run of the scenario,
-        # not the baseline: the mutants are built from the candidate tree, and
-        # from 2.14 the candidate legitimately differs from the baseline (the
-        # effort ledger above). Comparing a mutant against the baseline would
-        # mix that accepted difference into the channel count. The self-tests
-        # still pass NO scenario, so the ledger can never soften them — the
-        # reference and the mutant come from the same tree, so any difference
-        # between them IS the mutation.
+        # The reference for the self-tests stays the CANDIDATE run of the
+        # scenario, not the baseline: the mutants are BUILT from the candidate
+        # tree, so the reference has to come from that same tree — then any
+        # difference between reference and mutant IS the mutation, and the exact
+        # channel count means something. At the freshly frozen 2.14.0 baseline
+        # the two sides agree anyway, so the choice is invisible today; it stays
+        # correct the moment the working tree moves ahead of the baseline again
+        # (comparing a mutant against the baseline would then mix that
+        # difference into the channel count). The self-tests still pass NO
+        # scenario, so the ledger can never soften them.
         ref_for = {}
         for _label, scen_name, _mdir, _pat, _cnt, _key in mutants:
             ref_for[scen_name] = results.get((scen_name, "codex", "candidate"))
@@ -1912,19 +2057,25 @@ def run(check, tk):
                   not ok and in_channel,
                   "differing items: %s (expected %d matching %s)" % (diffs, count, pattern))
 
-        # N5 may normalize a line NUMBER, never a source file name: every
-        # pattern is anchored to the RECORDED scripts path AND to an
-        # ENTRYPOINT's own name, so a diagnostic that moved into scripts/lib —
-        # or one named only by a bare filename in prose — still fails the
-        # comparison.
-        check("golden: N5 normalizes line numbers only, behind the recorded scripts "
-              "path, and only for the entrypoints' own diagnostics",
-              len(N5_RELOCATED) == 1
+        # At a freshly frozen baseline NOTHING is normalized away by N5 and
+        # NOTHING is accepted: the frozen bytes are the working tree's. Both
+        # enumerations must therefore be empty, and the invariant every future
+        # entry has to satisfy is asserted here against the probe that stands in
+        # for one — anchored to the RECORDED scripts path AND to an ENTRYPOINT's
+        # own name, so a diagnostic that moved into scripts/lib, or one named
+        # only by a bare filename in prose, still fails the comparison.
+        check("golden: N5_RELOCATED is empty at the re-frozen %s baseline "
+              "(every source location compared exactly)" % BASELINE_SHORT,
+              len(N5_RELOCATED) == 0, repr(N5_RELOCATED))
+        check("golden: an N5 pattern normalizes line numbers only, behind the recorded "
+              "scripts path, and only for the entrypoints' own diagnostics",
+              len(_N5_PROBE) == 1
               and all(re.escape(_tok("scripts")) in p and r"_consult\.sh: line " in p
-                      for p in N5_RELOCATED),
-              repr(N5_RELOCATED))
-        check("golden: the accepted-difference ledger holds exactly the enumerated entries",
-              len(ACCEPTED_DIFFERENCES) == 6,
+                      for p in tuple(N5_RELOCATED) + _N5_PROBE),
+              repr(tuple(N5_RELOCATED) + _N5_PROBE))
+        check("golden: the accepted-difference ledger is EMPTY at the re-frozen %s "
+              "baseline" % BASELINE_SHORT,
+              len(ACCEPTED_DIFFERENCES) == 0,
               str([e[3] for e in ACCEPTED_DIFFERENCES]))
         print("  golden: %d scenario pairs (%d runs) in %.1fs; accepted differences "
               "exercised: %d" % (pairs, len(results), time.time() - started,

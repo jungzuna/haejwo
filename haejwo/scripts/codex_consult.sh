@@ -143,14 +143,6 @@
 # Applies in every mode — the hazard predates --snapshot.
 # *[origin: ship review Z4]*
 #
-# Consult telemetry (2.14, D4-lite): one JSON line per run — outcome, attempts,
-#   effort with its source, duration, usage — appended to
-#   <data-dir>/state/consults.jsonl. Bounded and best effort: any failure is a
-#   log line and never changes this runner's behavior or exit code. The data dir
-#   is NOT taken from CLAUDE_PLUGIN_DATA blindly (in a subagent's shell it can
-#   name another plugin's data dir — measured): see `hjw_telemetry_resolve`.
-#   `outcome=ok` means RUNNER success only, never host acceptance.
-#
 # Verification discipline: this is a READ-ONLY reviewer slot — never trust it
 #   to have made changes; workers implement, this only analyzes and replies.
 # Waiting discipline: run in the background and wait for ONE completion event —
@@ -181,7 +173,7 @@ case "$HJW_SELF" in
   *)  HJW_SELF="$PWD/${HJW_SELF:-$0}" ;;
 esac
 HJW_LIB="${HJW_SELF%/*}/lib"
-for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py telemetry.py; do
+for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py; do
   [ -f "$HJW_LIB/$_hjw_f" ] || {
     echo "consult runner library missing: $HJW_LIB/$_hjw_f" >&2; exit 3; }
 done
@@ -277,10 +269,6 @@ else
     *) SANDBOX="read-only" ;;
   esac
 fi
-# The sandbox is a codex-only disclosure, so the entrypoint — not the shared
-# library — is what puts it in the telemetry record.
-HJW_TEL_SANDBOX="$SANDBOX"
-
 # ---- model: env CODEX_MODEL > config codex.model > CLI default ----
 # A whitespace-only value counts as UNSET on both paths: an empty env var is
 # an absent setting, not a request for a model named "".
@@ -391,7 +379,6 @@ if ! hjw_detect_before; then
     # still spent a reviewer call on a result it then discarded. A read-only
     # sandbox outside a repo stays allowed: the sandbox IS the enforcement.
     # *[origin 2026-09-21 audit item 3]*
-    hjw_telemetry_refused non-git
     REFUSE_MSG="consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
     printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
     echo "$REFUSE_MSG" >&2
@@ -507,15 +494,10 @@ run_attempt() {
 
 echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF$START_EXTRA) ..." >&2
 START=$SECONDS
-# The FIRST start is kept separately: $START is reset by the model fallback, so
-# it measures the LAST attempt only — the telemetry record needs the span across
-# every attempt the caller paid for.
-TEL_START_ALL=$START
 CUR_EVENTS="$EVENTS"
 run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
 rc=$?
 DUR=$((SECONDS - START))
-HJW_TEL_DUR_TOTAL=$((SECONDS - TEL_START_ALL))
 
 # ---- model-unavailable fallback ----
 # A PRE-EXECUTION rejection of the requested model retries ONCE, never twice,
@@ -529,21 +511,13 @@ HJW_TEL_DUR_TOTAL=$((SECONDS - TEL_START_ALL))
 MODEL_FALLBACK=0
 FALLBACK_MODEL=""
 classify_events "$CUR_EVENTS" "$MODEL"
-# The condition is decided ONCE, before attempt 1 is recorded: a pre-execution
-# model rejection is its own telemetry class (`model_unavailable`), not a
-# generic failure, and a retry would otherwise reclassify over the evidence.
+# The condition is decided ONCE, against attempt 1's OWN evidence: the retry
+# reclassifies against attempt 2, which would otherwise overwrite it.
 DO_FALLBACK=0
 if [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
    && [ "$CLS_MODEL_UNAVAIL" = 1 ] && [ "$CLS_PRE_EXEC" = 1 ] && [ "$CLS_MALFORMED_BEFORE" -eq 0 ]; then
   DO_FALLBACK=1
 fi
-if [ "$DO_FALLBACK" = 1 ]; then TEL_RESULT=model-unavailable
-elif [ "$rc" -eq 124 ]; then TEL_RESULT=timeout
-elif [ "$rc" -ne 0 ] || [ -n "$CLS_FAIL_TYPE" ]; then TEL_RESULT=failed
-else TEL_RESULT=completed
-fi
-hjw_telemetry_attempt "model=$MODEL" "model_src=$MODEL_SRC" "effort=$EFFORT" \
-  "effort_src=$EFFORT_SRC" "child_rc=$rc" "events=$EVENTS" "result=$TEL_RESULT"
 if [ "$DO_FALLBACK" = 1 ]; then
   FALLBACK_MODEL="$CFG_FALLBACK_MODEL"
   FB_FLAG=(); [ -n "$FALLBACK_MODEL" ] && FB_FLAG=(-m "$FALLBACK_MODEL")
@@ -559,20 +533,11 @@ if [ "$DO_FALLBACK" = 1 ]; then
   run_attempt 2 "$EVENTS2" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${FB_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
   rc=$?
   DUR=$((SECONDS - START))
-  HJW_TEL_DUR_TOTAL=$((SECONDS - TEL_START_ALL))
   MODEL_FALLBACK=1
   CUR_EVENTS="$EVENTS2"
   # The first attempt's events/traces must never fail a successful retry:
   # reclassify against attempt 2 only.
   classify_events "$CUR_EVENTS" "$FALLBACK_MODEL"
-  TEL_M2_SRC="config fallback"; [ -n "$FALLBACK_MODEL" ] || TEL_M2_SRC="cli-default"
-  if [ "$rc" -eq 124 ]; then TEL_RESULT=timeout
-  elif [ "$rc" -ne 0 ] || [ -n "$CLS_FAIL_TYPE" ]; then TEL_RESULT=failed
-  else TEL_RESULT=completed
-  fi
-  hjw_telemetry_attempt "model=$FALLBACK_MODEL" "model_src=$TEL_M2_SRC" \
-    "effort=$EFFORT" "effort_src=$EFFORT_SRC" "child_rc=$rc" \
-    "events=$EVENTS2" "result=$TEL_RESULT"
 fi
 
 hjw_detect_after
@@ -582,20 +547,19 @@ hjw_detect_after
 # (which event, which trace line) survive into the report.
 
 # (i) exit code
-if [ "$rc" -eq 124 ]; then fail timeout "timed out after ${TIMEOUT}s (tune with CODEX_TIMEOUT)"
-elif [ "$rc" -ne 0 ]; then fail exit-code "codex exit code $rc"; fi
+if [ "$rc" -eq 124 ]; then fail "timed out after ${TIMEOUT}s (tune with CODEX_TIMEOUT)"
+elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
 
 # (ii) empty reply
-[ -s "$OUT" ] || fail empty-reply "empty reply (codex produced no final answer)"
+[ -s "$OUT" ] || fail "empty reply (codex produced no final answer)"
 
 # (iii) codex's own failure events
 echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($CUR_EVENTS) ----" >> "$LOG"
 if [ -n "$CLS_FAIL_TYPE" ]; then
-  # The vendor's own message goes to stderr and $LOG; the RECORD gets the class.
-  fail event-failure "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
+  fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
 fi
 if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
-  fail no-event-stream "no event stream (rc=0) — cannot verify the run"
+  fail "no event stream (rc=0) — cannot verify the run"
 fi
 
 # (iv) tracing errors on THIS attempt's stderr only, ANCHORED at column 0.
@@ -627,7 +591,7 @@ if [ -n "$TRACE_ALL" ]; then
     HOOK_BLOCK_NOTE="note: a reviewer command was blocked by a hook (see log)"
   fi
   if [ -n "$TRACE_LINE" ]; then
-    fail tracing-error "codex tracing error: $TRACE_LINE"
+    fail "codex tracing error: $TRACE_LINE"
   fi
 fi
 

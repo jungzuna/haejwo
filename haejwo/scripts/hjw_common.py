@@ -242,7 +242,7 @@ def _try_lock(path, timeout=0.3, interval=0.02):
     """Best-effort exclusive flock: LOCK_NB with bounded retries.
 
     Returns the open handle on success, or None if the lock stayed busy (the
-    caller then proceeds UNLOCKED). Telemetry must never block a decision
+    caller then proceeds UNLOCKED). An observation must never block a decision
     (P4): a contended observations lock degrades to an unlocked append — at
     worst an interleaved line — rather than stalling a gate hook that a user
     is waiting on. Origin 2026-09-14: the decision path may not wait on the

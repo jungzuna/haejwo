@@ -57,7 +57,7 @@ Env override for a single command: `HAEJWO_GATE=off <cmd>`.
 
 See the [root README](../README.md) for install (GitHub or local-clone marketplace add, both hosts). Codex: trust the hooks once in interactive codex via `/hooks`; commands surface as `@haejwo-*` skills. (CI-only: headless pipelines may pass `--dangerously-bypass-hook-trust` — never needed, and not recommended, for interactive use.)
 
-Hooks load at session start — restart the session (or `/reload-plugins` on Claude Code) after install.
+Hooks load at session start — restart the session after install. Reload refreshes plugin hooks/commands; a session opened before an update keeps its injected instructions (including the old runner path) until restart. From 2.18 a runner invoked from a stale cache path forwards itself to the installed version (Claude Code host; the Codex host has no installation registry, so it runs as invoked). Only forwarding-aware destinations are followed — downgrades to versions before 2.18 run as invoked.
 
 **Dual-host parity:** gate (apply_patch-aware, whole-patch atomic deny), bash-guard (codex names its shell tool `Bash` too), rules injection, turn reset (`turn_id`), worker exemption (codex subagents carry the same `agent_type`/`agent_id` fields — measured), and the independent reviewer inverts per host: codex_consult.sh on Claude, **claude_consult.sh on Codex** (principle 9: a different model). Codex-side tiers ride the native `spawn_agent` model/effort parameters — judgment inherits the host model; execution runs at the configured tiers (`models_codex` in config).
 

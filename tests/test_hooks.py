@@ -4656,6 +4656,531 @@ runpy.run_path(helper, run_name="__main__")
                   open(cfx_log).read()[-400:] if os.path.isfile(cfx_log) else "<no log>")
             leaked_cleanup(err)
 
+            # ==== (2.18) a runner invoked from a STALE cache path forwards
+            # itself to the INSTALLED version. FIELD DEFECT 2026-09-28: a
+            # session started on 2.16.1, 2.17.0 was installed while it was
+            # open, `/reload-plugins` refreshed hooks and commands but did NOT
+            # re-inject the SessionStart brief, and the host kept invoking the
+            # literal 2.16.1 path it still carried in context — three more
+            # consults ran with the 2.16.1 defect. Every fixture here is
+            # HERMETIC: a fake <plugins> root in tmp holding real copies of
+            # the working tree's scripts/ under cache/haejwo/haejwo/<ver>/,
+            # each with its own manifest, plus a registry JSON. ====
+            fw_root = os.path.realpath(tempfile.mkdtemp(dir=runner_tmp, prefix="fw-"))
+            FW_HOP = " is stale — forwarding to "
+
+            # The destination-completeness set lives in forward.py, and BOTH
+            # entrypoints check the same files before they are allowed to run
+            # python at all — so they cannot read the list from a file that is
+            # itself on it. One literal is impossible; drift is not allowed.
+            def fw_named_list(path, pattern, token=r"[^\s\"']+"):
+                m = re.search(pattern, open(path, encoding="utf-8").read(), re.S)
+                return re.findall(token, m.group(1)) if m else []
+
+            fw_required = fw_named_list(
+                os.path.join(SCRIPTS, "lib", "forward.py"),
+                r"REQUIRED_LIB = \(([^)]*)\)", r'"([^"]+)"')
+            fw_entry_lists = {
+                who: fw_named_list(os.path.join(SCRIPTS, f"{who}_consult.sh"),
+                                   r"for _hjw_f in ([^;]+); do")
+                for who in ("codex", "claude")}
+            check("2.18 completeness set: forward.py's REQUIRED_LIB and BOTH "
+                  "entrypoints' pre-source checks name the SAME helpers — the "
+                  "entrypoints cannot read the list from a file they are still "
+                  "checking for, so a test keeps the three in sync",
+                  len(fw_required) >= 6
+                  and fw_entry_lists["codex"] == fw_required
+                  and fw_entry_lists["claude"] == fw_required,
+                  f"forward.py={fw_required} codex={fw_entry_lists['codex']} "
+                  f"claude={fw_entry_lists['claude']}")
+
+            def fw_manifest(root, version):
+                d = os.path.join(root, ".claude-plugin")
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "plugin.json"), "w") as f:
+                    json.dump({"name": "haejwo", "version": version}, f)
+
+            def fw_install(case, versions, vendor=".claude"):
+                """<fw_root>/<case>/<vendor>/plugins/cache/haejwo/haejwo/<ver>/
+                — the REAL installed-cache layout, one copy of the working
+                tree's scripts/ per version. Returns the <plugins> root."""
+                plugins = os.path.join(fw_root, case, vendor, "plugins")
+                for v in versions:
+                    root = os.path.join(plugins, "cache", "haejwo", "haejwo", v)
+                    shutil.copytree(SCRIPTS, os.path.join(root, "scripts"),
+                                    ignore=shutil.ignore_patterns("__pycache__"))
+                    fw_manifest(root, v)
+                os.makedirs(plugins, exist_ok=True)
+                return plugins
+
+            def fw_dir(plugins, version):
+                return os.path.join(plugins, "cache", "haejwo", "haejwo", version)
+
+            def fw_script(plugins, version, who):
+                return os.path.join(fw_dir(plugins, version), "scripts",
+                                    f"{who}_consult.sh")
+
+            def fw_entry(plugins, version, install=None, scope="user"):
+                e = {"scope": scope, "version": version}
+                if install is not False:
+                    e["installPath"] = (install if install is not None
+                                        else fw_dir(plugins, version))
+                return e
+
+            def fw_registry(plugins, payload, raw=False):
+                path = os.path.join(plugins, "installed_plugins.json")
+                with open(path, "w") as f:
+                    if raw:
+                        f.write(payload)
+                    else:
+                        json.dump(payload, f)
+                return path
+
+            def fw_reg_entries(plugins, entries):
+                return fw_registry(plugins, {"version": 2,
+                                             "plugins": {"haejwo@haejwo": entries}})
+
+            def fw_run(label, script, who, args=None, stdin_data="", cwd=None,
+                       env_extra=None):
+                """One hermetic runner invocation, with the reply/log paths and
+                the stub's capture dir handed back."""
+                bin_dir = os.path.join(runner_tmp, f"bin-fw-{label}")
+                cap = os.path.join(runner_tmp, f"cap-fw-{label}")
+                make_stub(bin_dir, who, cap)
+                env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
+                if env_extra:
+                    env.update(env_extra)
+                if args is None:
+                    args = [brief_file(f"fw-{label}.md")]
+                rc, out, err = run_script(script, args, env,
+                                          stdin_data=stdin_data, cwd=cwd)
+                return rc, out, err, cap
+
+            def fw_log_for(brief_path):
+                p = os.path.splitext(brief_path)[0] + ".reply.log"
+                return open(p, encoding="utf-8").read() if os.path.isfile(p) else ""
+
+            def fw_hops(err):
+                return [l for l in err.splitlines() if FW_HOP in l]
+
+            def fw_fallbacks(err):
+                # Counted as LINES, never as "the whole of stderr": a failed
+                # exec also makes bash print its own (unescaped) error, so the
+                # total stderr line count is not the runner's to promise.
+                return [l for l in err.splitlines() if "forwarding failed" in l]
+
+            def fw_cli_env(cap, idx=1):
+                """The environment the REVIEWER process actually received."""
+                p = os.path.join(cap, f"call_{idx}.env0")
+                if not os.path.isfile(p):
+                    return []
+                return open(p, encoding="utf-8", errors="replace").read().split("\0")
+
+            def fw_marker_gone(cap, idx=1):
+                return not any(v.startswith("HJW_FORWARDED=")
+                               for v in fw_cli_env(cap, idx))
+
+            def fw_no_forward(slug, title, label, script, who, plugins=None,
+                              env_extra=None):
+                """The whole fail-open contract in one assertion set: nothing
+                is forwarded, nothing is said about it, and the run completes
+                locally with exactly one reviewer call."""
+                brief = brief_file(f"fw-{label}.md")
+                rc, out, err, cap = fw_run(label, script, who, args=[brief],
+                                           env_extra=env_extra)
+                calls = read_calls(cap)
+                check(f"{slug}: {title} -> no forward, no diagnostic",
+                      not fw_hops(err) and "forwarding failed" not in err,
+                      f"err={err}")
+                check(f"{slug}: {title} -> the run completes locally, exactly one "
+                      "reviewer call",
+                      rc == 0 and "STUB-REPLY-OK-1" in out and len(calls) == 1,
+                      f"rc={rc} calls={len(calls)} err={err}")
+                check(f"{slug}: {title} -> the hop marker never reaches the reviewer "
+                      "process",
+                      fw_marker_gone(cap),
+                      [v for v in fw_cli_env(cap) if v.startswith("HJW_")])
+                return rc, out, err, cap, brief
+
+            # ---- (t1) UPGRADE: the invoked 9.8.0 forwards to the installed
+            # 9.9.0 — the measured field case, on BOTH entrypoints. ----
+            for who, vendor in (("codex", ".claude"), ("claude", ".claude")):
+                t1_plugins = fw_install(f"t1-{who}", ["9.8.0", "9.9.0"], vendor)
+                fw_reg_entries(t1_plugins, [fw_entry(t1_plugins, "9.9.0")])
+                t1_brief = brief_file(f"fw-t1-{who}.md")
+                rc, out, err, cap = fw_run(
+                    f"t1-{who}", fw_script(t1_plugins, "9.8.0", who), who,
+                    args=[t1_brief])
+                hops = fw_hops(err)
+                want = fw_script(t1_plugins, "9.9.0", who)
+                check(f"t1 {who} upgrade: EXACTLY ONE forwarding line, naming both "
+                      "versions and the destination",
+                      len(hops) == 1 and hops[0] ==
+                      f"# runner 9.8.0 is stale — forwarding to 9.9.0 ({want})",
+                      f"hops={hops}")
+                check(f"t1 {who} upgrade: the log header proves 9.9.0 RAN — plugin= is "
+                      "read from the running process's own manifest",
+                      "plugin=9.9.0" in fw_log_for(t1_brief),
+                      fw_log_for(t1_brief)[:300])
+                check(f"t1 {who} upgrade: the reply is produced and the reviewer is "
+                      "invoked exactly once",
+                      rc == 0 and "STUB-REPLY-OK-1" in out
+                      and len(read_calls(cap)) == 1,
+                      f"rc={rc} calls={len(read_calls(cap))} err={err}")
+                check(f"t1 {who} upgrade: the hop marker NEVER reaches the reviewer "
+                      "process",
+                      fw_marker_gone(cap),
+                      [v for v in fw_cli_env(cap) if v.startswith("HJW_")])
+
+            # cross-host isolation: the same claude runner, installed under a
+            # .codex plugins root that keeps NO registry, must run as invoked.
+            # A Codex-owned runner never consults Claude's bookkeeping.
+            t1x_plugins = fw_install("t1-xhost", ["9.8.0", "9.9.0"], ".codex")
+            fw_no_forward("t1", "a .codex plugins root has no registry (cross-host "
+                          "isolation)", "t1-xhost",
+                          fw_script(t1x_plugins, "9.8.0", "claude"), "claude")
+
+            # ---- (t2) DOWNGRADE: string inequality, both directions. The host
+            # installed what it installed; "higher" is not this layer's call. ----
+            t2_plugins = fw_install("t2", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t2_plugins, [fw_entry(t2_plugins, "9.8.0")])
+            t2_brief = brief_file("fw-t2.md")
+            rc, out, err, cap = fw_run("t2", fw_script(t2_plugins, "9.9.0", "codex"),
+                                       "codex", args=[t2_brief])
+            hops = fw_hops(err)
+            check("t2 downgrade: an installed OLDER version is followed too — no "
+                  "lexical version ordering",
+                  len(hops) == 1 and "runner 9.9.0 is stale — forwarding to 9.8.0"
+                  in hops[0] and "plugin=9.8.0" in fw_log_for(t2_brief),
+                  f"hops={hops} log={fw_log_for(t2_brief)[:200]}")
+            check("t2 downgrade: the run completes, one reviewer call, no marker leak",
+                  rc == 0 and len(read_calls(cap)) == 1 and fw_marker_gone(cap),
+                  f"rc={rc} calls={len(read_calls(cap))}")
+
+            # ---- (t3) CURRENT: the registry names the invoked version. ----
+            t3_plugins = fw_install("t3", ["9.8.0"])
+            fw_reg_entries(t3_plugins, [fw_entry(t3_plugins, "9.8.0")])
+            rc, out, err, cap, t3_brief = fw_no_forward(
+                "t3", "the registry names the INVOKED version", "t3",
+                fw_script(t3_plugins, "9.8.0", "codex"), "codex")
+            check("t3 current: the header still discloses which version ran",
+                  "plugin=9.8.0" in fw_log_for(t3_brief),
+                  fw_log_for(t3_brief)[:200])
+
+            # ---- (t4) the registry resolves to the INVOKED copy — directly,
+            # and through a symlink. Path text is not identity. ----
+            t4_plugins = fw_install("t4-direct", ["9.8.0"])
+            # the same directory, spelled differently (redundant '.' + trailing
+            # separator): normalization, not string comparison, decides.
+            fw_reg_entries(t4_plugins, [fw_entry(
+                t4_plugins, "9.8.0",
+                install=os.path.join(fw_dir(t4_plugins, "9.8.0"), ".", ""))])
+            fw_no_forward("t4", "the registry points at the invoked copy (direct)",
+                          "t4-direct", fw_script(t4_plugins, "9.8.0", "codex"),
+                          "codex")
+
+            # A 9.9.0 install root whose manifest really says 9.9.0 but whose
+            # scripts/ is a SYMLINK to 9.8.0's: every version check passes and
+            # only PHYSICAL identity stops the runner exec'ing itself.
+            t4s_plugins = fw_install("t4-symlink", ["9.8.0"])
+            t4s_root = fw_dir(t4s_plugins, "9.9.0")
+            os.makedirs(t4s_root, exist_ok=True)
+            fw_manifest(t4s_root, "9.9.0")
+            os.symlink(os.path.join(fw_dir(t4s_plugins, "9.8.0"), "scripts"),
+                       os.path.join(t4s_root, "scripts"))
+            fw_reg_entries(t4s_plugins, [fw_entry(t4s_plugins, "9.9.0")])
+            fw_no_forward("t4", "the target resolves to the invoked file (symlink)",
+                          "t4-symlink", fw_script(t4s_plugins, "9.8.0", "codex"),
+                          "codex")
+
+            # ---- (t5) AMBIGUOUS: two installs disagreeing about the version is
+            # exactly where a guess would send a review to the wrong code. ----
+            t5_plugins = fw_install("t5", ["9.7.0", "9.8.0", "9.9.0"])
+            fw_reg_entries(t5_plugins, [fw_entry(t5_plugins, "9.9.0"),
+                                        fw_entry(t5_plugins, "9.7.0")])
+            fw_no_forward("t5", "two entries under one cache root with different "
+                          "versions", "t5", fw_script(t5_plugins, "9.8.0", "codex"),
+                          "codex")
+
+            # ---- (t6) the registry is missing, malformed, or says nothing
+            # about haejwo: fail open, never crash. ----
+            t6_cases = [
+                ("absent", None, False),
+                ("malformed", "{ not json at all", True),
+                ("not-an-object", "[1, 2, 3]", True),
+                ("no-plugin-key", {"version": 2, "plugins": {"other@other": []}}, False),
+                ("entry-without-installPath", {"version": 2, "plugins": {
+                    "haejwo@haejwo": [{"scope": "user", "version": "9.9.0"}]}}, False),
+                ("entry-not-an-object", {"version": 2, "plugins": {
+                    "haejwo@haejwo": ["9.9.0"]}}, False),
+                ("installPath-outside-the-cache-root", {"version": 2, "plugins": {
+                    "haejwo@haejwo": [{"scope": "user", "version": "9.9.0",
+                                       "installPath": "/nowhere/haejwo/9.9.0"}]}}, False),
+            ]
+            for name, payload, raw in t6_cases:
+                t6_plugins = fw_install(f"t6-{name}", ["9.8.0", "9.9.0"])
+                if payload is not None:
+                    fw_registry(t6_plugins, payload, raw=raw)
+                fw_no_forward("t6", f"registry {name}", f"t6-{name}",
+                              fw_script(t6_plugins, "9.8.0", "codex"), "codex")
+
+            # ---- (t7) the registry is host bookkeeping, not proof: an
+            # INCOMPLETE target is never followed. EVERY helper the entrypoints
+            # check before sourcing is required here, one at a time: a
+            # destination missing one exits 3 AFTER it has replaced this
+            # process, and by then there is no local fallback left to run. ----
+            for helper in fw_required:
+                t7_lib = fw_install(f"t7-lib-{helper}", ["9.8.0", "9.9.0"])
+                fw_reg_entries(t7_lib, [fw_entry(t7_lib, "9.9.0")])
+                os.remove(os.path.join(fw_dir(t7_lib, "9.9.0"), "scripts", "lib",
+                                       helper))
+                fw_no_forward("t7", f"the target lib is missing {helper}",
+                              f"t7-lib-{helper}",
+                              fw_script(t7_lib, "9.8.0", "codex"), "codex")
+
+            t7_mm = fw_install("t7-manifest", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t7_mm, [fw_entry(t7_mm, "9.9.0")])
+            fw_manifest(fw_dir(t7_mm, "9.9.0"), "9.9.1")   # target disagrees
+            fw_no_forward("t7", "the target manifest contradicts the registry",
+                          "t7-manifest", fw_script(t7_mm, "9.8.0", "codex"), "codex")
+
+            t7_x = fw_install("t7-noexec", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t7_x, [fw_entry(t7_x, "9.9.0")])
+            os.chmod(fw_script(t7_x, "9.9.0", "codex"), 0o644)
+            fw_no_forward("t7", "the target runner is not executable",
+                          "t7-noexec", fw_script(t7_x, "9.8.0", "codex"), "codex")
+
+            # A target that passes EVERY check and still cannot be exec'd (the
+            # kernel, not the validator, has the last word — here a missing
+            # interpreter). A non-interactive bash EXITS on a failed `exec`
+            # unless execfail is set, which would turn a broken cache entry
+            # into a review that silently never ran.
+            t7_f = fw_install("t7-execfail", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t7_f, [fw_entry(t7_f, "9.9.0")])
+            t7_f_target = fw_script(t7_f, "9.9.0", "codex")
+            with open(t7_f_target, "w") as f:
+                f.write("#!/nonexistent/hjw-interpreter\nexit 0\n")
+            os.chmod(t7_f_target, 0o755)
+            t7_f_brief = brief_file("fw-t7-execfail.md")
+            rc, out, err, cap = fw_run("t7-execfail",
+                                       fw_script(t7_f, "9.8.0", "codex"), "codex",
+                                       args=[t7_f_brief])
+            check("t7 failed exec: EXACTLY ONE hop line and EXACTLY ONE fallback line "
+                  "— bash prints its own (unescaped) error for the failed exec too, so "
+                  "the assertion counts OUR lines, not stderr's",
+                  len(fw_hops(err)) == 1
+                  and fw_fallbacks(err) == ["# forwarding failed — running 9.8.0 locally"],
+                  f"hops={fw_hops(err)} fallbacks={fw_fallbacks(err)} err={err!r}")
+            check("t7 failed exec: the LOCAL run completes and it is 9.8.0 that ran",
+                  rc == 0 and "STUB-REPLY-OK-1" in out
+                  and len(read_calls(cap)) == 1
+                  and "plugin=9.8.0" in fw_log_for(t7_f_brief),
+                  f"rc={rc} calls={len(read_calls(cap))} log={fw_log_for(t7_f_brief)[:200]}")
+            check("t7 failed exec: the marker is removed again before the reviewer runs",
+                  fw_marker_gone(cap),
+                  [v for v in fw_cli_env(cap) if v.startswith("HJW_")])
+
+            # ---- (t8) LOOP PREVENTION: a forwarded process never forwards
+            # again, however stale it looks, and it strips the marker. ----
+            t8_plugins = fw_install("t8", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t8_plugins, [fw_entry(t8_plugins, "9.9.0")])
+            rc, out, err, cap, t8_brief = fw_no_forward(
+                "t8", "HJW_FORWARDED preset while genuinely stale", "t8",
+                fw_script(t8_plugins, "9.8.0", "codex"), "codex",
+                env_extra={"HJW_FORWARDED": "1"})
+            check("t8 loop prevention: the marker is unset for the reviewer, and the "
+                  "stale runner is the one that ran",
+                  fw_marker_gone(cap) and "plugin=9.8.0" in fw_log_for(t8_brief),
+                  [v for v in fw_cli_env(cap) if v.startswith("HJW_")])
+
+            # ---- (t9) DEVELOPMENT CHECKOUT: a maintainer running the working
+            # tree gets the working tree, whatever any registry says. ----
+            t9_dev = os.path.join(fw_root, "t9-dev")
+            shutil.copytree(SCRIPTS, os.path.join(t9_dev, "scripts"),
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            fw_manifest(t9_dev, "9.8.0")
+            fw_registry(t9_dev, {"version": 2, "plugins": {"haejwo@haejwo": [
+                {"scope": "user", "version": "9.9.0",
+                 "installPath": os.path.join(t9_dev, "9.9.0")}]}})
+            fw_no_forward("t9", "a checkout outside the installed-cache layout",
+                          "t9-dev", os.path.join(t9_dev, "scripts",
+                                                 "codex_consult.sh"), "codex")
+
+            rc, out, err, cap, t9_brief = fw_no_forward(
+                "t9", "THIS repository's own runner", "t9-worktree",
+                codex_script, "codex")
+            t9_ver = json.load(open(os.path.join(
+                PLUGIN, ".claude-plugin", "plugin.json")))["version"]
+            check("t9 working tree: the header still names the version that ran",
+                  f"plugin={t9_ver}" in fw_log_for(t9_brief),
+                  fw_log_for(t9_brief)[:200])
+
+            # ---- (t10) FIDELITY: a forwarded run must be indistinguishable
+            # from having invoked the installed runner directly — same argv
+            # bytes (spaces and a newline included), same stdin, same cwd, and
+            # the destination's exit status is the run's exit status. ----
+            t10_plugins = fw_install("t10", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t10_plugins, [fw_entry(t10_plugins, "9.9.0")])
+            t10_repo = make_repo("repo-fw-fidelity")
+            t10_out = os.path.join(runner_tmp, "fw t10 reply\nwith newline.md")
+            t10_stdin = "FIDELITY-BRIEF-MARKER body\n"
+            rc, out, err, cap = fw_run(
+                "t10", fw_script(t10_plugins, "9.8.0", "codex"), "codex",
+                args=["--mode", "consult", "-o", t10_out, "-"],
+                stdin_data=t10_stdin, cwd=t10_repo)
+            calls = read_calls(cap)
+            t10_cwd_file = os.path.join(cap, "call_1.cwd")
+            t10_cwd = (open(t10_cwd_file).read().strip()
+                       if os.path.isfile(t10_cwd_file) else "")
+            check("t10 fidelity: an -o argument carrying a space AND a newline arrives "
+                  "at the destination byte for byte",
+                  len(fw_hops(err)) == 1 and rc == 0 and os.path.isfile(t10_out)
+                  and "STUB-REPLY-OK-1" in open(t10_out, encoding="utf-8").read(),
+                  f"rc={rc} exists={os.path.isfile(t10_out)} err={err}")
+            check("t10 fidelity: the stdin brief survives the hop (it is consumed only "
+                  "AFTER forwarding, by the destination)",
+                  len(calls) == 1 and "FIDELITY-BRIEF-MARKER body" in calls[0][1],
+                  calls[0][1][:200] if calls else "<no call>")
+            check("t10 fidelity: the working directory is unchanged by the hop",
+                  t10_cwd == os.path.realpath(t10_repo),
+                  f"stub cwd={t10_cwd!r} want={os.path.realpath(t10_repo)!r}")
+            # an explicit -o derives $LOG as `${OUT%.*}.log`, not `.reply.log`
+            t10_log_path = os.path.splitext(t10_out)[0] + ".log"
+            t10_log = (open(t10_log_path, encoding="utf-8").read()
+                       if os.path.isfile(t10_log_path) else "")
+            check("t10 fidelity: 9.9.0 is what ran",
+                  "plugin=9.9.0" in t10_log, t10_log[:200])
+            check("t10 fidelity: the hop marker never reaches the reviewer process",
+                  fw_marker_gone(cap),
+                  [v for v in fw_cli_env(cap) if v.startswith("HJW_")])
+
+            # The destination's failure is the run's failure — never a retry of
+            # the old runner, and never a status invented by the hop.
+            t10f_plugins = fw_install("t10-rc", ["9.8.0", "9.9.0"])
+            fw_reg_entries(t10f_plugins, [fw_entry(t10f_plugins, "9.9.0")])
+            fail_env = {"STUB_RC": "1", "STUB_NO_OUT": "1"}
+            rc_fwd, _, err_fwd, cap_fwd = fw_run(
+                "t10-rc-fwd", fw_script(t10f_plugins, "9.8.0", "codex"), "codex",
+                env_extra=fail_env)
+            rc_direct, _, _, cap_direct = fw_run(
+                "t10-rc-direct", fw_script(t10f_plugins, "9.9.0", "codex"), "codex",
+                env_extra=fail_env)
+            check("t10 fidelity: a forwarded run exits with the DESTINATION's status, "
+                  "identical to invoking it directly",
+                  len(fw_hops(err_fwd)) == 1 and rc_fwd != 0
+                  and rc_fwd == rc_direct,
+                  f"forwarded={rc_fwd} direct={rc_direct}")
+            check("t10 fidelity: a failed destination is never retried on the old runner",
+                  len(read_calls(cap_fwd)) == len(read_calls(cap_direct)),
+                  f"forwarded={len(read_calls(cap_fwd))} direct={len(read_calls(cap_direct))}")
+            check("t10 fidelity: a FAILING forwarded run still never leaks the hop "
+                  "marker to the reviewer",
+                  fw_marker_gone(cap_fwd),
+                  [v for v in fw_cli_env(cap_fwd) if v.startswith("HJW_")])
+
+            # ---- (t11) CONTAINMENT: a registry path is a string, not a
+            # location. The install AND the executable must RESOLVE inside
+            # THIS runner's own cache root — normalization answers traversal,
+            # realpath answers symlinks. Ordinary path checks against
+            # misconfiguration and casual tampering: validation and exec are
+            # still two separate lookups, so this is not an atomic boundary. ----
+            def fw_outside_install(case, version):
+                """A complete, internally consistent install placed OUTSIDE any
+                cache root — exactly what containment must refuse to follow."""
+                root = os.path.join(fw_root, case)
+                shutil.copytree(SCRIPTS, os.path.join(root, "scripts"),
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                fw_manifest(root, version)
+                return root
+
+            # (a) traversal: the string starts with the cache root and climbs
+            # straight back out of it. The raw prefix test cannot see this.
+            t11_t = fw_install("t11-traversal", ["9.8.0"])
+            t11_t_out = fw_outside_install("t11-traversal-outside", "9.9.0")
+            t11_anchor = fw_dir(t11_t, "9.8.0")
+            fw_reg_entries(t11_t, [fw_entry(
+                t11_t, "9.9.0",
+                install=os.path.join(t11_anchor,
+                                     os.path.relpath(t11_t_out, t11_anchor)))])
+            fw_no_forward("t11", "installPath spelled THROUGH the cache root but "
+                          "normalizing outside it", "t11-traversal",
+                          fw_script(t11_t, "9.8.0", "codex"), "codex")
+
+            # (b) the install path is a symlink that lives inside the cache
+            # root and points out of it: only realpath sees the difference.
+            t11_l = fw_install("t11-link", ["9.8.0"])
+            t11_l_out = fw_outside_install("t11-link-outside", "9.9.0")
+            os.symlink(t11_l_out, fw_dir(t11_l, "9.9.0"))
+            fw_reg_entries(t11_l, [fw_entry(t11_l, "9.9.0")])
+            fw_no_forward("t11", "installPath is a symlink to a directory outside the "
+                          "cache root", "t11-link",
+                          fw_script(t11_l, "9.8.0", "codex"), "codex")
+
+            # (c) a contained install directory says nothing about the file
+            # that would actually be exec'd inside it.
+            t11_x = fw_install("t11-exec", ["9.8.0", "9.9.0"])
+            t11_x_out = fw_outside_install("t11-exec-outside", "9.9.0")
+            t11_x_target = fw_script(t11_x, "9.9.0", "codex")
+            os.remove(t11_x_target)
+            os.symlink(os.path.join(t11_x_out, "scripts", "codex_consult.sh"),
+                       t11_x_target)
+            fw_reg_entries(t11_x, [fw_entry(t11_x, "9.9.0")])
+            fw_no_forward("t11", "the target executable is a symlink pointing outside "
+                          "the cache root", "t11-exec",
+                          fw_script(t11_x, "9.8.0", "codex"), "codex")
+
+            # ---- (t12) LEGACY DESTINATIONS: a pre-2.18 runner has no
+            # hop-marker removal, so forwarding into one would hand
+            # HJW_FORWARDED straight to the reviewer CLI. No version
+            # comparison is needed to prevent it — 2.17 ships no
+            # lib/forward.py, and the completeness set requires it. The fixture
+            # is the ACTUAL 2.17.0 scripts, read out of git history, because a
+            # copy of TODAY's scripts under a 2.17 label would prove nothing. ----
+            t12_commit = "0c9cf4e"
+            t12_ls = subprocess.run(
+                ["git", "ls-tree", "-r", "--name-only", t12_commit, "--",
+                 "haejwo/scripts"],
+                cwd=os.path.dirname(HERE), capture_output=True, text=True)
+            t12_files = t12_ls.stdout.split() if t12_ls.returncode == 0 else []
+            if not t12_files:
+                print(f"  SKIP t12 legacy destination: {t12_commit} is not in this "
+                      "clone (shallow checkout or no git history)")
+                # Release CI checks out full history (fetch-depth: 0) precisely
+                # so this fixture runs; a silent skip THERE would hide a
+                # regression. Locally (tarball, shallow clone) skipping is fine.
+                check("forwarding/t12: the legacy-destination fixture RUNS under CI "
+                      "(full-history checkout)", not os.environ.get("CI"),
+                      f"{t12_commit} unreachable in a CI checkout")
+            else:
+                t12_plugins = fw_install("t12-legacy", ["2.18.0"])
+                t12_root = fw_dir(t12_plugins, "2.17.0")
+                for rel in t12_files:
+                    blob = subprocess.run(["git", "show", f"{t12_commit}:{rel}"],
+                                          cwd=os.path.dirname(HERE),
+                                          capture_output=True)
+                    dest = os.path.join(t12_root, os.path.relpath(rel, "haejwo"))
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as f:
+                        f.write(blob.stdout)
+                    os.chmod(dest, 0o755)
+                fw_manifest(t12_root, "2.17.0")
+                t12_lib = os.path.join(t12_root, "scripts", "lib")
+                check("t12 legacy: the fixture really IS a pre-2.18 destination — a "
+                      "complete 2.17.0 install that ships no lib/forward.py",
+                      os.path.isfile(fw_script(t12_plugins, "2.17.0", "codex"))
+                      and os.path.isfile(os.path.join(t12_lib, "consult_common.sh"))
+                      and not os.path.exists(os.path.join(t12_lib, "forward.py")),
+                      sorted(os.listdir(t12_lib)) if os.path.isdir(t12_lib) else "<none>")
+                fw_reg_entries(t12_plugins, [fw_entry(t12_plugins, "2.17.0")])
+                rc, out, err, cap, t12_brief = fw_no_forward(
+                    "t12", "an ACTUAL 2.17.0 install is never forwarded into (it has "
+                    "no marker removal)", "t12-legacy",
+                    fw_script(t12_plugins, "2.18.0", "codex"), "codex")
+                check("t12 legacy: the invoked 2.18.0 runner is the one that ran",
+                      "plugin=2.18.0" in fw_log_for(t12_brief),
+                      fw_log_for(t12_brief)[:200])
+
+
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
 

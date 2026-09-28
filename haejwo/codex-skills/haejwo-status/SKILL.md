@@ -21,6 +21,7 @@ Gather and present compactly:
    - the deny count
    - records with `plan_marker_kind=="none"` AND `prompt_bytes>1500` — feature-scale-looking briefs missing a plan marker (`prompt_bytes` is a size proxy, not feature scope)
    - whether a reviewer-consult (`codex_consult.sh` / `claude_consult.sh`) ran this session
+   - consults observed this session / window from `state/consults.jsonl` (count, outcomes, effort mix, attempts>1) — absence means none observed, not none ran
    - the push-consent registry state (`/haejwo:push`)
    - tier calls with `requested_model` null — no explicit override was recorded; allowed Claude calls run at the agent-file default
    - the `tier_pin_check` deny count

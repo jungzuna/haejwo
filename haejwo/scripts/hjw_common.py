@@ -35,12 +35,16 @@ DEFAULT_CONFIG = {
     # Temp files are exempted by resolved-prefix against the system tempdir,
     # NOT by substring — a repo's own tmp/ subdir still counts as code.
     "exempt_dir_components": [".git", "node_modules", ".claude", ".codex"],
-    # Owner policy (2026-09-21): EXECUTION defaults to Opus and the roles
-    # differ by reasoning EFFORT, not by model family — only task-worker
-    # pins an effort (low, in agents/task-worker.md); default-worker and
-    # deep-reasoner run at the host's default (high) effort. The cheaper
-    # Budget preset is opt-in via /haejwo:setup. Codex analog: the host
-    # model at high/medium/low reasoning_effort.
+    # Owner policy (2026-09-21, effort revised 2.14): EXECUTION defaults to
+    # Opus and the roles differ by reasoning EFFORT, not by model family —
+    # only task-worker pins an effort (low, in agents/task-worker.md);
+    # default-worker and deep-reasoner carry no effort key and therefore run
+    # at the SESSION's effort, whatever the host is set to (subagents inherit
+    # it). The independent reviewer is separate and defaults to `medium` in
+    # the runner. The cheaper Budget preset is opt-in via /haejwo:setup.
+    # Codex analog: the host model for all three roles, with deep-reasoner at
+    # the host's own effort (reasoning_effort omitted) and default-worker /
+    # task-worker at medium / low.
     "models": {
         "deep_reasoner": "inherit",
         "default_worker": "opus",

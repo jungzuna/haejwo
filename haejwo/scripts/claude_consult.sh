@@ -62,14 +62,21 @@
 # `--mode implement` was removed in 2.10 (cross-vendor worker routing is a
 # non-goal); use the standalone collab tool for manual implement runs.
 #
-# Config (${CLAUDE_PLUGIN_DATA}/config.json, else the path derived from $0 —
-# same resolution rules as codex_consult.sh: CLAUDE_PLUGIN_DATA set means ONLY
-# that path, and a missing/unparsable file means NO config). Key read here:
+# Config (haejwo's OWN config.json — same OWNERSHIP rules as codex_consult.sh:
+# the structural path under this runner's own installed <plugins>/cache/haejwo/
+# haejwo/<ver>/scripts/, else CLAUDE_PLUGIN_DATA only when its basename IS
+# `haejwo-haejwo`, else the derived ~/.codex|.claude/plugins/data/haejwo-haejwo/
+# path; a missing/unparsable file at the selected path means NO config and
+# never another path, and a foreign CLAUDE_PLUGIN_DATA is ignored and disclosed
+# once. The log header names the selected path, its source and its status).
+# Key read here:
 #   codex.model   default reviewer model (env CLAUDE_MODEL wins)
 # HOST-RELATIVE reading: the `codex` block describes the reviewer of the HOST
-# that owns the data dir. This runner IS that reviewer only on a CODEX host,
-# so codex.model is read ONLY when the resolved config path is under /.codex/;
-# anywhere else it describes the OTHER vendor's reviewer and is ignored.
+# that owns the data dir. This runner IS that reviewer on a CODEX host, so on
+# a VENDOR path codex.model is read only under /.codex/ and IGNORED under
+# /.claude/, where it describes the OTHER vendor's reviewer. A custom plugin
+# root names no vendor at all: there the host follows the RUNNER KIND, and
+# this runner — a Codex host's reviewer — reads the key (see lib/config.py).
 # *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex
 # host's own reviewer model, read out of a claude-host config]*
 # NOT read here: the `efforts_codex` / `models_codex` config keys belong to
@@ -172,8 +179,9 @@ non-goal); use the standalone collab tool for manual implement runs.
 
 Env (env > config > default; empty env value = unset): CLAUDE_MODEL,
   CLAUDE_TIMEOUT (default 600). Config key codex.model supplies the default
-  model, and ONLY when the config path is a codex host's (under /.codex/) —
-  elsewhere that key describes the other vendor's reviewer. Env wins.
+  model on a CODEX host: a config path under /.codex/, or a custom plugin root
+  naming no vendor (there the runner kind names the host). Under /.claude/
+  that key describes the other vendor's reviewer and is ignored. Env wins.
 
 Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed,
   change detection unavailable}. Guarantee, narrowed to what is actually
@@ -227,10 +235,15 @@ else MODEL_DISP="model=cli-default (identity unverified)"; fi
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
 {
-  echo "# claude_consult v1.2  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s  $(date 2>/dev/null)"
+  echo "# claude_consult v1.2  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
-  echo "# ---- claude -p ----"
 } > "$LOG"
+# The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is
+# appended here — the one place where it survives, and it belongs with the
+# header rather than below the section marker, where it would read as the
+# CLI's own output.
+hjw_config_disclose
+echo "# ---- claude -p ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"

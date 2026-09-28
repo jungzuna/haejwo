@@ -1591,6 +1591,76 @@ def main():
         check("envelope v2: bare prompt -> plan_marker_kind 'none'",
               bool(r_none) and r_none.get("plan_marker_kind") == "none", str(r_none))
 
+        # (P2, 2.17) the marker is a LABEL AT THE HEAD OF A LINE, however
+        # markdown dresses it. Measured 2026-09-28: a delegation brief carried
+        # the agreed plan under `## Plan (합의본 — …)` and the substring match
+        # recorded plan_marker_kind=none, which status would have counted as
+        # drift. Telemetry only — it records the marker, never a real consensus.
+        from delegation_gate import _plan_marker_kind as marker_kind  # noqa: E402
+        PLAN_FORMS = [
+            ("Plan: per the approved decision — do X", "bare colon (legacy)"),
+            ("**Plan**: do X", "bold label, colon outside"),
+            ("**Plan:** do X", "bold label, colon inside"),
+            ("## Plan (합의본 — host + reviewer)", "heading + parenthetical"),
+            ("Plan — the agreed shape", "em dash"),
+            ("Plan - the agreed shape", "hyphen"),
+            ("### Plan", "heading, end of line"),
+            ("  ### **Plan**", "indented heading + bold, end of line"),
+            ("Context first.\n\n## Plan (x)\nbody", "heading on a later line"),
+            ("## Plan\r\nbody", "CRLF heading (a brief written with CRLF)"),
+            ("- **Plan**: do X", "list bullet + bold label"),
+            ("* **Plan**: do X", "asterisk bullet + bold label"),
+        ]
+        for text, label in PLAN_FORMS:
+            check(f"plan marker: {label} -> 'plan'", marker_kind(text) == "plan", repr(text))
+
+        NO_PLAN_FORMS = [
+            ("No plan because: mechanical rename", "bare colon (legacy)"),
+            ("No plan because mechanical rename", "prose (legacy substring)"),
+            ("**No plan because**: mechanical", "bold label, colon outside"),
+            ("**No plan because:** mechanical", "bold label, colon inside"),
+            ("## No plan because (mechanical)", "heading + parenthetical"),
+            ("### No plan because", "heading, end of line"),
+            ("- **No plan because**: mechanical", "list bullet + bold label"),
+            ("## No plan because\r\nmechanical", "CRLF heading"),
+        ]
+        for text, label in NO_PLAN_FORMS:
+            check(f"no-plan marker: {label} -> 'no_plan'",
+                  marker_kind(text) == "no_plan", repr(text))
+
+        # Negatives: prose that merely CONTAINS the word is not a marker. The
+        # spacing classes are [ \t] on purpose — \s would have let a "Plan"
+        # on one line pair with a separator on the next.
+        NEGATIVE_FORMS = [
+            ("Planning notes for the migration", "'Planning notes' prose"),
+            ("Plan to investigate the flake first", "'Plan to investigate' prose"),
+            ("The rename is already planned", "lowercase 'planned'"),
+            ("Plan-driven development is not a marker", "'Plan-driven' compound"),
+            ("Plan to investigate\n: the separator is on the NEXT line",
+             "separator on the NEXT line"),
+            ("Plan to investigate\r\n: the separator is on the NEXT line",
+             "CRLF separator on the NEXT line"),
+            ("- rename the files in place", "a bullet without the label"),
+        ]
+        for text, label in NEGATIVE_FORMS:
+            check(f"plan marker negative: {label} -> 'none'",
+                  marker_kind(text) == "none", repr(text))
+
+        check("plan marker: precedence unchanged — a plan label wins over 'No plan because'",
+              marker_kind("## No plan because (x)\n## Plan (y)") == "plan")
+        check("plan marker: non-string input still short-circuits to 'none'",
+              marker_kind(None) == "none" and marker_kind({"x": 1}) == "none")
+
+        # ...and the heading form reaches the RECORD, not just the parser.
+        rc, out = run("delegation_gate.py", task_payload(
+            "haejwo:default-worker", sid="sess-PM6",
+            prompt="Brief body.\n\n## Plan (합의본 — host + reviewer)\nDo X."), data)
+        check("allow: heading-form plan marker", decision(out) != "deny", str(out))
+        r_head = [json.loads(l) for l in open(obs_file)]
+        r_head = [r for r in r_head if r.get("sid") == "sess-PM6"]
+        check("envelope v2: '## Plan (…)' heading -> plan_marker_kind 'plan'",
+              bool(r_head) and r_head[-1].get("plan_marker_kind") == "plan", str(r_head[-1:]))
+
         print("== delegation_gate.py fail-open edge cases ==")
         fo_data = tempfile.mkdtemp(prefix="hjw-test-failopen-")
         try:
@@ -2162,10 +2232,20 @@ exit "$rc"
                 os.chmod(path, 0o755)
                 return path
 
+            def empty_data_dir_named(prefix):
+                """A fresh EMPTY data dir NAMED `haejwo-haejwo`. Since 2.17 a
+                CLAUDE_PLUGIN_DATA whose basename is anything else is foreign
+                and IGNORED — a fixture dir named `nocfg-xxxx` would fall
+                through to the developer's real ~/.claude config, which is the
+                opposite of hermetic."""
+                return os.path.join(
+                    tempfile.mkdtemp(dir=runner_tmp, prefix=prefix), "haejwo-haejwo")
+
             def run_script(script, args, extra_env, stdin_data="", cwd=None):
                 """Runner invocation with a HERMETIC env: every runner-read
                 env var is popped unless the fixture sets it, and
-                CLAUDE_PLUGIN_DATA points at a fresh empty dir so the
+                CLAUDE_PLUGIN_DATA points at a fresh empty dir NAMED
+                `haejwo-haejwo` (the only name the runner accepts) so the
                 derived (~/.claude/...) config path is never consulted by
                 accident. Pass CLAUDE_PLUGIN_DATA=None to opt out (the
                 derived-path fixtures need the real resolution)."""
@@ -2179,7 +2259,7 @@ exit "$rc"
                             "CLAUDE_EFFORT"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
-                    env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp, prefix="nocfg-")
+                    env["CLAUDE_PLUGIN_DATA"] = empty_data_dir_named("nocfg-")
                 env.update({k: v for k, v in extra_env.items() if v is not None})
                 p = subprocess.run(
                     ["bash", script] + args, input=stdin_data,
@@ -2214,7 +2294,11 @@ exit "$rc"
                 return write_file(os.path.join(runner_tmp, name), text)
 
             def cfg_dir_with(name, payload):
-                d = os.path.join(runner_tmp, name)
+                """`name` is only the unique PARENT: the data dir itself is
+                always named `haejwo-haejwo`, because that is the only
+                basename a runner will accept from CLAUDE_PLUGIN_DATA (2.17
+                ownership rule)."""
+                d = os.path.join(runner_tmp, name, "haejwo-haejwo")
                 os.makedirs(d, exist_ok=True)
                 with open(os.path.join(d, "config.json"), "w") as f:
                     json.dump(payload, f)
@@ -2519,7 +2603,7 @@ exit "$rc"
             # ---- (F9) the `codex` config block describes the HOST's reviewer:
             # on a codex host that reviewer is Claude, so the codex runner must
             # ignore model/effort/fallback_model there. ----
-            codex_host_cfg = cfg_dir_with(os.path.join(".codex", "plugins", "data", "haejwo-haejwo"),
+            codex_host_cfg = cfg_dir_with(os.path.join("host-codex", ".codex", "plugins", "data"),
                                           {"codex": {"model": "claude-reviewer-model"}})
             rc, out, err, calls = codex_run("model-codex-host", {"CLAUDE_PLUGIN_DATA": codex_host_cfg})
             check("host-relative config: codex runner ignores codex.model under a /.codex/ path",
@@ -2961,7 +3045,7 @@ exit "$rc"
             cap = os.path.join(runner_tmp, "cap-claude-model")
             make_stub(bin_dir, "claude", cap)
             claude_host_cfg = cfg_dir_with(
-                os.path.join(".codex", "plugins", "data", "haejwo-haejwo-claude"),
+                os.path.join("host-codex-claude", ".codex", "plugins", "data"),
                 {"codex": {"model": "cfg-model"}})
             rc, out, err = run_script(claude_script, [brief_file("claude-model-brief.md")], {
                 "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
@@ -2977,12 +3061,14 @@ exit "$rc"
             bin_dir = os.path.join(runner_tmp, "bin-claude-wrong-host")
             cap = os.path.join(runner_tmp, "cap-claude-wrong-host")
             make_stub(bin_dir, "claude", cap)
-            astra_cfg = cfg_dir_with("plugin-data-claude-host", {"codex": {"model": "gpt-6-astra"}})
+            astra_cfg = cfg_dir_with(
+                os.path.join("host-claude", ".claude", "plugins", "data"),
+                {"codex": {"model": "gpt-6-astra"}})
             rc, out, err = run_script(claude_script, [brief_file("claude-wrong-host-brief.md")], {
                 "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
                 "CLAUDE_PLUGIN_DATA": astra_cfg})
             calls = read_calls(cap)
-            check("claude: a non-/.codex/ config's codex.model is IGNORED (no --model passed)",
+            check("claude: a /.claude/ HOST config's codex.model is IGNORED (no --model passed)",
                   rc == 0 and bool(calls) and "--model" not in calls[0][0]
                   and "model=cli-default (identity unverified)" in out,
                   f"rc={rc} argv={calls[:1]} out={out}")
@@ -3027,7 +3113,7 @@ exit "$rc"
             check("sandbox precedence: invalid config value falls back to read-only",
                   sbx == "read-only", sbx)
 
-            cfg_dir3 = os.path.join(runner_tmp, "plugin-data-malformed")
+            cfg_dir3 = os.path.join(runner_tmp, "plugin-data-malformed", "haejwo-haejwo")
             os.makedirs(cfg_dir3, exist_ok=True)
             with open(os.path.join(cfg_dir3, "config.json"), "w") as f:
                 f.write("{ not valid json !!!")
@@ -3052,7 +3138,7 @@ exit "$rc"
             os.makedirs(stale_cfg_dir, exist_ok=True)
             with open(os.path.join(stale_cfg_dir, "config.json"), "w") as f:
                 json.dump({"codex": {"consult_sandbox": "danger-full-access"}}, f)
-            empty_data_dir = os.path.join(runner_tmp, "plugin-data-empty")
+            empty_data_dir = os.path.join(runner_tmp, "plugin-data-empty", "haejwo-haejwo")
             os.makedirs(empty_data_dir, exist_ok=True)  # no config.json inside
             sbx = sandbox_used({"HOME": stale_home, "CLAUDE_PLUGIN_DATA": empty_data_dir},
                                 "env-set-file-missing")
@@ -3066,6 +3152,331 @@ exit "$rc"
             sbx = sandbox_used({"HOME": "", "CLAUDE_PLUGIN_DATA": None}, "home-empty")
             check("sandbox precedence: empty $HOME in derived-path branch -> read-only, no crash",
                   sbx == "read-only", sbx)
+
+            # ---- (P1, 2.17) the config path is OWNED, never trusted from the
+            # shell. FIELD DEFECT 2026-09-28: a Claude Code session's Bash env
+            # carried CLAUDE_PLUGIN_DATA=<...>/data/codex-openai-codex (the
+            # LAST loaded plugin's dir), the runner read it verbatim, found no
+            # config, and silently ran three consults at the CLI default model
+            # in a read-only sandbox the owner had configured away from.
+            # Resolution is structural -> haejwo-named env -> derived -> none,
+            # and NOTHING falls back once an owner path is selected.
+            own_root = os.path.realpath(tempfile.mkdtemp(dir=runner_tmp, prefix="own-"))
+
+            def fake_install(name, vendor, payload, version="9.9.9"):
+                """The real installed-cache layout:
+                <plugins>/cache/haejwo/haejwo/<ver>/scripts/<runner> owns
+                <plugins>/data/haejwo-haejwo/config.json. `vendor` is the
+                .claude / .codex component the host dir really carries — it is
+                what names the host for the host-relative `codex` block.
+                payload=None builds the install with NO owner config."""
+                plugins = os.path.join(own_root, name, vendor, "plugins")
+                scripts = os.path.join(plugins, "cache", "haejwo", "haejwo",
+                                       version, "scripts")
+                shutil.copytree(SCRIPTS, scripts,
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                data = os.path.join(plugins, "data", "haejwo-haejwo")
+                os.makedirs(data, exist_ok=True)
+                if payload is not None:
+                    with open(os.path.join(data, "config.json"), "w") as f:
+                        json.dump(payload, f)
+                return scripts, os.path.join(data, "config.json")
+
+            def foreign_dir(name, payload=None):
+                """Another plugin's data dir — the exact shape the field
+                defect handed the runner. Its config must NEVER be read."""
+                d = os.path.join(own_root, name, "codex-openai-codex")
+                os.makedirs(d, exist_ok=True)
+                if payload is not None:
+                    with open(os.path.join(d, "config.json"), "w") as f:
+                        json.dump(payload, f)
+                return d
+
+            def own_run(label, script, env_extra, cli="codex"):
+                """One hermetic run that also hands back $LOG (the header is
+                where the selected config path is disclosed)."""
+                bin_dir = os.path.join(runner_tmp, f"bin-own-{label}")
+                cap = os.path.join(runner_tmp, f"cap-own-{label}")
+                make_stub(bin_dir, cli, cap)
+                env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
+                env.update(env_extra)
+                brief = brief_file(f"own-{label}.md")
+                rc, out, err = run_script(script, [brief], env)
+                log_path = os.path.splitext(brief)[0] + ".reply.log"
+                log = (open(log_path, encoding="utf-8").read()
+                       if os.path.isfile(log_path) else "")
+                return rc, out, err, read_calls(cap), log
+
+            # (t1) structural wins over a FOREIGN CLAUDE_PLUGIN_DATA, the
+            # owner's values are applied, and the foreign variable is disclosed
+            # exactly once — in $LOG and on stderr.
+            t1_scripts, t1_cfg = fake_install("t1", ".claude", {"codex": {
+                "model": "owner-model", "effort": "high",
+                "consult_sandbox": "danger-full-access"}})
+            t1_foreign = foreign_dir("t1", {"codex": {
+                "model": "foreign-model", "consult_sandbox": "read-only"}})
+            rc, out, err, calls, log = own_run(
+                "t1-codex", os.path.join(t1_scripts, "codex_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": t1_foreign})
+            argv = calls[0][0] if calls else []
+            note = ("# config: CLAUDE_PLUGIN_DATA=codex-openai-codex is not haejwo's "
+                    f"data dir — using {t1_cfg} (structural)")
+            check("P1 t1 codex: a FOREIGN CLAUDE_PLUGIN_DATA is ignored; the structural "
+                  "owner config is used",
+                  rc == 0 and argv_value(argv, "-m") == "owner-model"
+                  and argv_value(argv, "-s") == "danger-full-access"
+                  and 'model_reasoning_effort="high"' in argv,
+                  f"rc={rc} argv={argv} err={err}")
+            check("P1 t1 codex: log header discloses config=<owner path> (structural) "
+                  "config_status=ok",
+                  f"config={t1_cfg} (structural) config_status=ok" in log.splitlines()[0]
+                  if log else False, log[:400])
+            check("P1 t1 codex: the foreign variable is disclosed EXACTLY once in $LOG "
+                  "and once on stderr",
+                  log.count(note) == 1 and err.count(note) == 1,
+                  f"log={log.count(note)} err={err.count(note)} note={note}")
+            check("P1 t1 codex: the foreign dir's own config value is never read",
+                  "foreign-model" not in out + err + log, f"out={out} err={err}")
+
+            t1c_scripts, t1c_cfg = fake_install("t1c", ".codex", {"codex": {
+                "model": "owner-claude-model"}})
+            t1c_foreign = foreign_dir("t1c", {"codex": {"model": "foreign-model"}})
+            rc, out, err, calls, log = own_run(
+                "t1-claude", os.path.join(t1c_scripts, "claude_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": t1c_foreign}, cli="claude")
+            argv = calls[0][0] if calls else []
+            check("P1 t1 claude: structural owner config used, foreign env ignored",
+                  rc == 0 and argv_value(argv, "--model") == "owner-claude-model"
+                  and f"config={t1c_cfg} (structural) config_status=ok" in log,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+            check("P1 t1 claude: foreign variable disclosed once in $LOG and on stderr",
+                  log.count("is not haejwo's data dir") == 1
+                  and err.count("is not haejwo's data dir") == 1,
+                  f"log={log[:300]} err={err[:300]}")
+
+            # (t2) a working-tree runner has no structural layout, so a
+            # CLAUDE_PLUGIN_DATA NAMED haejwo-haejwo is honored — and labeled.
+            t2_cfg = cfg_dir_with("t2-env", {"codex": {"model": "env-dir-model",
+                                                       "effort": "low"}})
+            rc, out, err, calls, log = own_run("t2-codex", codex_script,
+                                               {"CLAUDE_PLUGIN_DATA": t2_cfg})
+            argv = calls[0][0] if calls else []
+            check("P1 t2 codex: CLAUDE_PLUGIN_DATA named haejwo-haejwo is honored, "
+                  "labeled (env), values applied",
+                  rc == 0 and argv_value(argv, "-m") == "env-dir-model"
+                  and 'model_reasoning_effort="low"' in argv
+                  and f"config={os.path.join(t2_cfg, 'config.json')} (env) config_status=ok" in log,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+            check("P1 t2 codex: an accepted env dir raises no foreign note",
+                  "is not haejwo's data dir" not in log + err, f"log={log[:300]} err={err}")
+
+            t2c_cfg = cfg_dir_with(os.path.join("t2c-env", ".codex", "plugins", "data"),
+                                   {"codex": {"model": "env-dir-claude-model"}})
+            rc, out, err, calls, log = own_run("t2-claude", claude_script,
+                                               {"CLAUDE_PLUGIN_DATA": t2c_cfg},
+                                               cli="claude")
+            argv = calls[0][0] if calls else []
+            check("P1 t2 claude: haejwo-named env dir honored and labeled (env)",
+                  rc == 0 and argv_value(argv, "--model") == "env-dir-claude-model"
+                  and f"config={os.path.join(t2c_cfg, 'config.json')} (env) config_status=ok" in log,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+
+            # (t3) no structural layout and no usable variable -> the DERIVED
+            # canonical path, chosen by /.codex/ in the runner's own path.
+            t3_home = os.path.join(own_root, "t3-home")
+            os.makedirs(t3_home, exist_ok=True)
+            rc, out, err, calls, log = own_run(
+                "t3-claude-host", codex_script,
+                {"CLAUDE_PLUGIN_DATA": None, "HOME": t3_home})
+            t3_derived = os.path.join(t3_home, ".claude", "plugins", "data",
+                                      "haejwo-haejwo", "config.json")
+            check("P1 t3 codex: unset variable -> derived ~/.claude path, labeled (derived), "
+                  "status absent",
+                  rc == 0 and f"config={t3_derived} (derived) config_status=absent" in log,
+                  f"rc={rc} log={log[:300]}")
+
+            t3_twin = os.path.join(own_root, "t3-twin", ".codex", "tool", "scripts")
+            shutil.copytree(SCRIPTS, t3_twin,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            rc, out, err, calls, log = own_run(
+                "t3-codex-host", os.path.join(t3_twin, "codex_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": None, "HOME": t3_home})
+            t3_derived_codex = os.path.join(t3_home, ".codex", "plugins", "data",
+                                            "haejwo-haejwo", "config.json")
+            check("P1 t3 codex: a runner under /.codex/ derives the ~/.codex twin",
+                  rc == 0 and f"config={t3_derived_codex} (derived) config_status=absent" in log,
+                  f"rc={rc} log={log[:300]}")
+
+            # (t4) NO fallback after selection: the owner path is structural and
+            # its file is MISSING, while BOTH a haejwo-named env dir and the
+            # derived path hold danger-full-access. Neither may be resurrected.
+            t4_scripts, t4_cfg = fake_install("t4", ".claude", None)
+            t4_env = cfg_dir_with("t4-env", {"codex": {
+                "model": "env-model", "consult_sandbox": "danger-full-access"}})
+            t4_home = os.path.join(own_root, "t4-home")
+            t4_home_cfg = os.path.join(t4_home, ".claude", "plugins", "data", "haejwo-haejwo")
+            os.makedirs(t4_home_cfg, exist_ok=True)
+            with open(os.path.join(t4_home_cfg, "config.json"), "w") as f:
+                json.dump({"codex": {"model": "home-model",
+                                     "consult_sandbox": "danger-full-access"}}, f)
+            rc, out, err, calls, log = own_run(
+                "t4", os.path.join(t4_scripts, "codex_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": t4_env, "HOME": t4_home})
+            argv = calls[0][0] if calls else []
+            check("P1 t4: structural path with NO file -> config_status=absent, never a "
+                  "fallback to the env or derived path (no stale danger-full-access)",
+                  rc == 0
+                  and f"config={t4_cfg} (structural) config_status=absent" in log
+                  and argv_value(argv, "-s") == "read-only"
+                  and argv_value(argv, "-m") is None
+                  and "model=cli-default (identity unverified)" in out,
+                  f"rc={rc} argv={argv} out={out} log={log[:300]}")
+
+            # (t5) malformed AT the owner path: status says so, behaviour is the
+            # unchanged one (no config -> read-only, no model).
+            t5_scripts, t5_cfg = fake_install("t5", ".claude", None)
+            with open(t5_cfg, "w") as f:
+                f.write("{ not valid json !!!")
+            rc, out, err, calls, log = own_run(
+                "t5", os.path.join(t5_scripts, "codex_consult.sh"), {})
+            argv = calls[0][0] if calls else []
+            check("P1 t5: malformed file at the owner path -> config_status=malformed, "
+                  "read-only + cli-default unchanged",
+                  rc == 0
+                  and f"config={t5_cfg} (structural) config_status=malformed" in log
+                  and argv_value(argv, "-s") == "read-only"
+                  and "model=cli-default (identity unverified)" in out,
+                  f"rc={rc} argv={argv} out={out} log={log[:300]}")
+
+            # (t6) CUSTOM plugin root: the selected path names no vendor, so the
+            # host follows the RUNNER KIND — codex_consult.sh is a Claude host's
+            # reviewer, claude_consult.sh a Codex host's. Both read their block.
+            t6_scripts, t6_cfg = fake_install("t6", "custom-root",
+                                              {"codex": {"model": "custom-root-model"}})
+            rc, out, err, calls, log = own_run(
+                "t6-codex", os.path.join(t6_scripts, "codex_consult.sh"), {})
+            argv = calls[0][0] if calls else []
+            check("P1 t6 codex: a custom plugin root (no /.claude/ or /.codex/) reads "
+                  "codex.model — the runner kind names the host",
+                  rc == 0 and argv_value(argv, "-m") == "custom-root-model"
+                  and f"config={t6_cfg} (structural) config_status=ok" in log,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+
+            t6c_scripts, t6c_cfg = fake_install("t6c", "custom-root",
+                                                {"codex": {"model": "custom-root-claude"}})
+            rc, out, err, calls, log = own_run(
+                "t6-claude", os.path.join(t6c_scripts, "claude_consult.sh"), {},
+                cli="claude")
+            argv = calls[0][0] if calls else []
+            check("P1 t6 claude: same custom root, claude runner reads codex.model too",
+                  rc == 0 and argv_value(argv, "--model") == "custom-root-claude"
+                  and f"config={t6c_cfg} (structural) config_status=ok" in log,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+
+            # (t7) nothing is determinable: no structural layout, a foreign
+            # variable, and an empty $HOME. Source `none`, and the runner still
+            # says out loud which variable it refused.
+            t7_foreign = foreign_dir("t7", {"codex": {"consult_sandbox": "danger-full-access"}})
+            rc, out, err, calls, log = own_run(
+                "t7", codex_script, {"CLAUDE_PLUGIN_DATA": t7_foreign, "HOME": ""})
+            argv = calls[0][0] if calls else []
+            check("P1 t7: empty $HOME + no structural layout + foreign variable -> "
+                  "config=none (none) config_status=none, read-only, note still emitted",
+                  rc == 0
+                  and "config=none (none) config_status=none" in log
+                  and argv_value(argv, "-s") == "read-only"
+                  and log.count("is not haejwo's data dir") == 1
+                  and err.count("is not haejwo's data dir") == 1,
+                  f"rc={rc} argv={argv} log={log[:300]} err={err[:300]}")
+
+            # (t8, 2.17.0) trailing separators are not a classification.
+            # `.../haejwo-haejwo/` and `.../haejwo-haejwo//` are the SAME
+            # directory, but `${v%/}` stripped exactly one, so the `//`
+            # spelling was read as foreign and fell through to `derived`.
+            t8_cfg = cfg_dir_with("t8-env", {"codex": {"model": "slash-model"}})
+            for slash_label, suffix in (("one slash", "/"), ("two slashes", "//")):
+                rc, out, err, calls, log = own_run(
+                    f"t8-{len(suffix)}", codex_script,
+                    {"CLAUDE_PLUGIN_DATA": t8_cfg + suffix})
+                argv = calls[0][0] if calls else []
+                check(f"P1 t8: CLAUDE_PLUGIN_DATA with {slash_label} trailing still "
+                      "classifies as (env) — same dir, same source, no foreign note",
+                      rc == 0 and argv_value(argv, "-m") == "slash-model"
+                      and f"config={t8_cfg}{suffix}/config.json (env) config_status=ok" in log
+                      and "is not haejwo's data dir" not in log + err,
+                      f"rc={rc} argv={argv} log={log[:300]} err={err[:200]}")
+
+            # (t9) the defect that made it matter: the `//` env dir holds NO
+            # config while the derived path holds danger-full-access. Source
+            # must stay (env)/absent, and the stale consent must not revive.
+            t9_home = os.path.join(own_root, "t9-home")
+            t9_home_cfg = os.path.join(t9_home, ".claude", "plugins", "data",
+                                       "haejwo-haejwo")
+            os.makedirs(t9_home_cfg, exist_ok=True)
+            with open(os.path.join(t9_home_cfg, "config.json"), "w") as f:
+                json.dump({"codex": {"model": "home-model",
+                                     "consult_sandbox": "danger-full-access"}}, f)
+            t9_env = os.path.join(own_root, "t9-env", "haejwo-haejwo")
+            os.makedirs(t9_env, exist_ok=True)  # no config.json inside
+            rc, out, err, calls, log = own_run(
+                "t9", codex_script,
+                {"CLAUDE_PLUGIN_DATA": t9_env + "//", "HOME": t9_home})
+            argv = calls[0][0] if calls else []
+            # CFG_PATH keeps the variable's own spelling: "<dir>//" + "/config.json".
+            t9_disp = f"config={t9_env}///config.json (env) config_status=absent"
+            check("P1 t9: a `//`-spelled env dir with no file -> (env) config_status=absent, "
+                  "read-only — the derived path's danger-full-access is NOT resurrected",
+                  rc == 0
+                  and t9_disp in log
+                  and argv_value(argv, "-s") == "read-only"
+                  and argv_value(argv, "-m") is None,
+                  f"rc={rc} argv={argv} log={log[:300]}")
+
+            # (t10) foreignness is a property of the VARIABLE, not of which
+            # source won. A structural install whose host also exports a
+            # haejwo-named dir is not "foreign" — the note used to say
+            # "CLAUDE_PLUGIN_DATA=haejwo-haejwo is not haejwo's data dir".
+            t10_scripts, t10_cfg = fake_install("t10", ".claude",
+                                                {"codex": {"model": "own-model"}})
+            rc, out, err, calls, log = own_run(
+                "t10-self", os.path.join(t10_scripts, "codex_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": os.path.dirname(t10_cfg)})
+            check("P1 t10: structural wins while the variable names haejwo's OWN data "
+                  "dir -> no foreign note",
+                  rc == 0 and f"config={t10_cfg} (structural) config_status=ok" in log
+                  and "is not haejwo's data dir" not in log + err,
+                  f"rc={rc} log={log[:300]} err={err[:200]}")
+
+            t10b = cfg_dir_with("t10b-other", {"codex": {"model": "other-haejwo-model"}})
+            rc, out, err, calls, log = own_run(
+                "t10-other", os.path.join(t10_scripts, "codex_consult.sh"),
+                {"CLAUDE_PLUGIN_DATA": t10b})
+            argv = calls[0][0] if calls else []
+            check("P1 t10: a DIFFERENT haejwo-haejwo dir is still not foreign (no note), "
+                  "and structural still wins the selection",
+                  rc == 0 and argv_value(argv, "-m") == "own-model"
+                  and f"config={t10_cfg} (structural) config_status=ok" in log
+                  and "is not haejwo's data dir" not in log + err,
+                  f"rc={rc} argv={argv} log={log[:300]} err={err[:200]}")
+
+            # (t11) a config path may legally contain a newline, and the log
+            # header is ONE line: display fields escape control characters
+            # while CFG_PATH keeps the raw bytes it is opened with.
+            t11_data = os.path.join(own_root, "t11-nl\nparent", "haejwo-haejwo")
+            os.makedirs(t11_data, exist_ok=True)
+            with open(os.path.join(t11_data, "config.json"), "w") as f:
+                json.dump({"codex": {"model": "newline-model"}}, f)
+            rc, out, err, calls, log = own_run(
+                "t11", codex_script, {"CLAUDE_PLUGIN_DATA": t11_data})
+            argv = calls[0][0] if calls else []
+            t11_disp = ("config="
+                        + os.path.join(t11_data, "config.json").replace("\n", "\\n")
+                        + " (env) config_status=ok")
+            check("P1 t11: a newline in the config path is escaped in the header (one "
+                  "line) and the config is still read from the RAW path",
+                  rc == 0 and bool(log) and t11_disp in log.splitlines()[0]
+                  and argv_value(argv, "-m") == "newline-model",
+                  f"rc={rc} argv={argv} log={log[:400]!r}")
 
             # explicit CODEX_SANDBOX allowlist: invalid ENV value is caller
             # input and deserves a loud error, not a silent downgrade.
@@ -3158,8 +3569,7 @@ exit "$rc"
                             "CLAUDE_EFFORT"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
-                    env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp,
-                                                                 prefix="nocfg-")
+                    env["CLAUDE_PLUGIN_DATA"] = empty_data_dir_named("nocfg-h-")
                 env.update({k: v for k, v in extra_env.items() if v is not None})
                 return env
 

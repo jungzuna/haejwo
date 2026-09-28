@@ -157,6 +157,13 @@ hjw_common_init() {
   # asks git (`worktree list --porcelain`), so an interruption between `mktemp`
   # and `worktree add` cannot leave the wrong removal strategy behind.
   META_VAL=""
+  # Config ownership state (hjw_config_resolve/_load/_disclose fill these in).
+  CFG_PATH=""
+  CFG_SOURCE="none"
+  CFG_STATUS="none"
+  CFG_DISP=""
+  CFG_FOREIGN_NOTE=""
+  CFG_FOREIGN_REPORTED=0
   ORIG=""
   SNAP=""
   SNAPMETA=""
@@ -365,37 +372,163 @@ report_snapshot_cleanup() {
 }
 
 # ---- config ----
-# Path resolution (shared by every config key): CLAUDE_PLUGIN_DATA set
-# (non-empty) means ONLY that path — a missing file there is "no config" and
-# NEVER falls back to the derived path, which could resurrect a stale
-# danger-full-access setting from elsewhere.
+# OWNERSHIP, not the shell's word for it. `CLAUDE_PLUGIN_DATA` in a host's
+# Bash environment is the data dir of the LAST LOADED plugin, not haejwo's:
+# measured 2026-09-28 in a three-plugin Claude Code session, where the
+# reviewer runner read another vendor's dir, found "no config", and silently
+# ran three consults at the CLI default model in a read-only sandbox the
+# owner had explicitly configured away from. A config path is therefore
+# DERIVED FROM OWNERSHIP and only accepted from the environment when the
+# environment names haejwo's own dir.
+#
+# EXACTLY ONE owner path is selected, in this order, and the source is
+# recorded with it:
+#   structural  $HJW_SELF (the runner's own resolved path) sits in the
+#               installed-cache layout <plugins>/cache/haejwo/haejwo/<ver>/
+#               scripts/<runner> -> <plugins>/data/haejwo-haejwo/config.json.
+#               The environment is IGNORED here: the install location is a
+#               stronger statement of ownership than any variable.
+#   env         else CLAUDE_PLUGIN_DATA is non-empty AND its basename is
+#               exactly `haejwo-haejwo` (tests, local checkouts, a host that
+#               really does export ours).
+#   derived     else ${HOME}/.codex|.claude/plugins/data/haejwo-haejwo/
+#               config.json, chosen by /.codex/ in $HJW_SELF's text.
+#   none        no owner path determinable (e.g. empty $HOME with neither a
+#               structural layout nor a haejwo-named env dir).
+# After selection there is NO further fallback: a missing, unreadable or
+# malformed file at the owner path is `absent`/`malformed`, NEVER another
+# path. Canonical location establishes OWNERSHIP, not freshness — falling
+# back once an owner config disappears could resurrect a stale
+# danger-full-access consent from somewhere else.
+#
+# A set-but-FOREIGN CLAUDE_PLUGIN_DATA (non-empty, basename != haejwo-haejwo)
+# is ignored and DISCLOSED once, by `hjw_config_disclose` — after the
+# entrypoint has written its log header, which truncates $LOG. Foreignness is
+# judged on the VARIABLE ALONE, never on which source won: haejwo's own dir
+# in the variable raises no note just because the structural path outranked
+# it.
+#
+# OWNERSHIP HERE IS A NAMING HEURISTIC, not authentication. It answers the
+# measured defect — ANOTHER PLUGIN's data dir arriving in the variable — and
+# nothing beyond it: the structural branch accepts any path shaped like the
+# installed cache (the <ver> component need not look like a version), and the
+# env branch accepts any directory whose last component reads
+# `haejwo-haejwo`, including a relative one or a symlink (the config is then
+# read through it, at its target). Someone who can choose these paths already
+# chose the runner this file is part of; ruling that out would need a trust
+# source this layer does not have.
 #
 # The path is derived in SHELL, not in config.py: a config path may legally
-# contain a newline, and $0 is only the entrypoint's name inside the shell
-# that runs it. Host detection then reads the selected path's TEXT (never its
-# canonical target) — both runners have always behaved that way.
-hjw_config_path() {
-  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-    printf '%s' "${CLAUDE_PLUGIN_DATA}/config.json"
-  else
-    local self_path
-    self_path="$(realpath "$0" 2>/dev/null || printf '%s' "$0")"
-    case "$self_path" in
-      # ${HOME:-}: set -u safe; an empty $HOME yields a root-anchored path
-      # that will not exist, so [ -f "$cfg" ] treats it as "no config".
-      */.codex/*) printf '%s' "${HOME:-}/.codex/plugins/data/haejwo-haejwo/config.json" ;;
-      *)          printf '%s' "${HOME:-}/.claude/plugins/data/haejwo-haejwo/config.json" ;;
-    esac
+# contain a newline, so it is assigned to a variable rather than carried
+# through a command substitution (which strips trailing newlines). Host
+# detection then reads the selected path's TEXT (never its canonical target)
+# — both runners have always behaved that way.
+hjw_data_dir_basename() {
+  # Sets HJW_BASENAME to $1's last component with ALL trailing separators
+  # stripped first. `${1%/}` strips exactly ONE, so `.../haejwo-haejwo/` and
+  # `.../haejwo-haejwo//` — the same directory — classified differently, and
+  # the `//` spelling fell through to `derived`, where a stale
+  # danger-full-access consent could be resurrected (measured 2026-09-28).
+  local d="$1"
+  while [ "$d" != "${d%/}" ]; do d="${d%/}"; done
+  HJW_BASENAME="${d##*/}"
+}
+
+hjw_esc_display() {
+  # Sets HJW_ESC: $1 with the control characters that would SPLIT or garble a
+  # one-line log header rendered as TEXT (\n, \r, \t), and any other control
+  # character as `?`. DISPLAY ONLY — CFG_PATH keeps the raw bytes, since that
+  # is the file actually opened; a config path may legally contain a newline.
+  # One-way on purpose: a name holding a literal backslash-n and one holding a
+  # real newline print the same. Assigns to a global rather than printing —
+  # `$(...)` would eat exactly the trailing newline this is here to show.
+  local s="$1"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  s="${s//[[:cntrl:]]/?}"
+  HJW_ESC="$s"
+}
+
+hjw_config_resolve() {
+  # Sets CFG_PATH, CFG_SOURCE and CFG_FOREIGN_NOTE. No stdout: diagnostics
+  # here would be mistaken for the path itself.
+  local dir base plugins
+  CFG_PATH=""; CFG_SOURCE="none"; CFG_FOREIGN_NOTE=""
+
+  # (a) structural — the exact installed-cache layout, nothing looser.
+  dir="${HJW_SELF%/*}"                      # .../<ver>/scripts
+  case "$dir" in
+    */scripts)
+      dir="${dir%/scripts}"                 # .../<ver>
+      dir="${dir%/*}"                       # .../cache/haejwo/haejwo
+      case "$dir" in
+        */cache/haejwo/haejwo)
+          plugins="${dir%/cache/haejwo/haejwo}"
+          # A real install is never at the filesystem root; an empty prefix
+          # would name /data/haejwo-haejwo, which is nobody's plugin dir.
+          [ -n "$plugins" ] && { CFG_PATH="$plugins/data/haejwo-haejwo/config.json"; CFG_SOURCE="structural"; }
+          ;;
+      esac
+      ;;
+  esac
+
+  # (b) env — only when it names haejwo's OWN data dir.
+  if [ -z "$CFG_PATH" ] && [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    hjw_data_dir_basename "$CLAUDE_PLUGIN_DATA"
+    if [ "$HJW_BASENAME" = "haejwo-haejwo" ]; then
+      # The variable's own spelling stays the operational path: a trailing
+      # separator is not significant to any filesystem call.
+      CFG_PATH="${CLAUDE_PLUGIN_DATA}/config.json"; CFG_SOURCE="env"
+    fi
   fi
+
+  # (c) derived — haejwo's canonical location under $HOME.
+  if [ -z "$CFG_PATH" ] && [ -n "${HOME:-}" ]; then
+    case "$HJW_SELF" in
+      */.codex/*) CFG_PATH="${HOME}/.codex/plugins/data/haejwo-haejwo/config.json" ;;
+      *)          CFG_PATH="${HOME}/.claude/plugins/data/haejwo-haejwo/config.json" ;;
+    esac
+    CFG_SOURCE="derived"
+  fi
+
+  # (d) a foreign variable is never silently discarded — and only a foreign
+  # one is reported. Keyed on the VARIABLE, not on `$CFG_SOURCE != env`: with
+  # a structural install the source is never `env`, so that test called
+  # haejwo's own exported dir foreign ("CLAUDE_PLUGIN_DATA=haejwo-haejwo is
+  # not haejwo's data dir", measured 2026-09-28).
+  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    hjw_data_dir_basename "$CLAUDE_PLUGIN_DATA"
+    if [ "$HJW_BASENAME" != "haejwo-haejwo" ]; then
+      hjw_esc_display "$HJW_BASENAME"; base="$HJW_ESC"
+      hjw_esc_display "${CFG_PATH:-none}"
+      CFG_FOREIGN_NOTE="# config: CLAUDE_PLUGIN_DATA=$base is not haejwo's data dir — using $HJW_ESC ($CFG_SOURCE)"
+    fi
+  fi
+  return 0
+}
+
+hjw_config_disclose() {
+  # The foreign-variable note, exactly once, into $LOG and onto stderr. The
+  # entrypoint calls this AFTER its header write (`> "$LOG"`) — appending
+  # during config loading would be truncated away by it.
+  [ -n "$CFG_FOREIGN_NOTE" ] || return 0
+  [ "$CFG_FOREIGN_REPORTED" = 1 ] && return 0
+  CFG_FOREIGN_REPORTED=1
+  printf '%s\n' "$CFG_FOREIGN_NOTE" >> "$LOG" 2>/dev/null
+  printf '%s\n' "$CFG_FOREIGN_NOTE" >&2
+  return 0
 }
 
 hjw_config_values() {
   # Prints `model=`, `effort=`, `fallback_model=` and `ignored=` (keys present
   # but not strings) — or NOTHING at all when the `codex` block describes the
   # OTHER vendor's reviewer. HOST-RELATIVE: that block belongs to the reviewer
-  # of the host that owns the data dir, so the codex runner reads it only
-  # OUTSIDE a /.codex/ path and the claude runner only INSIDE one. Any parse
-  # failure is "no config" — a reviewer runner never guesses.
+  # of the host that owns the data dir, so on a VENDOR path the codex runner
+  # reads it only OUTSIDE a /.codex/ path and the claude runner only INSIDE
+  # one. A custom plugin root names no vendor, and there the host follows the
+  # RUNNER KIND instead — both runners read their own block (config.py). Any
+  # parse failure is "no config" — a reviewer runner never guesses.
   # *[origin: a live smoke launched the claude reviewer with the codex host's
   # own model name]*
   [ -n "$CFG_PATH" ] && [ -f "$CFG_PATH" ] || return 0
@@ -411,11 +544,27 @@ hjw_config_sandbox() {
   bounded 60 python3 "$HJW_LIB/config.py" sandbox "$CFG_PATH" 2>/dev/null
 }
 
+hjw_config_status() {
+  # ok | absent | malformed for the OWNER path — the read status, kept apart
+  # from CFG_SOURCE (where the path came from). `none` belongs to the source,
+  # not here: it means no path was ever selected to read.
+  [ -n "$CFG_PATH" ] || { printf 'none'; return 0; }
+  bounded 60 python3 "$HJW_LIB/config.py" status "$CFG_PATH" 2>/dev/null
+}
+
 hjw_config_load() {
-  # Sets CFG_PATH and the CFG_* values, and emits the "ignored" notes in the
-  # order the config lists them — before any sandbox/effort resolution, which
-  # is where the caller's own notes belong.
-  CFG_PATH="$(hjw_config_path)"
+  # Sets CFG_PATH/CFG_SOURCE/CFG_STATUS and the CFG_* values, and emits the
+  # "ignored" notes in the order the config lists them — before any
+  # sandbox/effort resolution, which is where the caller's own notes belong.
+  # The foreign-variable note is NOT emitted here: $LOG does not exist yet
+  # (see hjw_config_disclose).
+  hjw_config_resolve
+  CFG_STATUS="$(hjw_config_status)"
+  [ -n "$CFG_STATUS" ] || CFG_STATUS="absent"
+  # The header is ONE line: a path's control characters are escaped for
+  # display here, never in CFG_PATH itself.
+  hjw_esc_display "${CFG_PATH:-none}"
+  CFG_DISP="config=$HJW_ESC ($CFG_SOURCE) config_status=$CFG_STATUS"
   CFG_MODEL=""; CFG_EFFORT=""; CFG_FALLBACK_MODEL=""; CFG_IGNORED=""
   local values old_ifs k
   values="$(hjw_config_values)"

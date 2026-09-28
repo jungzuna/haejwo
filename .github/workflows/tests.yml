@@ -7,7 +7,13 @@ jobs:
   contract-tests:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the 2.18 forwarding suite builds a REAL pre-2.18
+      # destination out of git history (a copy of today's scripts under an old
+      # version label would prove nothing), and a depth-1 checkout would make
+      # that fixture skip itself.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"

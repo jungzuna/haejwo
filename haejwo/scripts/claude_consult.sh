@@ -5,7 +5,7 @@
 #
 # Shape (2.13): the mechanics both reviewer runners share — parsing, paths,
 # the wall clock, --snapshot, change detection, config, cleanup — live in
-# `scripts/lib` (`consult_common.sh` + four python helpers). THIS file owns
+# `scripts/lib` (`consult_common.sh` + five python helpers). THIS file owns
 # everything vendor-specific: the REVIEWER CONTRACT text, the `claude -p`
 # argv and its `--disallowedTools`, the chdir into the snapshot (claude has
 # no --cd), the timeout default, and the non-git policy (no sandbox exists on
@@ -137,7 +137,7 @@ case "$HJW_SELF" in
   *)  HJW_SELF="$PWD/${HJW_SELF:-$0}" ;;
 esac
 HJW_LIB="${HJW_SELF%/*}/lib"
-for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py; do
+for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py forward.py; do
   [ -f "$HJW_LIB/$_hjw_f" ] || {
     echo "consult runner library missing: $HJW_LIB/$_hjw_f" >&2; exit 3; }
 done
@@ -146,6 +146,14 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=claude
+
+# A remembered runner path outlives the version it named: old cache versions
+# stay on disk, and a session that was updated in place keeps the path it was
+# briefed with. This is the FIRST action after sourcing — before parsing,
+# stdin, traps, temp files, config selection or any chdir — so a forwarded run
+# is indistinguishable from having invoked the installed runner directly.
+# Fail open: any doubt at all and this returns, and the run continues HERE.
+hjw_forward_if_stale "$@"
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to claude, on
 # every input path. Durable owner policy — not brief-specific, do not let
@@ -235,7 +243,7 @@ else MODEL_DISP="model=cli-default (identity unverified)"; fi
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
 {
-  echo "# claude_consult v1.2  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# claude_consult v1.2  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
 } > "$LOG"
 # The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is

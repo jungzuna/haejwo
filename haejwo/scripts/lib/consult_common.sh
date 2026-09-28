@@ -75,6 +75,132 @@ bounded() {
   python3 "$HJW_LIB/bounded.py" "$secs" "$@"
 }
 
+# ---- self-forwarding: a runner invoked from a STALE cache path (2.18) ----
+# FIELD DEFECT 2026-09-28 (khnp-rag session): the session started on 2.16.1,
+# 2.17.0 was installed while it was open, and `/reload-plugins` refreshed
+# hooks and commands but did NOT re-inject the SessionStart brief. The host
+# kept invoking the LITERAL 2.16.1 path it still carried in context — old
+# cache versions stay on disk — so three more plan consults ran with the
+# 2.16.1 defect (`model=cli-default (identity unverified)`, no `config=`).
+# Instruction-following is what failed here, so the fix cannot be more
+# instructions: the RUNNER is the one component that learns the truth at the
+# right moment, and it forwards ITSELF to the installed version.
+#
+# This heals only FUTURE staleness: an already-installed 2.17.0 runner has no
+# forwarding code in it. From 2.18 on, a remembered path self-heals.
+#
+# FAIL OPEN at every step. No manifest, no registry, an unparseable one, an
+# ambiguous one, an incomplete target, a failed exec — all of them mean "run
+# locally". Forwarding is a convenience over the host's own bookkeeping file;
+# it must never become the reason a review does not happen.
+#
+# HOST-SCOPED: the registry path is derived from the INVOKED runner's own
+# `<plugins>` prefix, so a Codex-host runner can only ever consult
+# `~/.codex/plugins/installed_plugins.json`. A Codex host keeps no such
+# registry today, which makes forwarding a documented no-op there — never a
+# cross-host read into Claude's registry.
+HJW_PLUGIN_VERSION=""
+HJW_PLUGIN_VERSION_LOADED=0
+
+hjw_plugin_version_load() {
+  # Sets HJW_PLUGIN_VERSION from the runner's OWN root manifest, at most once.
+  # The root is derived from $HJW_SELF (runner = <root>/scripts/<name>), never
+  # from the environment: which manifest describes this process is a question
+  # only its own location can answer. An unknown version is "" — the header
+  # then prints `plugin=unknown` rather than a guess.
+  [ "$HJW_PLUGIN_VERSION_LOADED" = 1 ] && return 0
+  HJW_PLUGIN_VERSION_LOADED=1
+  local root raw
+  root="${HJW_SELF%/*}"                     # .../scripts
+  case "$root" in */scripts) ;; *) return 0 ;; esac
+  root="${root%/scripts}"                   # .../<root>
+  [ -n "$root" ] || return 0
+  raw="$(bounded 20 python3 "$HJW_LIB/forward.py" version \
+           "$root/.claude-plugin/plugin.json" 2>/dev/null)" || return 0
+  strip_sentinel "$raw" || return 0
+  HJW_PLUGIN_VERSION="$META_VAL"
+  return 0
+}
+
+hjw_forward_if_stale() {
+  # $@ = the entrypoint's OWN argv, forwarded byte for byte. Called as the
+  # first action after sourcing — before argument parsing, stdin consumption,
+  # traps, temp files, config selection or any chdir — so that a forwarded run
+  # is indistinguishable from having invoked the installed runner directly:
+  # same cwd, same stdin, same descriptors, same argv, same environment bar
+  # the hop marker.
+  local root plugins dir name raw version target esc_own esc_ver esc_target
+
+  # (1) Hop marker. A forwarded run never forwards again, and the marker is
+  # removed from the ENVIRONMENT here so no reviewer process the destination
+  # spawns can ever see it. Nothing else happens on this branch.
+  if [ -n "${HJW_FORWARDED:-}" ]; then
+    unset HJW_FORWARDED
+    return 0
+  fi
+
+  # (2) Own version. Without it there is nothing to compare, so nothing to do.
+  hjw_plugin_version_load
+  [ -n "$HJW_PLUGIN_VERSION" ] || return 0
+
+  # (3) Structural gate — the exact installed-cache layout, nothing looser:
+  # <plugins>/cache/haejwo/haejwo/<ver>/scripts/<runner>. A DEVELOPMENT
+  # CHECKOUT is never redirected; a maintainer running the working tree gets
+  # the working tree, whatever any registry says.
+  dir="${HJW_SELF%/*}"                      # .../<ver>/scripts
+  name="${HJW_SELF##*/}"
+  [ -n "$name" ] || return 0
+  case "$dir" in */scripts) ;; *) return 0 ;; esac
+  root="${dir%/scripts}"                    # .../<ver>
+  dir="${root%/*}"                          # .../cache/haejwo/haejwo
+  case "$dir" in */cache/haejwo/haejwo) ;; *) return 0 ;; esac
+  plugins="${dir%/cache/haejwo/haejwo}"
+  # A real install is never at the filesystem root.
+  [ -n "$plugins" ] || return 0
+
+  # (4,5) Candidate selection and target validation, in one bounded helper:
+  # both are JSON reads, and a hung or huge file must not stall a review that
+  # has not started. Prints the winner or NOTHING at all.
+  raw="$(bounded 20 python3 "$HJW_LIB/forward.py" target \
+           "$plugins/installed_plugins.json" "$dir" "$HJW_PLUGIN_VERSION" \
+           "$HJW_SELF" "$name" 2>/dev/null)" || return 0
+  # The sentinel — not the shell — marks where each value stops: an install
+  # path may legally end in a newline, which the substitution above eats.
+  case "$raw" in
+    *"$SNAP_META_END") ;;
+    *) return 0 ;;
+  esac
+  raw="${raw%"$SNAP_META_END"}"
+  version="${raw%%"$SNAP_META_END"*}"
+  target="${raw#*"$SNAP_META_END"}"
+  [ -n "$version" ] && [ -n "$target" ] || return 0
+
+  # (6) Forward exactly once. The diagnostic is the whole audit trail for a
+  # hop the caller never asked for, so it is never suppressed — and it is
+  # escaped to ONE line, because a control character in a path must not be
+  # able to forge extra output.
+  hjw_esc_display "$HJW_PLUGIN_VERSION"; esc_own="$HJW_ESC"
+  hjw_esc_display "$version"; esc_ver="$HJW_ESC"
+  hjw_esc_display "$target"; esc_target="$HJW_ESC"
+  printf '# runner %s is stale — forwarding to %s (%s)\n' \
+    "$esc_own" "$esc_ver" "$esc_target" >&2
+  export HJW_FORWARDED=1
+  # A non-interactive bash EXITS when `exec` fails, which would turn a broken
+  # cache entry into a review that silently never ran. `execfail` turns that
+  # into a return, and the run continues here.
+  # On that path bash ALSO prints its own error for the failed exec, and that
+  # line is emitted by the shell — it is not escaped by hjw_esc_display. So
+  # stderr carries three things, not two: our hop line, bash's message, and our
+  # fallback line. What is guaranteed is one hop line and one fallback line,
+  # which is what the tests assert; the total stderr line count is not ours.
+  shopt -s execfail
+  exec "$target" "$@"
+  shopt -u execfail
+  printf '# forwarding failed — running %s locally\n' "$esc_own" >&2
+  unset HJW_FORWARDED
+  return 0
+}
+
 # ---- argument parsing ----
 # The CURRENT option set, unchanged: no new options and no extension hook —
 # an unused mechanism is a future divergence with no caller to justify it.
@@ -151,6 +277,13 @@ hjw_common_init() {
   TMPBRIEF=""
   EFFECTIVE_BRIEF=""
   SNAPDIR=""
+  # `plugin=<own version>` for the log header. After a forward the log must
+  # prove WHICH version ran, not which one the caller typed — so this is read
+  # from the RUNNING process's own manifest (cached; the forwarding step has
+  # usually filled it already).
+  hjw_plugin_version_load
+  hjw_esc_display "${HJW_PLUGIN_VERSION:-unknown}"
+  HJW_PLUGIN_DISP="plugin=$HJW_ESC"
   # --snapshot state. ORIG is the ORIGINAL repository root, SNAP the detached
   # worktree, SNAPMETA the capture scratch dir (patch + computed disclosure).
   # Who owns SNAP is never inferred from a marker this script wrote — cleanup
@@ -399,7 +532,10 @@ report_snapshot_cleanup() {
 # malformed file at the owner path is `absent`/`malformed`, NEVER another
 # path. Canonical location establishes OWNERSHIP, not freshness — falling
 # back once an owner config disappears could resurrect a stale
-# danger-full-access consent from somewhere else.
+# danger-full-access consent from somewhere else. Freshness is a SEPARATE
+# question, answered earlier and elsewhere: `hjw_forward_if_stale` has already
+# decided whether this process should be the one reading a config at all, so
+# by the time resolution runs, $HJW_SELF is the version that will do the work.
 #
 # A set-but-FOREIGN CLAUDE_PLUGIN_DATA (non-empty, basename != haejwo-haejwo)
 # is ignored and DISCLOSED once, by `hjw_config_disclose` — after the

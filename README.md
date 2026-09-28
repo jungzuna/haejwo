@@ -26,7 +26,7 @@ Requires `python3` (CI tests 3.10); the reviewer runners also use Bash and git. 
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
-/reload-plugins   # only if a session is open
+/reload-plugins   # only if a session is open (reloads hooks and commands; rules need a restart)
 /haejwo:setup     # optional — safe defaults already work
 ```
 
@@ -37,7 +37,7 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills.
 
-Hooks load at session start — restart the session after install. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
+Hooks load at session start; restart the session after install. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
 
 ## What you get
 

@@ -28,6 +28,7 @@ Claude Code: AskUserQuestion. Codex: the selection UI, else numbered chat choice
 Gate, bash-guard and tier answers persist with `"configured": true` in the SAME write — they ARE the configuration; a later reviewer failure must never lose them. Key names, never guessed — shape from `DEFAULT_CONFIG` in `${CLAUDE_PLUGIN_ROOT}/scripts/hjw_common.py`; setup writes `gate.{enabled,max_files_per_turn,bash_guard}`, `models.{deep_reasoner,default_worker,task_worker}` (Claude Code) / `models_codex.{…}` (Codex), `codex.{enabled,model,effort,fallback_model,consult_sandbox,verified_at,danger_full_access_consented_at}`, `configured`.
 
 ## 3. Reviewer enabled → verify end-to-end (consent-gated)
+Before recording `verified_at`, confirm the runner's log header `config=<path>` names the same config.json setup writes.
 0. **Reviewer keys persist FIRST, before any probe** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code), `codex.fallback_model`. Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`) so what is verified is what is stored; the smoke pins `CODEX_EFFORT=low` (connectivity only), the repo-read probe unsets it and verifies the stored effort.
 1. **Self-contained smoke** — a tiny brief needing no repo access, safe in any sandbox. Claude Code host:
    ```

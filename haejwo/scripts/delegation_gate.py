@@ -314,16 +314,56 @@ def _tier_pin_check(subagent_type, model, requested_model, cfg, cfg_status, root
     return "deny", file_default, pin
 
 
+# A plan marker is a LABEL AT THE HEAD OF A LINE, and hosts write that label
+# the way markdown writes labels: `Plan:`, `**Plan**:`, `**Plan:**`,
+# `## Plan (합의본 — …)`, `Plan —`, or `Plan` alone on a heading line. The
+# substring match alone recorded plan_marker_kind=none for a brief that DID
+# embed the agreed plan under a heading (measured 2026-09-28), so the label
+# forms are recognized too.
+#
+# Line-local by construction: `[ \t]` never matches a newline, so a "Plan"
+# on one line can never be joined to a separator on the next — `\s` would
+# have done exactly that. The separator set is `:`, `(`, a dash followed by
+# space or end of line, or end of line; a bare `Plan ` followed by prose is
+# NOT a marker ("Plan to investigate" is a sentence, not a label), and `\b`
+# keeps "Planning notes" out.
+# A leading list bullet is part of how hosts write the label too — a brief's
+# plan line often arrives as `- **Plan**: body`. `[-*]` must be followed by
+# whitespace, so `**Plan**` itself can never be read as a bullet.
+_MARKER_HEAD = r"^[ \t]*(?:[-*][ \t]+)?(?:\#{1,6}[ \t]*)?(?:\*\*[ \t]*)?"
+# After the label: an optional closing `**` on either side of the colon, then
+# one separator. Ordered so `**Plan:**` (colon inside the bold) and
+# `**Plan**:` (colon outside) both land.
+_MARKER_TAIL = (r"[ \t]*(?::[ \t]*(?:\*\*)?"
+                r"|\*\*[ \t]*(?::|\(|[\u2014\u2013-](?=[ \t]|$)|$)"
+                r"|\(|[\u2014\u2013-](?=[ \t]|$)|$)")
+_PLAN_LABEL_RE = re.compile(_MARKER_HEAD + r"Plan\b" + _MARKER_TAIL, re.M)
+_NO_PLAN_LABEL_RE = re.compile(
+    _MARKER_HEAD + r"No[ \t]+plan[ \t]+because\b" + _MARKER_TAIL, re.M)
+
+
 def _plan_marker_kind(prompt):
     """Never raises: a str() guard means a non-string prompt (None, dict,
     number, ...) short-circuits to "none" rather than being stringified and
-    substring-matched. Precedence: "Plan:" wins over "No plan because" when
-    a prompt somehow carries both."""
+    substring-matched. The legacy substring matches are KEPT alongside the
+    label forms — a brief that says "No plan because mechanical rename" in
+    prose still counts. Precedence unchanged: a plan marker wins over "No
+    plan because" when a prompt somehow carries both.
+
+    Line endings are NORMALIZED first: `^`/`$` treat a CRLF brief's `\r` as
+    part of the line, so `## Plan\r\nbody` matched nothing at all.
+
+    TELEMETRY ONLY: this records which marker the brief CARRIES, never that a
+    plan was actually agreed. KNOWN LIMITATION, accepted for telemetry: fenced
+    code blocks are NOT excluded, so an example `## Plan` inside ``` counts as
+    a marker — and, by the precedence above, can outrank a genuine "No plan
+    because" elsewhere in the same brief."""
     if not isinstance(prompt, str):
         return "none"
-    if "Plan:" in prompt:
+    text = prompt.replace("\r\n", "\n").replace("\r", "\n")
+    if "Plan:" in text or _PLAN_LABEL_RE.search(text):
         return "plan"
-    if "No plan because" in prompt:
+    if "No plan because" in text or _NO_PLAN_LABEL_RE.search(text):
         return "no_plan"
     return "none"
 

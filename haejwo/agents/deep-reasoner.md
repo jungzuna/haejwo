@@ -1,7 +1,10 @@
 ---
 name: deep-reasoner
 description: Heavy reasoning specialist — architecture decisions, tricky debugging analysis, tradeoff evaluation, design review. Use PROACTIVELY when the problem needs deep thought rather than typing. Read-only by design; it reasons, workers implement.
-effort: high
+# No `effort:` key (2.14): this tier inherits the SESSION's effort, like
+# default-worker. Pinning it high spent design-round effort on every reasoning
+# call the host made, including routine ones; the host raises its own effort when
+# the question deserves it. Only task-worker pins an effort (low).
 tools: Read, Glob, Grep, Bash
 ---
 

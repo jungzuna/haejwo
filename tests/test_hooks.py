@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1142,8 +1143,10 @@ def main():
                   rc == 0 and "NOT configured" in ctx_x
                   and "haejwo:deep-reasoner (host model), haejwo:default-worker "
                       "(host model), haejwo:task-worker (host model)." in ctx_x, ctx_x)
-            check("A6 Codex defaults summary: host model + per-role efforts",
-                  "codex tiers: deep-reasoner=host model/high, default-worker=host "
+            check("A6 Codex defaults summary: host model, deep-reasoner at the host's "
+                  "own effort, per-role efforts below it",
+                  "codex tiers: deep-reasoner=host model/host effort (omit "
+                  "reasoning_effort), default-worker=host "
                   "model/medium, task-worker=host model/low (pass reasoning_effort "
                   "on spawn_agent; omit model to inherit; effort overrides need a "
                   "fresh or partial context fork (fork_turns), never a full-history "
@@ -2089,10 +2092,13 @@ exit "$rc"
                 accident. Pass CLAUDE_PLUGIN_DATA=None to opt out (the
                 derived-path fixtures need the real resolution)."""
                 env = dict(os.environ)
+                # Every env var a runner reads. CODEX_ALLOW_MARKERS is gone from
+                # this list because 2.14 deleted it from the runner; the telemetry
+                # record's two host fields join it so a record is deterministic.
                 for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
-                            "CLAUDE_MODEL", "CODEX_ALLOW_MARKERS",
-                            "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
-                            "CLAUDE_PLUGIN_DATA"):
+                            "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
+                            "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID",
+                            "CLAUDE_EFFORT"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
                     env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp, prefix="nocfg-")
@@ -2269,11 +2275,24 @@ exit "$rc"
                   rc != 0 and "codex tracing error:" in err
                   and "codex_core::exec" in err, f"rc={rc} err={err}")
 
-            rc, out, err, calls = codex_run("trace-allow-markers", {
+            # B1/B2 (2.14): CODEX_ALLOW_MARKERS was DELETED — there is no way to
+            # switch the anchored scan off any more. The variable is set here on
+            # purpose: a stale value must not resurrect the opt-out. What the knob
+            # used to be needed for is asserted instead — a failing run keeps the
+            # reply it captured, byte for byte, so the operator can read it and
+            # decide. (A hook-block line stays a note, not a failure: K8 below.)
+            rc, out, err, calls = codex_run("trace-no-optout", {
                 "STUB_EVENTS_FILE": ev, "STUB_STDERR_FILE": trace_stderr,
                 "CODEX_ALLOW_MARKERS": "1"})
-            check("stderr scan: CODEX_ALLOW_MARKERS=1 disables only this scan -> success",
-                  rc == 0, f"rc={rc} err={err}")
+            no_optout_reply = os.path.join(runner_tmp, "brief-trace-no-optout.reply.md")
+            reply_bytes = (open(no_optout_reply, "rb").read()
+                           if os.path.isfile(no_optout_reply) else b"<absent>")
+            check("stderr scan: no opt-out exists (CODEX_ALLOW_MARKERS deleted) -> an "
+                  "anchored tracing line still FAILS the run",
+                  rc != 0 and "codex tracing error:" in err
+                  and "codex_core::exec" in err, f"rc={rc} err={err}")
+            check("stderr scan: the failing run PRESERVES the captured reply intact",
+                  reply_bytes == b"STUB-REPLY-OK-1\n", reply_bytes)
 
             # K8: an anchored tracing line that reports a HOOK BLOCK of a
             # reviewer command is the gate working on the reviewer's side —
@@ -2380,11 +2399,25 @@ exit "$rc"
                                           {"codex": {"effort": "insane"}})
             rc, out, err, calls = codex_run("effort-config-invalid",
                                             {"CLAUDE_PLUGIN_DATA": bad_effort_cfg})
-            check("effort: invalid CONFIG value -> one note + runner-default high, run continues",
-                  rc == 0 and "note: config codex.effort 'insane' invalid; using runner-default high" in err
-                  and 'model_reasoning_effort="high"' in (calls[0][0] if calls else [])
-                  and "effort=high (runner-default)" in out,
+            check("effort: invalid CONFIG value -> one note + runner-default medium, run continues",
+                  rc == 0 and "note: config codex.effort 'insane' invalid; using runner-default medium" in err
+                  and 'model_reasoning_effort="medium"' in (calls[0][0] if calls else [])
+                  and "effort=medium (runner-default)" in out,
                   f"rc={rc} err={err} out={out}")
+            # 2.14: the wall clock is DECOUPLED from effort. The old table gave
+            # medium 300s, so a default-effort change would silently have halved
+            # every unconfigured run's budget — the default is 600s at every level.
+            check("timeout: the runner default is 600s at the runner-default effort",
+                  "effort=medium (runner-default)" in out and "timeout=600s" in err,
+                  f"out={out} err={err}")
+            rc2, out2, err2, calls2 = codex_run("timeout-effort-low", {"CODEX_EFFORT": "low"})
+            check("timeout: 600s at effort=low too (no effort->timeout table left)",
+                  rc2 == 0 and "effort=low (env)" in out2 and "timeout=600s" in err2,
+                  f"rc={rc2} out={out2} err={err2}")
+            rc2, out2, err2, calls2 = codex_run("timeout-env-wins",
+                                                {"CODEX_TIMEOUT": "42"})
+            check("timeout: CODEX_TIMEOUT still overrides the 600s default",
+                  rc2 == 0 and "timeout=42s" in err2, f"rc={rc2} err={err2}")
 
             rc, out, err, calls = codex_run("effort-env-invalid", {"CODEX_EFFORT": "insane"})
             check("effort: invalid ENV value -> exit 2 naming all four valid values",
@@ -2402,7 +2435,7 @@ exit "$rc"
                   and "note: config codex.effort ignored (not a string)" in err
                   and "note: config codex.fallback_model ignored (not a string)" in err
                   and "model=cli-default (identity unverified)" in out
-                  and "effort=high (runner-default)" in out,
+                  and "effort=medium (runner-default)" in out,
                   f"rc={rc} err={err} out={out}")
 
             # ---- (F9) the `codex` config block describes the HOST's reviewer:
@@ -3034,9 +3067,9 @@ exit "$rc"
                 need their own process handling (combined stream, signals)."""
                 env = dict(os.environ)
                 for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
-                            "CLAUDE_MODEL", "CODEX_ALLOW_MARKERS",
-                            "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
-                            "CLAUDE_PLUGIN_DATA"):
+                            "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
+                            "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID",
+                            "CLAUDE_EFFORT"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
                     env["CLAUDE_PLUGIN_DATA"] = tempfile.mkdtemp(dir=runner_tmp,
@@ -3812,6 +3845,624 @@ runpy.run_path(helper, run_name="__main__")
                 check(f"{who} no-realpath PATH: the snapshot left no worktree behind",
                       nr_wt > 0 and worktree_count(nr_repo) == nr_wt,
                       f"{worktree_count(nr_repo)} != {nr_wt}")
+
+            # ---- consult telemetry (2.14, D4-lite): one JSON line per armed
+            # run, in haejwo's OWN data dir and nowhere else. Every fixture here
+            # is hermetic: its own data dir, its own capture, its own repo. ----
+            print("== consult telemetry (D4-lite) ==")
+            PLUGIN_VERSION = json.load(
+                open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"),
+                     encoding="utf-8"))["version"]
+
+            def tel_dir(label, name="haejwo-haejwo"):
+                """A data dir whose BASENAME is what the ownership rule tests."""
+                d = os.path.join(runner_tmp, f"tel-{label}", name)
+                os.makedirs(d, exist_ok=True)
+                return d
+
+            def tel_path(d):
+                return os.path.join(d, "state", "consults.jsonl")
+
+            def tel_records(d):
+                p = tel_path(d)
+                if not os.path.isfile(p):
+                    return []
+                with open(p, encoding="utf-8") as fh:
+                    return [json.loads(l) for l in fh if l.strip()]
+
+            def tel_log(label):
+                p = os.path.join(runner_tmp, f"brief-{label}.reply.log")
+                return open(p, encoding="utf-8").read() if os.path.isfile(p) else ""
+
+            TEL_UUID = "01a0e605-5026-73f0-bf54-a78dc4d884f3"   # codex's real id shape
+            ev_usage = events_file("ev-tel-usage.jsonl", [
+                '{"type":"thread.started","thread_id":"' + TEL_UUID + '"}',
+                '{"type":"turn.started"}',
+                '{"type":"item.started","item":{"type":"agent_message"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"fine"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7}}',
+            ])
+
+            # (a) clean run: every field, with the sources named.
+            td = tel_dir("clean")
+            rc, out, err, calls = codex_run("tel-clean", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": ev_usage,
+                "CLAUDE_CODE_SESSION_ID": "sess-abcdefghijklmnop",
+                "CLAUDE_EFFORT": "high"})
+            recs = tel_records(td)
+            r0 = recs[0] if recs else {}
+            a0 = (r0.get("attempts") or [{}])[0]
+            check("telemetry: a clean run writes EXACTLY one record",
+                  rc == 0 and len(recs) == 1, f"rc={rc} n={len(recs)} err={err}")
+            check("telemetry: the record carries schema, plugin version, run id and window",
+                  r0.get("v") == 1 and r0.get("plugin_version") == PLUGIN_VERSION
+                  and len(str(r0.get("run_id") or "")) == 36
+                  and re.match(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z",
+                               str(r0.get("ts_start")))
+                  and re.match(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z",
+                               str(r0.get("ts_end")))
+                  and isinstance(r0.get("duration_total_s"), int), r0)
+            check("telemetry: the record names the runner, the HOST's session and effort",
+                  r0.get("runner") == "codex"
+                  and r0.get("host_session") == "sess-abcdefgh"[:12]
+                  and r0.get("host_session_src") == "CLAUDE_CODE_SESSION_ID"
+                  and r0.get("host_effort") == "high", r0)
+            check("telemetry: outcome=ok with the run's own rc, sandbox and brief size",
+                  r0.get("outcome") == "ok" and r0.get("runner_rc") == 0
+                  and r0.get("sandbox") == "read-only" and r0.get("snapshot") == 0
+                  and r0.get("changed") == 0 and r0.get("fail_classes") == []
+                  and isinstance(r0.get("brief_bytes"), int) and r0["brief_bytes"] > 0, r0)
+            check("telemetry: the attempt carries effort WITH its source, the thread id "
+                  "and codex's own usage verbatim",
+                  len(r0.get("attempts") or []) == 1 and a0.get("n") == 1
+                  and a0.get("effort") == "medium" and a0.get("effort_src") == "runner-default"
+                  and a0.get("model") is None and a0.get("model_src") == "cli-default"
+                  and a0.get("thread_id") == TEL_UUID and a0.get("child_rc") == 0
+                  and a0.get("usage") == {"input_tokens": 11, "output_tokens": 7}
+                  and a0.get("result") == "completed", a0)
+            check("telemetry: a clean run says nothing about telemetry in its log",
+                  "# telemetry:" not in tel_log("tel-clean"), tel_log("tel-clean")[-200:])
+            check("telemetry: the record does NOT land next to the caller's artifacts",
+                  not [n for n in os.listdir(runner_tmp) if n.startswith("consults.jsonl")],
+                  runner_tmp)
+
+            # (a2) the claude runner: no effort, no sandbox, no event stream -> nulls,
+            # never invented values.
+            td = tel_dir("claude")
+            cl_bin = os.path.join(runner_tmp, "bin-tel-claude")
+            cl_cap = os.path.join(runner_tmp, "cap-tel-claude")
+            make_stub(cl_bin, "claude", cl_cap)
+            rc, out, err = run_script(
+                claude_script, [brief_file("brief-tel-claude.md")],
+                {"PATH": cl_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": td})
+            recs = tel_records(td)
+            a0 = (recs[0].get("attempts") or [{}])[0] if recs else {}
+            check("telemetry: the claude runner records nulls for the knobs it does not have",
+                  rc == 0 and len(recs) == 1 and recs[0].get("runner") == "claude"
+                  and recs[0].get("sandbox") is None and recs[0].get("outcome") == "ok"
+                  and a0.get("effort") is None and a0.get("effort_src") is None
+                  and a0.get("thread_id") is None and a0.get("usage") is None
+                  and a0.get("result") == "completed",
+                  f"rc={rc} recs={recs} err={err}")
+
+            # (b) model fallback: TWO attempts, and the total duration spans BOTH
+            # (the per-attempt $START is reset by the retry — the record must not be).
+            td = tel_dir("fallback")
+            fb_ev = events_file("ev-tel-fallback.jsonl", [
+                '{"type":"thread.started","thread_id":"thread-tel-fb"}',
+                '{"type":"turn.failed","error":{"message":"unknown model: nope-model"}}',
+            ])
+            fb_cfg2 = cfg_dir_with(os.path.join("tel-fallback", "haejwo-haejwo"),
+                                   {"codex": {"fallback_model": "fb-model"}})
+            rc, out, err, calls = codex_run("tel-fallback", {
+                "CLAUDE_PLUGIN_DATA": fb_cfg2, "CODEX_MODEL": "nope-model",
+                "STUB_EVENTS_FILE_1": fb_ev, "STUB_RC_1": "1", "STUB_NO_OUT_1": "1",
+                "STUB_SLEEP": "1"})
+            recs = tel_records(td)
+            r0 = recs[0] if recs else {}
+            att = r0.get("attempts") or []
+            line_dur = next((int(m.group(1)) for m in
+                             [re.search(r"mode=consult, (\d+)s", out)] if m), -1)
+            check("telemetry: a model fallback records BOTH attempts, in order, each "
+                  "with its own model source and result",
+                  rc == 0 and len(recs) == 1 and len(att) == 2
+                  and att[0].get("n") == 1 and att[0].get("model") == "nope-model"
+                  and att[0].get("model_src") == "env"
+                  and att[0].get("result") == "model-unavailable"
+                  and att[0].get("child_rc") == 1
+                  and att[1].get("n") == 2 and att[1].get("model") == "fb-model"
+                  and att[1].get("model_src") == "config fallback"
+                  and att[1].get("result") == "completed", f"rc={rc} recs={recs}")
+            check("telemetry: duration_total_s spans BOTH attempts (the retry no longer "
+                  "resets the clock the record reads)",
+                  isinstance(r0.get("duration_total_s"), int) and line_dur >= 0
+                  and r0["duration_total_s"] >= line_dur + 1,
+                  f"total={r0.get('duration_total_s')} result-line={line_dur} out={out}")
+
+            # (c) timeout: the attempt's class is `timeout`, the runner's rc is 124.
+            td = tel_dir("timeout")
+            rc, out, err, calls = codex_run("tel-timeout", {
+                "CLAUDE_PLUGIN_DATA": td, "CODEX_TIMEOUT": "1", "STUB_SLEEP": "6"})
+            recs = tel_records(td)
+            r0 = recs[0] if recs else {}
+            a0 = (r0.get("attempts") or [{}])[0]
+            check("telemetry: a timeout records result=timeout, runner_rc=124 and its "
+                  "failure class",
+                  rc == 124 and len(recs) == 1 and a0.get("result") == "timeout"
+                  and a0.get("child_rc") == 124 and r0.get("runner_rc") == 124
+                  and r0.get("outcome") == "failed:timeout"
+                  # A cut-off run also produced no reply: both classes are
+                  # recorded, in the order they were raised, and both are fixed
+                  # identifiers. The OUTCOME names the first one.
+                  and r0.get("fail_classes") == ["timeout", "empty-reply"],
+                  f"rc={rc} recs={recs}")
+
+            # (d) signals: EXACTLY one record, outcome=interrupted, the runner's own
+            # 143/130 — not the status the trap happened to see.
+            for signame, want_rc in (("TERM", 143), ("INT", 130)):
+                slug = signame.lower()
+                td = tel_dir(f"signal-{slug}")
+                sig_bin = os.path.join(runner_tmp, f"bin-tel-sig-{slug}")
+                sig_cap = os.path.join(runner_tmp, f"cap-tel-sig-{slug}")
+                make_stub(sig_bin, "codex", sig_cap)
+                sig_release = os.path.join(runner_tmp, f"tel-sig-{slug}.release")
+                sig_repo = make_repo_committed(f"repo-tel-sig-{slug}")
+                proc = subprocess.Popen(
+                    ["bash", codex_script, "-o",
+                     os.path.join(runner_tmp, f"tel-sig-{slug}.reply.md"),
+                     brief_file(f"brief-tel-sig-{slug}.md")],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, cwd=sig_repo,
+                    env=hermetic_env({"PATH": sig_bin + os.pathsep
+                                      + os.environ.get("PATH", ""),
+                                      "CLAUDE_PLUGIN_DATA": td,
+                                      "STUB_RELEASE_FILE": sig_release,
+                                      "STUB_SLEEP": "4"}))
+                deadline = time.time() + 30
+                while time.time() < deadline and not os.path.isfile(sig_release):
+                    time.sleep(0.02)
+                released = os.path.isfile(sig_release)
+                proc.send_signal(signal.SIGTERM if signame == "TERM" else signal.SIGINT)
+                try:
+                    proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                recs = tel_records(td)
+                check(f"telemetry: the SIG{signame} fixture really interrupted a live run",
+                      released, sig_release)
+                check(f"telemetry: SIG{signame} mid-run -> exactly ONE record "
+                      f"(the INT/TERM -> EXIT re-entry writes no second one)",
+                      len(recs) == 1, f"n={len(recs)} recs={recs}")
+                check(f"telemetry: SIG{signame} records outcome=interrupted with rc {want_rc}",
+                      bool(recs) and recs[0].get("outcome") == "interrupted"
+                      and recs[0].get("runner_rc") == want_rc,
+                      f"proc_rc={proc.returncode} recs={recs}")
+
+            # (c2) a repository the reviewer changed: `changed=1` and the failure
+            # class names it — the two fields a consult audit is actually read for.
+            td = tel_dir("changed")
+            ch_repo = make_repo_committed("repo-tel-changed")
+            ch_bin = os.path.join(runner_tmp, "bin-tel-changed")
+            ch_cap = os.path.join(runner_tmp, "cap-tel-changed")
+            make_stub(ch_bin, "codex", ch_cap)
+            rc, out, err = run_script(
+                codex_script, ["-o", os.path.join(runner_tmp, "tel-changed.reply.md"),
+                               brief_file("brief-tel-changed.md")],
+                {"PATH": ch_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": td,
+                 "STUB_TOUCH_FILE": "reviewer-wrote-this.txt"}, cwd=ch_repo)
+            recs = tel_records(td)
+            check("telemetry: a repository changed during the run records changed=1 and "
+                  "the failure class that says so",
+                  rc != 0 and len(recs) == 1 and recs[0].get("changed") == 1
+                  and recs[0].get("outcome") == "failed:repo-changed"
+                  and recs[0].get("fail_classes") == ["repo-changed"],
+                  f"rc={rc} recs={recs} err={err}")
+
+            # (e) a refusal is its OWN outcome, never counted as a reviewer failure.
+            td = tel_dir("refused")
+            nongit = os.path.join(runner_tmp, "tel-notarepo")
+            os.makedirs(nongit, exist_ok=True)
+            rc, out, err, calls = codex_run("tel-refused", {
+                "CLAUDE_PLUGIN_DATA": td, "CODEX_SANDBOX": "workspace-write"},
+                cwd=nongit)
+            recs = tel_records(td)
+            check("telemetry: a post-init refusal records outcome=refused, not a failure",
+                  rc == 2 and len(recs) == 1 and recs[0].get("outcome") == "refused"
+                  and recs[0].get("runner_rc") == 2 and len(calls) == 0,
+                  f"rc={rc} recs={recs} err={err}")
+
+            # (e2) a PRE-init exit accounts for no run at all.
+            td = tel_dir("preinit")
+            rc, out, err, calls = codex_run("tel-preinit",
+                                            {"CLAUDE_PLUGIN_DATA": td},
+                                            args=["--resume"])
+            check("telemetry: a pre-init refusal (--resume) writes NO record",
+                  rc == 2 and tel_records(td) == [], tel_records(td))
+
+            # (f) a cleanup failure outranks the successful review it followed.
+            td = tel_dir("cleanup")
+            cl_repo = dirty_snap_repo("repo-tel-cleanup")
+            cl2_bin = os.path.join(runner_tmp, "bin-tel-cleanup")
+            cl2_cap = os.path.join(runner_tmp, "cap-tel-cleanup")
+            make_snapshot_git_stub(cl2_bin, "worktree-remove")
+            make_stub(cl2_bin, "codex", cl2_cap)
+            cl_out = os.path.join(runner_tmp, "tel-cleanup.reply.md")
+            rc, out, err = run_script(
+                codex_script, ["--snapshot", "-o", cl_out,
+                               brief_file("brief-tel-cleanup.md")],
+                {"PATH": cl2_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": td}, cwd=cl_repo)
+            recs = tel_records(td)
+            check("telemetry: a snapshot cleanup failure records outcome=cleanup-failed "
+                  "with rc 1, though the review itself passed",
+                  rc == 1 and len(recs) == 1
+                  and recs[0].get("outcome") == "cleanup-failed"
+                  and recs[0].get("runner_rc") == 1 and recs[0].get("snapshot") == 1,
+                  f"rc={rc} recs={recs} err={err}")
+            for line in err.splitlines():
+                if line.startswith("snapshot cleanup failed: "):
+                    shutil.rmtree(line[len("snapshot cleanup failed: "):].strip(),
+                                  ignore_errors=True)
+
+            # (g) OWNERSHIP. A data dir that is not haejwo's is SKIPPED — never
+            # written to, and said so once in the log. This is the measured hazard:
+            # in a subagent's shell CLAUDE_PLUGIN_DATA can name another plugin's
+            # data dir.
+            foreign = tel_dir("foreign", name="someone-elses-plugin")
+            rc, out, err, calls = codex_run("tel-foreign", {"CLAUDE_PLUGIN_DATA": foreign})
+            check("telemetry: a FOREIGN data dir is never written to, and the run is "
+                  "otherwise untouched",
+                  rc == 0 and "STUB-REPLY-OK-1" in out
+                  and not os.path.exists(tel_path(foreign))
+                  and os.listdir(foreign) == [], f"rc={rc} left={os.listdir(foreign)}")
+            check("telemetry: the skip is stated once, in the log",
+                  tel_log("tel-foreign").count(
+                      "# telemetry: skipped (no haejwo data dir)") == 1,
+                  tel_log("tel-foreign")[-300:])
+
+            # (g2) ...and the runner's OWN install location wins over the
+            # environment: a marketplace-cache copy writes into ITS plugins/data,
+            # even while CLAUDE_PLUGIN_DATA names a foreign dir.
+            cache_root = os.path.join(runner_tmp, "tel-cache", "plugins", "cache",
+                                      "haejwo", "haejwo", "9.9.9")
+            shutil.copytree(SCRIPTS, os.path.join(cache_root, "scripts"),
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            os.makedirs(os.path.join(cache_root, ".claude-plugin"), exist_ok=True)
+            with open(os.path.join(cache_root, ".claude-plugin", "plugin.json"), "w") as f:
+                json.dump({"name": "haejwo", "version": "9.9.9"}, f)
+            owned = os.path.join(runner_tmp, "tel-cache", "plugins", "data",
+                                 "haejwo-haejwo")
+            cache_bin = os.path.join(runner_tmp, "bin-tel-cache")
+            cache_cap = os.path.join(runner_tmp, "cap-tel-cache")
+            make_stub(cache_bin, "codex", cache_cap)
+            rc, out, err = run_script(
+                os.path.join(cache_root, "scripts", "codex_consult.sh"),
+                [brief_file("brief-tel-cache.md")],
+                {"PATH": cache_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": foreign})
+            recs = tel_records(owned)
+            check("telemetry: an installed runner writes into ITS OWN plugins/data, not "
+                  "into whatever CLAUDE_PLUGIN_DATA points at",
+                  rc == 0 and len(recs) == 1
+                  and not os.path.exists(tel_path(foreign)),
+                  f"rc={rc} recs={recs} err={err}")
+            check("telemetry: plugin_version comes from the RUNNER's own manifest",
+                  bool(recs) and recs[0].get("plugin_version") == "9.9.9", recs)
+
+            # (h) a telemetry write that fails changes NOTHING about the run.
+            td = tel_dir("unwritable")
+            with open(os.path.join(td, "state"), "w") as f:
+                f.write("not a directory\n")   # uid-independent: makedirs must fail
+            rc, out, err, calls = codex_run("tel-unwritable", {"CLAUDE_PLUGIN_DATA": td})
+            check("telemetry: an unwritable state path leaves rc and both streams intact",
+                  rc == 0 and "STUB-REPLY-OK-1" in out
+                  and "telemetry" not in err, f"rc={rc} out={out} err={err}")
+            check("telemetry: ...and the failure is disclosed in the log, once",
+                  tel_log("tel-unwritable").count("# telemetry: ") == 1
+                  and "record failed" in tel_log("tel-unwritable"),
+                  tel_log("tel-unwritable")[-300:])
+
+            # (i) bounded: 200 KB rotates to `.1`, the prior generation survives.
+            td = tel_dir("rotate")
+            os.makedirs(os.path.join(td, "state"), exist_ok=True)
+            filler = json.dumps({"v": 1, "pad": "x" * 400}) + "\n"
+            with open(tel_path(td), "w") as f:
+                while f.tell() <= 200_000:
+                    f.write(filler)
+            before_bytes = os.path.getsize(tel_path(td))
+            rc, out, err, calls = codex_run("tel-rotate", {"CLAUDE_PLUGIN_DATA": td})
+            rotated = tel_path(td) + ".1"
+            check("telemetry: over 200 KB rotates to consults.jsonl.1 and the new file "
+                  "holds only this run's record",
+                  rc == 0 and os.path.isfile(rotated)
+                  and os.path.getsize(rotated) == before_bytes
+                  and len(tel_records(td)) == 1, f"rc={rc} n={len(tel_records(td))}")
+
+            # ---- S1 (2.14 review): a record carries FIXED CLASS IDENTIFIERS
+            # and bounded caller ids — never vendor text. The reviewer's own
+            # message stays on stderr and in $LOG, where the operator reads it. ----
+            SECRET = "SECRET_123456789"
+            td = tel_dir("secret")
+            # The secret lives where VENDOR TEXT lives: the reviewer's own error
+            # message. (A model id is the CALLER's own choice and is recorded on
+            # purpose, bounded at 80 — that bound has its own fixture below.)
+            secret_ev = events_file("ev-tel-secret.jsonl", [
+                '{"type":"thread.started","thread_id":"' + TEL_UUID + '"}',
+                '{"type":"turn.failed","error":{"message":"boom: ' + SECRET
+                + ' leaked from /etc/' + SECRET + '"}}',
+            ])
+            rc, out, err, calls = codex_run("tel-secret", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": secret_ev,
+                "CLAUDE_EFFORT": SECRET})
+            raw = open(tel_path(td), "rb").read() if os.path.isfile(tel_path(td)) else b""
+            recs = tel_records(td)
+            r0 = recs[0] if recs else {}
+            check("telemetry/S1: a vendor error naming a secret NEVER reaches "
+                  "consults.jsonl (asserted on the file's bytes)",
+                  rc != 0 and len(recs) == 1 and SECRET.encode() not in raw, raw[:400])
+            check("telemetry/S1: the failure is recorded as a fixed CLASS, and the "
+                  "outcome is failed:<class>",
+                  r0.get("fail_classes") == ["event-failure"]
+                  and r0.get("outcome") == "failed:event-failure", r0)
+            check("telemetry/S1: the operator still gets the vendor's own message "
+                  "on stderr", SECRET in err, err[-300:])
+            check("telemetry/S1: an out-of-vocabulary host_effort is null, not the "
+                  "value", r0.get("host_effort") is None, r0)
+            check("telemetry/S1: a UUID-shaped thread id IS kept (it is what "
+                  "correlates a consult with the vendor's own session)",
+                  ((r0.get("attempts") or [{}])[0].get("thread_id")
+                   == TEL_UUID), r0)
+
+            # S6 (final round): a thread id that is TOKEN-shaped but not the
+            # vendor's UUID format is null — generic id syntax is not containment.
+            td = tel_dir("threadtoken")
+            token_ev = events_file("ev-tel-threadtoken.jsonl", [
+                '{"type":"thread.started","thread_id":"' + SECRET + '"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":3}}',
+            ])
+            rc, out, err, calls = codex_run("tel-threadtoken", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": token_ev})
+            raw = open(tel_path(td), "rb").read()
+            a0 = ((tel_records(td) or [{}])[0].get("attempts") or [{}])[0]
+            check("telemetry/S6: a token-shaped thread id that is not a UUID is null, "
+                  "and its bytes never reach consults.jsonl",
+                  rc == 0 and a0.get("thread_id") is None
+                  and a0.get("usage") == {"input_tokens": 3}
+                  and SECRET.encode() not in raw, f"{a0} raw={raw[:300]}")
+
+            # ...and a thread id that is TEXT rather than an id is nulled.
+            td = tel_dir("threadtext")
+            text_ev = events_file("ev-tel-threadtext.jsonl", [
+                '{"type":"thread.started","thread_id":"oops ' + SECRET
+                + ' from /etc/passwd"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("tel-threadtext", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": text_ev})
+            raw = open(tel_path(td), "rb").read()
+            check("telemetry/S1: a thread id that is free TEXT is null, and none of it "
+                  "is persisted",
+                  ((tel_records(td) or [{}])[0].get("attempts")
+                   or [{}])[0].get("thread_id") is None
+                  and SECRET.encode() not in raw, raw[:300])
+
+            # shapes: effort vocabulary, usage object, model bound.
+            td = tel_dir("shapes")
+            shape_ev = events_file("ev-tel-shapes.jsonl", [
+                '{"type":"thread.started","thread_id":"t-shapes"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":5,'
+                '"note":"' + SECRET + '","flag":true,"nested":{"a":1},'
+                '"' + SECRET + '":1,"extra_tokens":2}}',
+            ])
+            long_model = "m" * 100
+            rc, out, err, calls = codex_run("tel-shapes", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": shape_ev,
+                "CLAUDE_EFFORT": "max", "CODEX_MODEL": long_model})
+            recs = tel_records(td)
+            r0 = recs[0] if recs else {}
+            a0 = (r0.get("attempts") or [{}])[0]
+            raw = open(tel_path(td), "rb").read()
+            check("telemetry/S1+S6: usage keeps only KNOWN integer counters (text, "
+                  "bool, nested values AND unknown keys — even a secret-named key "
+                  "with an integer value — dropped; asserted on the bytes)",
+                  a0.get("usage") == {"input_tokens": 5}
+                  and SECRET.encode() not in raw, f"{a0.get('usage')} raw={raw[:300]}")
+            check("telemetry/S6: a non-UUID thread id (`t-shapes`) is null",
+                  a0.get("thread_id") is None, a0)
+
+            # S6: the plugin version is haejwo's OWN manifest string, but the
+            # containment guarantee is universal — it persists only in a
+            # version's shape. Exercised on the reader itself, with a manifest
+            # laid out exactly as the runner sees it (<root>/scripts/<runner>).
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location(
+                "hjw_telemetry_under_test", os.path.join(SCRIPTS, "lib", "telemetry.py"))
+            _tel = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_tel)
+            ver_root = os.path.join(runner_tmp, "ver-root")
+            os.makedirs(os.path.join(ver_root, ".claude-plugin"), exist_ok=True)
+            os.makedirs(os.path.join(ver_root, "scripts"), exist_ok=True)
+            ver_runner = os.path.join(ver_root, "scripts", "codex_consult.sh")
+            seen = {}
+            for label, v in (("release", "2.14.0"), ("prerelease", "2.14.0-rc.1+b7"),
+                             ("secret", SECRET), ("long", "1." * 60 + "1"),
+                             ("text", "2.14.0 leaked /etc/passwd"), ("nonstr", 214)):
+                with open(os.path.join(ver_root, ".claude-plugin", "plugin.json"),
+                          "w", encoding="utf-8") as fh:
+                    json.dump({"name": "haejwo", "version": v}, fh)
+                seen[label] = _tel._plugin_version(ver_runner)
+            check("telemetry/S6: plugin_version persists only in a version's shape "
+                  "(release + pre-release kept; secret, over-long, free text, "
+                  "non-string → null)",
+                  seen["release"] == "2.14.0" and seen["prerelease"] == "2.14.0-rc.1+b7"
+                  and seen["secret"] is None and seen["long"] is None
+                  and seen["text"] is None and seen["nonstr"] is None, seen)
+            check("telemetry/S6: the real manifest version passes the version shape",
+                  _tel._plugin_version(codex_script) == PLUGIN_VERSION,
+                  (_tel._plugin_version(codex_script), PLUGIN_VERSION))
+            check("telemetry/S1: a model id is bounded at 80 characters",
+                  a0.get("model") == "m" * 80, a0.get("model"))
+            check("telemetry/S1: `max` is in the effort vocabulary and survives",
+                  r0.get("host_effort") == "max", r0)
+
+            td = tel_dir("shapes2")
+            shape_ev2 = events_file("ev-tel-shapes2.jsonl", [
+                '{"type":"thread.started","thread_id":"t-shapes2"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}',
+                '{"type":"turn.completed","usage":"' + SECRET + '"}',
+            ])
+            rc, out, err, calls = codex_run("tel-shapes2", {
+                "CLAUDE_PLUGIN_DATA": td, "STUB_EVENTS_FILE": shape_ev2})
+            a0 = ((tel_records(td) or [{}])[0].get("attempts") or [{}])[0]
+            raw = open(tel_path(td), "rb").read()
+            check("telemetry/S1: a usage that is not an object is null, never the "
+                  "string", a0.get("usage") is None and SECRET.encode() not in raw,
+                  f"{a0.get('usage')} raw={raw[:300]}")
+
+            # ---- S2 (2.14 review): the destination is resolved ABSOLUTELY at
+            # init, before anything can chdir, and a symlinked data dir must
+            # still RESOLVE to haejwo's own name. ----
+            rel_repo = make_repo_committed("repo-tel-relative")
+            rel_dir = os.path.join(rel_repo, "haejwo-haejwo")
+            for label, spec in (("bare", "haejwo-haejwo"), ("dot", "./haejwo-haejwo")):
+                rc, out, err, calls = codex_run(f"tel-rel-{label}",
+                                                {"CLAUDE_PLUGIN_DATA": spec},
+                                                cwd=rel_repo)
+                check(f"telemetry/S2: a {label} relative data dir resolves against the "
+                      f"init-time cwd", rc == 0, f"rc={rc} err={err}")
+            check("telemetry/S2: both relative spellings land in the SAME absolute "
+                  "file (two records, one file)",
+                  len(tel_records(rel_dir)) == 2, tel_records(rel_dir))
+
+            # --snapshot on the claude runner chdirs into a worktree that is then
+            # deleted; a relative destination would have followed it.
+            snap_repo = dirty_snap_repo("repo-tel-snap-rel")
+            snap_bin = os.path.join(runner_tmp, "bin-tel-snap-rel")
+            snap_cap = os.path.join(runner_tmp, "cap-tel-snap-rel")
+            make_stub(snap_bin, "claude", snap_cap)
+            rc, out, err = run_script(
+                claude_script,
+                ["--snapshot", "-o", os.path.join(runner_tmp, "tel-snap-rel.reply.md"),
+                 brief_file("brief-tel-snap-rel.md")],
+                {"PATH": snap_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": "haejwo-haejwo"}, cwd=snap_repo)
+            recs = tel_records(os.path.join(snap_repo, "haejwo-haejwo"))
+            check("telemetry/S2: a --snapshot run that chdirs into the worktree still "
+                  "writes into the ORIGINAL absolute dir, and the record survives cleanup",
+                  rc == 0 and len(recs) == 1 and recs[0].get("snapshot") == 1
+                  and recs[0].get("outcome") == "ok", f"rc={rc} recs={recs} err={err}")
+
+            sym_base = os.path.join(runner_tmp, "tel-symlink")
+            real_other = os.path.join(sym_base, "real", "not-haejwo")
+            real_own = os.path.join(sym_base, "real", "haejwo-haejwo")
+            os.makedirs(real_other, exist_ok=True)
+            os.makedirs(real_own, exist_ok=True)
+            bad_link = os.path.join(sym_base, "bad", "haejwo-haejwo")
+            good_link = os.path.join(sym_base, "good", "haejwo-haejwo")
+            os.makedirs(os.path.dirname(bad_link), exist_ok=True)
+            os.makedirs(os.path.dirname(good_link), exist_ok=True)
+            os.symlink(real_other, bad_link)
+            os.symlink(real_own, good_link)
+            rc, out, err, calls = codex_run("tel-symlink-bad",
+                                            {"CLAUDE_PLUGIN_DATA": bad_link})
+            check("telemetry/S2: a data-dir symlink whose TARGET is not "
+                  "haejwo-haejwo is skipped, and nothing is written there",
+                  rc == 0 and tel_records(real_other) == []
+                  and not os.path.exists(os.path.join(real_other, "state"))
+                  and "# telemetry: skipped (no haejwo data dir)"
+                  in tel_log("tel-symlink-bad"), tel_log("tel-symlink-bad")[-200:])
+            rc, out, err, calls = codex_run("tel-symlink-ok",
+                                            {"CLAUDE_PLUGIN_DATA": good_link})
+            check("telemetry/S2: a symlink to a REAL haejwo-haejwo dir is followed "
+                  "and written there",
+                  rc == 0 and len(tel_records(real_own)) == 1
+                  and "# telemetry:" not in tel_log("tel-symlink-ok"),
+                  f"rc={rc} recs={tel_records(real_own)}")
+
+            # ---- S3 (2.14 review): `cleanup-failed` is observable on EVERY exit
+            # path, because the record is emitted after the removal is attempted. ----
+            def two_fault_git(bin_dir):
+                """git that fails BOTH the patch replay (so the capture REFUSES
+                after `worktree add`) and `worktree remove` (so cleaning that
+                half-built snapshot up fails too) — the only way to reach a
+                REFUSAL whose cleanup also failed."""
+                os.makedirs(bin_dir, exist_ok=True)
+                real_git = shutil.which("git")
+                path = os.path.join(bin_dir, "git")
+                with open(path, "w") as f:
+                    f.write("#!/usr/bin/env bash\n"
+                            "wt=0; rmv=0\n"
+                            'for a in "$@"; do\n'
+                            '  if [ "$a" = "apply" ]; then\n'
+                            '    echo "fatal: stubbed git apply failure" >&2; exit 1\n'
+                            "  fi\n"
+                            '  [ "$a" = "worktree" ] && wt=1\n'
+                            '  [ "$a" = "remove" ] && rmv=1\n'
+                            "done\n"
+                            'if [ "$wt" = 1 ] && [ "$rmv" = 1 ]; then\n'
+                            '  echo "fatal: stubbed worktree remove failure" >&2; exit 1\n'
+                            "fi\n"
+                            f'exec {real_git} "$@"\n')
+                os.chmod(path, 0o755)
+
+            def leaked_cleanup(err_text):
+                for line in err_text.splitlines():
+                    if line.startswith("snapshot cleanup failed: "):
+                        shutil.rmtree(line[len("snapshot cleanup failed: "):].strip(),
+                                      ignore_errors=True)
+
+            # (a) a FAILED review whose worktree removal also fails.
+            td = tel_dir("cleanup-failed-run")
+            cfr_repo = dirty_snap_repo("repo-tel-cleanup-failed-run")
+            cfr_bin = os.path.join(runner_tmp, "bin-tel-cleanup-failed-run")
+            cfr_cap = os.path.join(runner_tmp, "cap-tel-cleanup-failed-run")
+            make_snapshot_git_stub(cfr_bin, "worktree-remove")
+            make_stub(cfr_bin, "codex", cfr_cap)
+            rc, out, err = run_script(
+                codex_script,
+                ["--snapshot", "-o",
+                 os.path.join(runner_tmp, "tel-cleanup-failed-run.reply.md"),
+                 brief_file("brief-tel-cleanup-failed-run.md")],
+                {"PATH": cfr_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": td,
+                 "STUB_TOUCH_FILE": "reviewer-wrote-this.txt"}, cwd=cfr_repo)
+            recs = tel_records(td)
+            check("telemetry/S3: a FAILED review whose worktree removal also fails "
+                  "records outcome=cleanup-failed, with the review's own class kept",
+                  rc != 0 and len(recs) == 1
+                  and recs[0].get("outcome") == "cleanup-failed"
+                  and recs[0].get("fail_classes") == ["repo-changed"]
+                  and recs[0].get("changed") == 1, f"rc={rc} recs={recs} err={err}")
+            leaked_cleanup(err)
+
+            # (b) a REFUSAL after a half-built snapshot whose removal also fails.
+            td = tel_dir("cleanup-failed-refusal")
+            cfx_repo = dirty_snap_repo("repo-tel-cleanup-failed-refusal")
+            cfx_bin = os.path.join(runner_tmp, "bin-tel-cleanup-failed-refusal")
+            cfx_cap = os.path.join(runner_tmp, "cap-tel-cleanup-failed-refusal")
+            two_fault_git(cfx_bin)
+            make_stub(cfx_bin, "codex", cfx_cap)
+            rc, out, err = run_script(
+                codex_script,
+                ["--snapshot", "-o",
+                 os.path.join(runner_tmp, "tel-cleanup-failed-refusal.reply.md"),
+                 brief_file("brief-tel-cleanup-failed-refusal.md")],
+                {"PATH": cfx_bin + os.pathsep + os.environ.get("PATH", ""),
+                 "CLAUDE_PLUGIN_DATA": td}, cwd=cfx_repo)
+            recs = tel_records(td)
+            check("telemetry/S3: a REFUSAL whose half-built snapshot cannot be removed "
+                  "records outcome=cleanup-failed, with the refusal's class kept",
+                  rc == 2 and len(read_calls(cfx_cap)) == 0 and len(recs) == 1
+                  and recs[0].get("outcome") == "cleanup-failed"
+                  and recs[0].get("fail_classes") == ["snapshot-unavailable"],
+                  f"rc={rc} recs={recs} err={err}")
+            leaked_cleanup(err)
 
             # ---- golden differential: every scenario above, replayed against
             # the FROZEN runners of 6d09729 and compared byte for byte. It

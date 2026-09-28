@@ -103,10 +103,10 @@
 #                   that is missing, unparsable, or not in the allowlist
 #                   silently falls back to read-only — NEVER a dangerous
 #                   value on error (only the ENV path errors loudly).
-#   CODEX_EFFORT    low|medium|high (runner default)|xhigh — scale to the
+#   CODEX_EFFORT    low|medium (runner default)|high|xhigh — scale to the
 #                   decision's stakes; xhigh for the hardest calls only, low
 #                   for probes. An invalid ENV value EXITS 2 (caller input);
-#                   an invalid CONFIG value notes and falls back to high.
+#                   an invalid CONFIG value notes and falls back to medium.
 #   CODEX_MODEL     force a specific reviewer model (optional; overrides
 #                   config `codex.model`). Fixed for the whole consult
 #                   session; escalation is always a NEW session. If codex
@@ -114,10 +114,9 @@
 #                   this script retries ONCE (with `codex.fallback_model` if
 #                   configured, else the CLI default) and marks the reply —
 #                   never retried twice, never persisted.
-#   CODEX_TIMEOUT   seconds; default by effort (150/300/600/1200). 0 = unlimited.
-#   CODEX_ALLOW_MARKERS=1  disables ONLY the stderr tracing-error scan
-#                   (anchored `<ISO8601>Z ERROR codex_core` lines); the
-#                   event-stream classifier always stays on.
+#   CODEX_TIMEOUT   seconds; default 600 at EVERY effort (2.14: the old
+#                   effort->timeout table made the effort default silently
+#                   retune the wall clock). 0 = unlimited.
 #
 # Disclosure discipline: every model/effort value is printed with its SOURCE
 #   (env | config | runner-default | cli-default). An unselected model is
@@ -143,6 +142,14 @@
 # just captured. When that collision happens the log takes `$OUT.log` instead.
 # Applies in every mode — the hazard predates --snapshot.
 # *[origin: ship review Z4]*
+#
+# Consult telemetry (2.14, D4-lite): one JSON line per run — outcome, attempts,
+#   effort with its source, duration, usage — appended to
+#   <data-dir>/state/consults.jsonl. Bounded and best effort: any failure is a
+#   log line and never changes this runner's behavior or exit code. The data dir
+#   is NOT taken from CLAUDE_PLUGIN_DATA blindly (in a subagent's shell it can
+#   name another plugin's data dir — measured): see `hjw_telemetry_resolve`.
+#   `outcome=ok` means RUNNER success only, never host acceptance.
 #
 # Verification discipline: this is a READ-ONLY reviewer slot — never trust it
 #   to have made changes; workers implement, this only analyzes and replies.
@@ -174,7 +181,7 @@ case "$HJW_SELF" in
   *)  HJW_SELF="$PWD/${HJW_SELF:-$0}" ;;
 esac
 HJW_LIB="${HJW_SELF%/*}/lib"
-for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py; do
+for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py telemetry.py; do
   [ -f "$HJW_LIB/$_hjw_f" ] || {
     echo "consult runner library missing: $HJW_LIB/$_hjw_f" >&2; exit 3; }
 done
@@ -215,9 +222,8 @@ Mode:
 non-goal); use the standalone collab tool for manual implement runs.
 
 Env (env > config > default; empty env value = unset): CODEX_SANDBOX,
-  CODEX_EFFORT (runner default high), CODEX_MODEL, CODEX_TIMEOUT (default by
-  effort), CODEX_ALLOW_MARKERS=1 (disables ONLY the stderr tracing-error scan;
-  the event-stream classifier stays on).
+  CODEX_EFFORT (runner default medium), CODEX_MODEL, CODEX_TIMEOUT (default
+  600s at every effort).
 
 Config keys (codex.consult_sandbox, codex.model, codex.effort,
   codex.fallback_model) are read from the plugin data config.json; env wins.
@@ -271,6 +277,9 @@ else
     *) SANDBOX="read-only" ;;
   esac
 fi
+# The sandbox is a codex-only disclosure, so the entrypoint — not the shared
+# library — is what puts it in the telemetry record.
+HJW_TEL_SANDBOX="$SANDBOX"
 
 # ---- model: env CODEX_MODEL > config codex.model > CLI default ----
 # A whitespace-only value counts as UNSET on both paths: an empty env var is
@@ -284,7 +293,7 @@ else
   MODEL=""; MODEL_SRC="cli-default"
 fi
 
-# ---- effort: env CODEX_EFFORT > config codex.effort > runner default high ----
+# ---- effort: env CODEX_EFFORT > config codex.effort > runner default medium ----
 # Reviewer effort scales with the DECISION'S stakes, not a fixed pin (uniform
 # max dilutes "spend budget where judgment compounds"). Invalid ENV value =
 # caller input = loud exit 2 (same rule as CODEX_SANDBOX); invalid CONFIG
@@ -302,16 +311,25 @@ elif [ -n "$CFG_EFFORT" ]; then
   case "$CFG_EFFORT" in
     low|medium|high|xhigh) EFFORT="$CFG_EFFORT"; EFFORT_SRC="config" ;;
     *)
-      echo "note: config codex.effort '$CFG_EFFORT' invalid; using runner-default high" >&2
-      EFFORT="high"; EFFORT_SRC="runner-default"
+      echo "note: config codex.effort '$CFG_EFFORT' invalid; using runner-default medium" >&2
+      EFFORT="medium"; EFFORT_SRC="runner-default"
       ;;
   esac
 else
-  EFFORT="high"; EFFORT_SRC="runner-default"
+  # Owner policy (2.14): MEDIUM is the default. `high` is for design/plan rounds
+  # and diff reviews, `xhigh` for architecture forks, security-critical calls and
+  # final deadlock rounds — and an unconfigured routine consult is none of those.
+  # A default of `high` charged every routine check at design-round rates.
+  EFFORT="medium"; EFFORT_SRC="runner-default"
 fi
 
-case "$EFFORT" in low) DEF_TO=150;; medium) DEF_TO=300;; high) DEF_TO=600;; xhigh) DEF_TO=1200;; *) DEF_TO=600;; esac
-TIMEOUT="${CODEX_TIMEOUT:-$DEF_TO}"
+# The wall clock is DECOUPLED from effort (2.14): the old effort->timeout table
+# (150/300/600/1200) made the effort DEFAULT silently retune the timeout, so
+# lowering the default would have shortened every unconfigured run's budget. A
+# reviewer's wall-clock need is set by the BRIEF — how much repository it has to
+# read — not by how hard it thinks. One default for every effort; the
+# CODEX_TIMEOUT env override is unchanged.
+TIMEOUT="${CODEX_TIMEOUT:-600}"
 
 MODEL_FLAG=(); [ -n "$MODEL" ] && MODEL_FLAG=(-m "$MODEL")
 EFFORT_FLAG=(-c "model_reasoning_effort=\"$EFFORT\"")
@@ -373,6 +391,7 @@ if ! hjw_detect_before; then
     # still spent a reviewer call on a result it then discarded. A read-only
     # sandbox outside a repo stays allowed: the sandbox IS the enforcement.
     # *[origin 2026-09-21 audit item 3]*
+    hjw_telemetry_refused non-git
     REFUSE_MSG="consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
     printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
     echo "$REFUSE_MSG" >&2
@@ -488,10 +507,15 @@ run_attempt() {
 
 echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF$START_EXTRA) ..." >&2
 START=$SECONDS
+# The FIRST start is kept separately: $START is reset by the model fallback, so
+# it measures the LAST attempt only — the telemetry record needs the span across
+# every attempt the caller paid for.
+TEL_START_ALL=$START
 CUR_EVENTS="$EVENTS"
 run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
 rc=$?
 DUR=$((SECONDS - START))
+HJW_TEL_DUR_TOTAL=$((SECONDS - TEL_START_ALL))
 
 # ---- model-unavailable fallback ----
 # A PRE-EXECUTION rejection of the requested model retries ONCE, never twice,
@@ -505,8 +529,22 @@ DUR=$((SECONDS - START))
 MODEL_FALLBACK=0
 FALLBACK_MODEL=""
 classify_events "$CUR_EVENTS" "$MODEL"
+# The condition is decided ONCE, before attempt 1 is recorded: a pre-execution
+# model rejection is its own telemetry class (`model_unavailable`), not a
+# generic failure, and a retry would otherwise reclassify over the evidence.
+DO_FALLBACK=0
 if [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
    && [ "$CLS_MODEL_UNAVAIL" = 1 ] && [ "$CLS_PRE_EXEC" = 1 ] && [ "$CLS_MALFORMED_BEFORE" -eq 0 ]; then
+  DO_FALLBACK=1
+fi
+if [ "$DO_FALLBACK" = 1 ]; then TEL_RESULT=model-unavailable
+elif [ "$rc" -eq 124 ]; then TEL_RESULT=timeout
+elif [ "$rc" -ne 0 ] || [ -n "$CLS_FAIL_TYPE" ]; then TEL_RESULT=failed
+else TEL_RESULT=completed
+fi
+hjw_telemetry_attempt "model=$MODEL" "model_src=$MODEL_SRC" "effort=$EFFORT" \
+  "effort_src=$EFFORT_SRC" "child_rc=$rc" "events=$EVENTS" "result=$TEL_RESULT"
+if [ "$DO_FALLBACK" = 1 ]; then
   FALLBACK_MODEL="$CFG_FALLBACK_MODEL"
   FB_FLAG=(); [ -n "$FALLBACK_MODEL" ] && FB_FLAG=(-m "$FALLBACK_MODEL")
   if [ -n "$FALLBACK_MODEL" ]; then
@@ -521,11 +559,20 @@ if [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
   run_attempt 2 "$EVENTS2" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${FB_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
   rc=$?
   DUR=$((SECONDS - START))
+  HJW_TEL_DUR_TOTAL=$((SECONDS - TEL_START_ALL))
   MODEL_FALLBACK=1
   CUR_EVENTS="$EVENTS2"
   # The first attempt's events/traces must never fail a successful retry:
   # reclassify against attempt 2 only.
   classify_events "$CUR_EVENTS" "$FALLBACK_MODEL"
+  TEL_M2_SRC="config fallback"; [ -n "$FALLBACK_MODEL" ] || TEL_M2_SRC="cli-default"
+  if [ "$rc" -eq 124 ]; then TEL_RESULT=timeout
+  elif [ "$rc" -ne 0 ] || [ -n "$CLS_FAIL_TYPE" ]; then TEL_RESULT=failed
+  else TEL_RESULT=completed
+  fi
+  hjw_telemetry_attempt "model=$FALLBACK_MODEL" "model_src=$TEL_M2_SRC" \
+    "effort=$EFFORT" "effort_src=$EFFORT_SRC" "child_rc=$rc" \
+    "events=$EVENTS2" "result=$TEL_RESULT"
 fi
 
 hjw_detect_after
@@ -535,45 +582,52 @@ hjw_detect_after
 # (which event, which trace line) survive into the report.
 
 # (i) exit code
-if [ "$rc" -eq 124 ]; then fail "timed out after ${TIMEOUT}s (tune with CODEX_TIMEOUT)"
-elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
+if [ "$rc" -eq 124 ]; then fail timeout "timed out after ${TIMEOUT}s (tune with CODEX_TIMEOUT)"
+elif [ "$rc" -ne 0 ]; then fail exit-code "codex exit code $rc"; fi
 
 # (ii) empty reply
-[ -s "$OUT" ] || fail "empty reply (codex produced no final answer)"
+[ -s "$OUT" ] || fail empty-reply "empty reply (codex produced no final answer)"
 
 # (iii) codex's own failure events
 echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($CUR_EVENTS) ----" >> "$LOG"
 if [ -n "$CLS_FAIL_TYPE" ]; then
-  fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
+  # The vendor's own message goes to stderr and $LOG; the RECORD gets the class.
+  fail event-failure "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
 fi
 if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
-  fail "no event stream (rc=0) — cannot verify the run"
+  fail no-event-stream "no event stream (rc=0) — cannot verify the run"
 fi
 
 # (iv) tracing errors on THIS attempt's stderr only, ANCHORED at column 0.
 # Indented lines, prose, and echoed file content cannot match by construction —
 # that is the whole point: the old unanchored grep failed runs whose reply
-# merely discussed an error. CODEX_ALLOW_MARKERS=1 disables ONLY this scan.
-if [ "${CODEX_ALLOW_MARKERS:-0}" != 1 ]; then
-  TRACE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z[[:space:]]+ERROR[[:space:]]+codex_core'
-  HOOK_BLOCK_RE='Command blocked by PreToolUse hook'
-  TRACE_ALL="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -E "$TRACE_RE")"
-  if [ -n "$TRACE_ALL" ]; then
-    # A hook denying a command the REVIEWER tried to run is the gate doing
-    # its job on the reviewer's side — not a codex failure, and not grounds
-    # to throw away a complete reply. Record it, note it once, keep going.
-    # Observed live 2026-09-14. Every OTHER anchored tracing error still fails.
-    HOOK_BLOCKED="$(printf '%s\n' "$TRACE_ALL" | grep -F "$HOOK_BLOCK_RE")"
-    TRACE_LINE="$(printf '%s\n' "$TRACE_ALL" | grep -vF "$HOOK_BLOCK_RE" | grep -m1 -E "$TRACE_RE")"
-    if [ -n "$HOOK_BLOCKED" ]; then
-      printf '%s\n' "$HOOK_BLOCKED" | while IFS= read -r hb_line; do
-        [ -n "$hb_line" ] && echo "# ---- hook-blocked reviewer command: $hb_line ----" >> "$LOG"
-      done
-      HOOK_BLOCK_NOTE="note: a reviewer command was blocked by a hook (see log)"
-    fi
-    if [ -n "$TRACE_LINE" ]; then
-      fail "codex tracing error: $TRACE_LINE"
-    fi
+# merely discussed an error.
+# The scan ALWAYS runs (2.14): the `CODEX_ALLOW_MARKERS=1` escape hatch was
+# deleted. It was added when the unanchored grep produced false positives, but
+# once the scan became anchored the ONLY thing it ever fired on in the field was
+# a hook block — which is now kept as a note below, not a failure — so the knob
+# bought nothing while offering a one-variable way to switch a real failure
+# detector off. ROLLBACK TRIGGER, stated so it is falsifiable: an anchored-scan
+# failure on a run whose reply was COMPLETE and VALID. Until that is observed,
+# there is nothing to suppress.
+TRACE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z[[:space:]]+ERROR[[:space:]]+codex_core'
+HOOK_BLOCK_RE='Command blocked by PreToolUse hook'
+TRACE_ALL="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -E "$TRACE_RE")"
+if [ -n "$TRACE_ALL" ]; then
+  # A hook denying a command the REVIEWER tried to run is the gate doing
+  # its job on the reviewer's side — not a codex failure, and not grounds
+  # to throw away a complete reply. Record it, note it once, keep going.
+  # Observed live 2026-09-14. Every OTHER anchored tracing error still fails.
+  HOOK_BLOCKED="$(printf '%s\n' "$TRACE_ALL" | grep -F "$HOOK_BLOCK_RE")"
+  TRACE_LINE="$(printf '%s\n' "$TRACE_ALL" | grep -vF "$HOOK_BLOCK_RE" | grep -m1 -E "$TRACE_RE")"
+  if [ -n "$HOOK_BLOCKED" ]; then
+    printf '%s\n' "$HOOK_BLOCKED" | while IFS= read -r hb_line; do
+      [ -n "$hb_line" ] && echo "# ---- hook-blocked reviewer command: $hb_line ----" >> "$LOG"
+    done
+    HOOK_BLOCK_NOTE="note: a reviewer command was blocked by a hook (see log)"
+  fi
+  if [ -n "$TRACE_LINE" ]; then
+    fail tracing-error "codex tracing error: $TRACE_LINE"
   fi
 fi
 

@@ -66,11 +66,21 @@ WHAT IS NORMALIZED (G4/H1) — and NOTHING else
         `codex_consult.sh: line 10:` in a reply, in a captured brief, or in a
         scenario that asserts no diagnostics is compared byte for byte.
 
-WHAT IS ACCEPTED (2.13) — and nothing else
+WHAT IS ACCEPTED (2.13, 2.14) — and nothing else
     ACCEPTED_DIFFERENCES is the complete, hand-written ledger of differences
-    this refactor is allowed to introduce, keyed by scenario + item with a
-    predicate. It is asserted to hold exactly its documented entries, and the
-    run reports how many of them it actually needed.
+    the working tree is allowed to show against the frozen baseline, keyed by
+    scenario + item with a predicate. It is asserted to hold exactly its
+    documented entries, and the run reports how many of them it actually needed.
+    Each 2.14 entry enumerates its substitution LITERALLY and then demands byte
+    equality, so an unrelated change in the same item still fails.
+
+OUTSIDE THE BYTE COMPARISON (2.14)
+    The consult-telemetry record is NOT a compared item — the baseline runners
+    have none, so comparing it would be meaningless. What IS asserted per
+    scenario is its CONTAINMENT: no `consults.jsonl` anywhere under the artifact
+    or temp directories, on either side. Two scenarios pin the non-vacuity of
+    that assertion (a clean run writes exactly one record; a pre-init refusal
+    writes none).
 
     Tokens are emitted between private-use-area markers (U+E000/U+E001) that
     cannot occur in the captured bytes, and any item that ALREADY carries a
@@ -124,10 +134,14 @@ GIT_FIXED = {
 }
 
 # Every env var either runner reads: popped from the inherited environment so
-# an ambient value can never reach one side only.
+# an ambient value can never reach one side only. CODEX_ALLOW_MARKERS stays on
+# this list although 2.14 deleted it from the working-tree runner — the FROZEN
+# baseline still reads it, so an ambient value would reach exactly one side.
+# CLAUDE_CODE_SESSION_ID / CLAUDE_EFFORT are read by the 2.14 telemetry record
+# (candidate side only), and popping them keeps that record deterministic too.
 RUNNER_ENV_VARS = ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX", "CLAUDE_MODEL",
                    "CODEX_ALLOW_MARKERS", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
-                   "CLAUDE_PLUGIN_DATA")
+                   "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT")
 
 # H4/I3: the environment the stub dumps is compared in full.
 # Nothing is discarded. Variables the harness sets or the runners read are
@@ -349,7 +363,7 @@ def _log_items(capture):
 _ACCEPTED_USED = []
 
 
-def _only_bounded_wrapper_removed(base_text, cand_text):
+def _only_bounded_wrapper_removed(base_text, cand_text, ctx):
     """2.13: the wall clock is `scripts/lib/bounded.py`, a file the runner
     READS — the baseline wrote a per-run copy (`hjw_bounded.XXXXXX.py`) and
     deleted it again. A clean run therefore shows the same (empty) inventory
@@ -360,10 +374,122 @@ def _only_bounded_wrapper_removed(base_text, cand_text):
     return len(kept) != len(base_lines) and kept == cand_text.split("\n")
 
 
+# 2.14 (owner effort policy): the runner-default reviewer effort is `medium`,
+# not `high`. These three tokens are the COMPLETE list of bytes that may move
+# with it — the start/result lines, the log header and attempt lines, the
+# `-c model_reasoning_effort` argv element, and the invalid-config note. Each
+# predicate applies exactly these substitutions to the BASELINE text and then
+# demands byte equality, so nothing else can ride along inside the same item.
+# The wall clock is NOT in this list: 2.14 decoupled the timeout from effort and
+# the default is still 600s, so every `timeout=600s` token stays exact.
+_EFFORT_2_14 = (
+    ("effort=high (runner-default)", "effort=medium (runner-default)"),
+    ('model_reasoning_effort="high"', 'model_reasoning_effort="medium"'),
+    ("using runner-default high", "using runner-default medium"),
+)
+
+
+_VALID_EFFORTS = ("low", "medium", "high", "xhigh")
+
+
+def _runner_default_effort(scen):
+    """True only where NOTHING the fixture supplies selects the reviewer's
+    effort, so the RUNNER DEFAULT is what the disclosure shows: no CODEX_EFFORT
+    (or its `V_` form) in the scenario's env, and no usable `codex.effort` in its
+    config. A config value the runner REJECTS counts as runner-default too —
+    that is exactly what `config-effort-invalid` exists to show, note included.
+    Everywhere else the token must be compared byte for byte, because a moving
+    `effort=` there would mean the PRECEDENCE changed, not the default."""
+    env = scen.get("env") or {}
+    if "CODEX_EFFORT" in env or "V_EFFORT" in env:
+        return False
+    configured = ((scen.get("config") or {}).get("codex") or {}).get("effort")
+    return configured not in _VALID_EFFORTS
+
+
+def _effort_delta(text):
+    """The EXACT byte delta the enumerated substitution implies for one text:
+    +2 (len("medium") - len("high")) per occurrence, counted per token."""
+    return sum(text.count(old) * (len(new) - len(old)) for old, new in _EFFORT_2_14)
+
+
+def _effort_default_medium(base_text, cand_text, ctx):
+    if not ctx["runner_default"]:
+        return False
+    out = base_text
+    for old, new in _EFFORT_2_14:
+        out = out.replace(old, new)
+    return out != base_text and out == cand_text
+
+
+def _effort_default_medium_in_log(base_text, cand_text, ctx):
+    """The same enumerated substitution, but ONLY inside the runner's own log —
+    identified by the log's own header line, never by a `.log` suffix (`-o x.log`
+    puts that suffix on the REPLY). A reply artifact is compared byte for byte."""
+    return (bool(_LOG_HEADER_RE.match(base_text))
+            and _effort_default_medium(base_text, cand_text, ctx))
+
+
+_INV_SIZE_RE = re.compile(r"\A(.*) size=([0-9]+)\Z")
+
+
+def _log_entry_grew(base_text, cand_text, ctx):
+    """The TMPDIR inventory records SIZES, and the stdin-brief fixture keeps its
+    artifacts in TMPDIR — so the effort token moves the log file's recorded size.
+
+    Narrow on every axis: the entry list must be identical; the ONE differing
+    line must differ only in `size=`; that entry must BE the runner's own log,
+    by name equality with the log item this run recorded (which is identified by
+    the log's own header, not by a suffix); and the delta must equal EXACTLY what
+    the substitution implies for that log's bytes. A wrong number fails, a reply
+    or events entry fails, and a second changed entry fails."""
+    if not ctx["runner_default"]:
+        return False
+    base_lines, cand_lines = base_text.split("\n"), cand_text.split("\n")
+    if len(base_lines) != len(cand_lines):
+        return False
+    changed = 0
+    for before, after in zip(base_lines, cand_lines):
+        if before == after:
+            continue
+        mb, ma = _INV_SIZE_RE.match(before), _INV_SIZE_RE.match(after)
+        if not (mb and ma) or mb.group(1) != ma.group(1):
+            return False
+        # The inventory spells each path as repr(path); the item name is
+        # `artifacts@<path>`. Only a plainly quoted repr is accepted — an
+        # escaped one (a quote or backslash in the path) fails CLOSED rather
+        # than being un-escaped by hand.
+        path_repr = mb.group(1).split(" type=")[0]
+        if len(path_repr) < 3 or path_repr[0] != "'" or path_repr[-1] != "'" \
+                or "\\" in path_repr:
+            return False
+        item = "artifacts@" + path_repr[1:-1]
+        # ...and that entry must BE the runner's own log for THIS run.
+        if item not in ctx["log_items"]:
+            return False
+        want = _effort_delta(ctx["base_items"].get(item, ""))
+        if want <= 0 or int(ma.group(2)) - int(mb.group(2)) != want:
+            return False
+        changed += 1
+    return changed == 1
+
+
 ACCEPTED_DIFFERENCES = (
     ("*", "tmp/inventory(name,type,mode,size)", _only_bounded_wrapper_removed,
      "2.13: the bounded wrapper is scripts/lib/bounded.py, not a temp copy the "
      "runner allocates and deletes on every run"),
+    ("*", re.compile(r"\A(?:stdout|stderr|combined)\Z"), _effort_default_medium,
+     "2.14: runner-default effort high -> medium, on the runner's own start / "
+     "result / invalid-config-note lines"),
+    ("*", re.compile(r"\Acalls/[0-9]+\.argv0?\Z"), _effort_default_medium,
+     "2.14: runner-default effort high -> medium, in the "
+     "`-c model_reasoning_effort=\"...\"` argv element"),
+    ("*", re.compile(r"\Aartifacts@"), _effort_default_medium_in_log,
+     "2.14: runner-default effort high -> medium, in the runner's own log header "
+     "and attempt lines (identified by the log header, never by a .log suffix)"),
+    ("*", "tmp/inventory(name,type,mode,size)", _log_entry_grew,
+     "2.14: the stdin-brief fixture's log lives in TMPDIR, so the effort token "
+     "above moves its recorded size"),
     # The missing-library failure path (`consult runner library missing: <path>`,
     # exit 3, zero CLI calls) is a NEW scenario, not a changed one: the 6d09729
     # runners had no library to miss, so there is no baseline counterpart to
@@ -382,11 +508,28 @@ _NATIVE_DIAG_RE = re.compile(
     r"_consult\.sh: line (?:\d+|%s):" % re.escape(_tok("n")))
 
 
-def _accepted(scenario, item, base_text, cand_text):
+def _item_named(spec, item):
+    """A ledger entry names its item EXACTLY, or — where the item name carries a
+    per-run path (the runner's own log artifact, an attempt's argv) — by a
+    hand-written pattern. A pattern is still an ENUMERATION: it is spelled out
+    next to the predicate it belongs to, and the predicate still has to agree."""
+    if spec is None:
+        return False
+    if hasattr(spec, "search"):
+        return bool(spec.search(item))
+    return spec == item
+
+
+def _accepted(scen_dict, item, base_text, cand_text, ctx):
+    """`scen_dict` is the SCENARIO, not just its name: a predicate may need to
+    know what the fixture configured (see `_runner_default_effort`)."""
+    scenario = scen_dict["name"]
     for scen, name, predicate, why in ACCEPTED_DIFFERENCES:
-        if predicate is None or name != item or scen not in ("*", scenario):
+        if predicate is None or scen not in ("*", scenario):
             continue
-        if predicate(base_text, cand_text):
+        if not _item_named(name, item):
+            continue
+        if predicate(base_text, cand_text, ctx):
             _ACCEPTED_USED.append((scenario, item, why))
             return True
     return False
@@ -566,8 +709,9 @@ def _differences(base, cand, scenario=None):
     """Returns (ok, detail, differing_item_names). A structural problem (item
     sets differ, a literal token) is reported as a difference too.
 
-    `scenario` enables the ACCEPTED_DIFFERENCES ledger for that scenario's
-    items; the self-test mutants pass none, so nothing softens them."""
+    `scenario` is the SCENARIO DICT and enables the ACCEPTED_DIFFERENCES ledger
+    for that scenario's items; the self-test mutants pass none, so nothing
+    softens them."""
     try:
         a, b = _normalized_items(base), _normalized_items(cand)
     except TokenLiteral as exc:
@@ -578,8 +722,18 @@ def _differences(base, cand, scenario=None):
         only_b = [n for n in names_b if n not in names_a]
         return False, ("item set differs: baseline-only=%s candidate-only=%s"
                        % (only_a[:6], only_b[:6])), ["<item-set>"]
+    # What a predicate may consult besides its own item: whether the fixture
+    # left the reviewer's effort at the runner default, the baseline's other
+    # items, and which of them ARE the runner's own log.
+    # `log_items` is recomputed over the NORMALIZED names by the same rule
+    # `_log_items` uses (the log's own header line), so a predicate comparing
+    # against a normalized inventory line is comparing like with like.
+    ctx = {"runner_default": bool(scenario) and _runner_default_effort(scenario),
+           "base_items": dict(a),
+           "log_items": set(n for n, t in a if n.startswith("artifacts@")
+                            and _LOG_HEADER_RE.match(t))}
     diffs = [na for (na, ta), (_, tb) in zip(a, b)
-             if ta != tb and not (scenario and _accepted(scenario, na, ta, tb))]
+             if ta != tb and not (scenario and _accepted(scenario, na, ta, tb, ctx))]
     if not diffs:
         return True, "", []
     first = diffs[0]
@@ -922,7 +1076,11 @@ def _prepare(scen, runner, side, scripts_dir, root, tk):
     })
     cfg_payload = scen.get("config")
     if cfg_payload is None or runner == "codex":
-        cfg_dir = os.path.join(d["cfg"], "data")
+        # Basename `haejwo-haejwo`: that is what the 2.14 telemetry ownership
+        # rule requires before it will write anything (a data dir that is not
+        # haejwo's is SKIPPED, not written to). Both sides get the same layout,
+        # so the path token maps identically; the baseline simply ignores it.
+        cfg_dir = os.path.join(d["cfg"], "data", "haejwo-haejwo")
     else:
         # HOST-RELATIVE config: the claude runner honors codex.model only when
         # the resolved path is a codex host's (under /.codex/); the codex
@@ -954,7 +1112,7 @@ def _prepare(scen, runner, side, scripts_dir, root, tk):
         "scen": scen, "runner": runner, "side": side, "run_dir": run_dir,
         "dirs": d, "repo": repo, "cwd": cwd, "env": env, "script": script,
         "args": args, "stdin": stdin_data, "out_path": out_path,
-        "known": known, "tmpdirs": [d["tmp"], tmpdir],
+        "known": known, "tmpdirs": [d["tmp"], tmpdir], "cfg_dir": cfg_dir,
     }
 
 
@@ -1115,9 +1273,25 @@ def _execute(plan):
                 known.append((m.group(1), None))
 
     head = _git_text(plan["repo"], ["rev-parse", "HEAD"]).strip() or "unborn"
+    # 2.14 telemetry containment — deliberately NOT an item: the baseline has no
+    # record at all, so this is asserted, not compared. `stray` must stay empty
+    # (a consult record belongs in the data dir, never among a caller's
+    # artifacts or in TMPDIR) and `records` counts the lines that did land.
+    stray = []
+    for _label, base in art_dirs + [("tmp", plan["dirs"]["tmp"])]:
+        for _rel, full in _walk(base):
+            if os.path.basename(full).startswith("consults.jsonl"):
+                stray.append(full)
+    record_path = os.path.join(plan["cfg_dir"], "state", "consults.jsonl")
+    try:
+        with open(record_path, encoding="utf-8") as fh:
+            records = sum(1 for line in fh if line.strip())
+    except Exception:
+        records = 0
     return {"items": items, "known": known, "tmpdirs": plan["tmpdirs"], "rc": rc,
             "elapsed": elapsed, "head": head, "run_dir": plan["run_dir"],
-            "native_diag": bool(scen.get("native_diagnostics"))}
+            "native_diag": bool(scen.get("native_diagnostics")),
+            "telemetry": {"stray": sorted(stray), "records": records}}
 
 
 def _env_item(path):
@@ -1401,6 +1575,84 @@ def _negative_controls(check):
     check("golden token: tokens are emitted inside private-use markers",
           MARK_OPEN in norm and MARK_CLOSE in norm and "hjw_snap.aaaaaa" not in norm, norm)
 
+    # (S4) LEDGER REJECTION PROBES. Each accepted difference is an enumerated
+    # substitution, so each must be shown to REJECT the neighbouring case — a
+    # ledger that tolerates the wrong number, the wrong scenario or the wrong
+    # item is not an enumeration, it is a hole. The ledger is ON for all of
+    # these (a scenario dict is passed); every one must still be REPORTED.
+    rd = {"name": "file-brief-clean"}                       # runner-default
+    pinned = {"name": "file-brief-clean", "env": {"CODEX_EFFORT": "high"}}
+    cfg_pinned = {"name": "file-brief-clean",
+                  "config": {"codex": {"effort": "high"}}}
+    log_hdr = ("# codex_consult v0.4  mode=consult sandbox=read-only "
+               "model=cli-default (identity unverified) effort=%s (runner-default) "
+               "timeout=600s  Thu Jan  1 00:00:00 2026\n")
+    log_item = "artifacts@/golden/tmp/codex_brief.aaaaaa.reply.log"
+    inv = "%s type=file mode=0600 size=%d" % (repr(log_item[len("artifacts@"):]), 0)
+
+    def _inv_pair(base_size, cand_size, base_effort="high", cand_effort="medium"):
+        mk = lambda size, effort: [
+            (log_item, log_hdr % effort),
+            ("tmp/inventory(name,type,mode,size)",
+             "%s type=file mode=0600 size=%d"
+             % (repr(log_item[len("artifacts@"):]), size))]
+        return _synthetic(mk(base_size, base_effort)), _synthetic(mk(cand_size, cand_effort))
+
+    # the size predicate ACCEPTS only the exact delta the substitution implies
+    a, b = _inv_pair(100, 102)
+    ok, detail, _ = _differences(a, b, rd)
+    check("golden ledger: the log's size moving by EXACTLY the substituted bytes "
+          "is accepted", ok, detail)
+    a, b = _inv_pair(100, 999999)
+    ok, _, diffs = _differences(a, b, rd)
+    check("golden ledger PROBE: a log size of 100 -> 999999 is REPORTED",
+          not ok and "tmp/inventory(name,type,mode,size)" in diffs,
+          "a wrong size delta was accepted: %s" % (diffs,))
+    # ...and only for the entry that IS the runner's log
+    reply_item = "artifacts@/golden/tmp/codex_brief.aaaaaa.reply.md"
+    a = _synthetic([(log_item, log_hdr % "high"),
+                    ("tmp/inventory(name,type,mode,size)",
+                     "%s type=file mode=0600 size=100"
+                     % repr(reply_item[len("artifacts@"):]))])
+    b = _synthetic([(log_item, log_hdr % "medium"),
+                    ("tmp/inventory(name,type,mode,size)",
+                     "%s type=file mode=0600 size=102"
+                     % repr(reply_item[len("artifacts@"):]))])
+    ok, _, diffs = _differences(a, b, rd)
+    check("golden ledger PROBE: a NON-log entry changing size is REPORTED",
+          not ok and "tmp/inventory(name,type,mode,size)" in diffs,
+          "a reply artifact's size change was accepted: %s" % (diffs,))
+
+    # the token substitutions apply ONLY where the runner default is what shows
+    argv_hi = 'codex\nexec\n-c\nmodel_reasoning_effort="high"\n'
+    argv_md = 'codex\nexec\n-c\nmodel_reasoning_effort="medium"\n'
+    ok, detail, _ = _differences(_synthetic([("calls/1.argv", argv_hi)]),
+                                 _synthetic([("calls/1.argv", argv_md)]), rd)
+    check("golden ledger: the argv effort element is accepted in a runner-default "
+          "scenario", ok, detail)
+    for label, scen in (("CODEX_EFFORT set in env", pinned),
+                        ("codex.effort set in config", cfg_pinned)):
+        ok, _, diffs = _differences(_synthetic([("calls/1.argv", argv_hi)]),
+                                    _synthetic([("calls/1.argv", argv_md)]), scen)
+        check("golden ledger PROBE: the argv effort element is REPORTED when %s"
+              % label, not ok and "calls/1.argv" in diffs,
+              "an effort-selected scenario was softened by the ledger: %s" % (diffs,))
+    out_hi = "=== Codex reply (/x) — mode=consult, 1s, effort=high (runner-default) ===\n"
+    out_md = "=== Codex reply (/x) — mode=consult, 1s, effort=medium (runner-default) ===\n"
+    ok, _, diffs = _differences(_synthetic([("stdout", out_hi)]),
+                                _synthetic([("stdout", out_md)]), pinned)
+    check("golden ledger PROBE: the stdout effort token is REPORTED outside a "
+          "runner-default scenario", not ok and "stdout" in diffs,
+          "the stdout token was accepted where effort was pinned: %s" % (diffs,))
+    # and the enumeration is an enumeration: a NEIGHBOURING value is not covered
+    ok, _, diffs = _differences(
+        _synthetic([("stdout", out_hi)]),
+        _synthetic([("stdout", out_md.replace("medium", "xhigh"))]), rd)
+    check("golden ledger PROBE: high -> xhigh (not the enumerated substitution) "
+          "is REPORTED", not ok and "stdout" in diffs,
+          "an unenumerated effort value was accepted: %s" % (diffs,))
+
+
 
 # --------------------------------------------------------------------------
 # H6 — non-vacuity: the comparison must BIND, in the right channel
@@ -1547,9 +1799,23 @@ def run(check, tk):
                 pairs += 1
                 check("golden %s: scratch repos share one HEAD (ids stay exact)" % name,
                       base["head"] == cand["head"], "%s != %s" % (base["head"], cand["head"]))
-                same, detail = _compare(base, cand, scen["name"])
+                same, detail = _compare(base, cand, scen)
                 check("golden %s: baseline and candidate are byte-identical" % name,
                       same, detail)
+                stray = base["telemetry"]["stray"] + cand["telemetry"]["stray"]
+                check("golden %s: no consults.jsonl among the artifacts or in TMPDIR"
+                      % name, not stray, str(stray[:4]))
+                if scen["name"] == "file-brief-clean":
+                    # Non-vacuity: the containment assertion above only means
+                    # something if a record was actually written somewhere.
+                    got = (base["telemetry"]["records"], cand["telemetry"]["records"])
+                    check("golden %s: exactly one telemetry record on the candidate "
+                          "side, none on the baseline's" % name, got == (0, 1), str(got))
+                if scen["name"] == "resume-refusal":
+                    # A pre-init refusal accounts for no run: no record at all.
+                    got = (base["telemetry"]["records"], cand["telemetry"]["records"])
+                    check("golden %s: a pre-init refusal writes no telemetry record"
+                          % name, got == (0, 0), str(got))
                 limit = scen.get("timeout_limit")
                 if limit:
                     check("golden %s: the wall clock held (elapsed < %ds + 3)" % (name, limit),
@@ -1615,12 +1881,20 @@ def run(check, tk):
               len(PARITY_EXCLUDED) == 4, str(PARITY_EXCLUDED))
 
         # ---- H6 non-vacuity: the comparison binds, in the right channel ----
-        base_for = {}
+        # The reference for the self-tests is the CANDIDATE run of the scenario,
+        # not the baseline: the mutants are built from the candidate tree, and
+        # from 2.14 the candidate legitimately differs from the baseline (the
+        # effort ledger above). Comparing a mutant against the baseline would
+        # mix that accepted difference into the channel count. The self-tests
+        # still pass NO scenario, so the ledger can never soften them — the
+        # reference and the mutant come from the same tree, so any difference
+        # between them IS the mutation.
+        ref_for = {}
         for _label, scen_name, _mdir, _pat, _cnt, _key in mutants:
-            base_for[scen_name] = results.get((scen_name, "codex", "baseline"))
+            ref_for[scen_name] = results.get((scen_name, "codex", "candidate"))
         control = results.get(("selftest", "copy-control", "x"))
         if control_dir and not isinstance(control, Exception) and control is not None:
-            same, detail = _compare(base_for.get("file-brief-clean"), control)
+            same, detail = _compare(ref_for.get("file-brief-clean"), control)
             check("golden self-test: an UNMUTATED complete tree copy still matches",
                   same, detail)
         else:
@@ -1632,7 +1906,7 @@ def run(check, tk):
                 check("golden self-test: %s mutation is detected" % label, False,
                       "mutation did not apply / did not run: %r" % (mres,))
                 continue
-            ok, _detail, diffs = _differences(base_for.get(scen_name), mres)
+            ok, _detail, diffs = _differences(ref_for.get(scen_name), mres)
             in_channel = len(diffs) == count and all(re.search(pattern, d) for d in diffs)
             check("golden self-test: a %s mutation is REPORTED, in its channel only" % label,
                   not ok and in_channel,
@@ -1650,7 +1924,7 @@ def run(check, tk):
                       for p in N5_RELOCATED),
               repr(N5_RELOCATED))
         check("golden: the accepted-difference ledger holds exactly the enumerated entries",
-              len(ACCEPTED_DIFFERENCES) == 2,
+              len(ACCEPTED_DIFFERENCES) == 6,
               str([e[3] for e in ACCEPTED_DIFFERENCES]))
         print("  golden: %d scenario pairs (%d runs) in %.1fs; accepted differences "
               "exercised: %d" % (pairs, len(results), time.time() - started,

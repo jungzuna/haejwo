@@ -25,7 +25,8 @@
 #
 # *[origin: 2.13 shared-internals extraction — the two runners had drifted
 # apart once already (host-relative config), and a golden differential against
-# 6d09729 gates every change made here]*
+# the frozen baseline in tests/baseline/ (6d09729 for the extraction, re-frozen
+# per release since) gates every change made here]*
 
 # Sentinel terminator for every path a helper hands back. Command substitution
 # strips trailing newlines and a directory name may legally END in one, so the

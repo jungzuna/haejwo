@@ -210,7 +210,8 @@ def _decide(payload, data):
                     return "deny", via, target, (
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
                         f"The main agent must not modify code via Bash — use Edit/Write "
-                        f"within the turn budget, or delegate to 'haejwo:default-worker'."
+                        f"within the turn budget, or delegate to 'haejwo:default-worker'. "
+                        f"Emergency override: /haejwo:gate off."
                     ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
         #    find/xargs where targets are invisible to regex (write intent).
@@ -229,7 +230,8 @@ def _decide(payload, data):
                         (hits[0] if hits else None), (
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
                             f"The main agent must not modify code via Bash — use "
-                            f"Edit/Write within budget, or delegate to 'haejwo:default-worker'."
+                            f"Edit/Write within budget, or delegate to 'haejwo:default-worker'. "
+                            f"Emergency override: /haejwo:gate off."
                         ), None
     # Precedence: a literal code target always wins (it returned a deny
     # above); the unresolved exemption only applies when nothing literal did.

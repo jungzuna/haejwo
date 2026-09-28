@@ -42,7 +42,7 @@ STALE_TURN_SECONDS = 7200  # fallback reset if both turn signals ever fail
 def _decide(payload, data):
     """Compute (decision, via, context, reason, offending) without emitting.
 
-    Returns the allow/deny plus its telemetry; the caller observes once and
+    Returns the allow/deny plus its observation fields; the caller observes once and
     then emits. Every `return` inside the state_lock block releases the lock
     on the way out, so the observation never happens while it's held.
     """

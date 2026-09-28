@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/haejwo.png" width="520" alt="해줘 — 비싼 모델은 드러누워 해줘만 외치고, 작은 워커들이 땀 흘리며 실제 일을 한다">
+  <img src="assets/haejwo.png" width="520" alt="해줘 — 비싼 모델은 드러누워 해줘만 외치고, 워커 티어들이 실제 일을 한다">
 </p>
 
 <h1 align="center">해줘</h1>
@@ -8,9 +8,9 @@
 
 <p align="center"><sub><a href="README.md">English</a></sub></p>
 
-[Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)는 이미 공식 코딩 하네스입니다 — 완성도, 사용자 규모, 자기 모델과의 궁합 모두 가장 앞서 있죠. haejwo는 이들을 대체하려는 물건이 아닙니다. **깔면 그걸로 끝** — 설정 한 줄, 외울 명령어 하나 없이, 그 위에서 **여러 모델이 알아서 잘 굴러가게** 만드는 콜드스타트 플러그인입니다. 원하는 걸 프롬프트로 적기만 하면 — 아무리 대충 적어도, 그게 바로 "해줘" — 호스트 모델이 계획을 세우고, 비용에 맞는 티어로 일을 나누고, (상대 CLI가 있다면) **다른 회사 모델**과 토론을 거쳐 검토·검증까지 마칩니다.
+[Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)는 이미 공식 코딩 하네스입니다. haejwo는 이들을 대체하지 않습니다 — **깔면 그걸로 끝**, 설정 한 줄도 외울 명령어도 없이 그 위에서 **여러 모델이 알아서 잘 굴러가게** 만드는 콜드스타트 플러그인입니다.
 
-핵심 아이디어는 하나입니다: 비싼 메인 모델은 **판단**(계획·위임·결정·종합)에만 쓰고 **실행**은 비용에 맞는 티어로 넘긴다 — 그리고 그걸 말로만 부탁하지 않습니다. 메인 에이전트가 위임 대신 직접 구현을 시작하는 순간, `PreToolUse` 훅이 **물리적으로 막습니다**.
+원하는 걸 프롬프트로 적기만 하면 — 아무리 대충 적어도, 그게 바로 "해줘" — 호스트가 계획을 세우고, 비용에 맞는 티어로 일을 나누고, 독립 리뷰어와 토론하고, 검증까지 마칩니다.
 
 ## 설치
 
@@ -18,75 +18,74 @@
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
-/reload-plugins   # 이미 열려 있는 세션이 있을 때만 (새 세션은 자동으로 로드됩니다)
+/reload-plugins   # 이미 열려 있는 세션이 있을 때만
 /haejwo:setup     # 선택 — 안 해도 안전 기본값으로 동작합니다
 ```
 
-**Codex CLI** (같은 repo, 같은 훅 — 전부 실측으로 확인된 호환):
+**Codex CLI** (같은 repo, 같은 훅 — 전부 실측으로 확인):
 ```
 codex plugin marketplace add https://github.com/jungzuna/haejwo
 codex plugin add haejwo@haejwo
 ```
 대화형 codex에서는 `/hooks`로 훅을 한 번만 신뢰해 주세요. 명령어는 `@haejwo-*` 스킬로 나타납니다.
 
-훅은 세션이 시작될 때 로드되니, 설치 후 세션을 재시작하세요(Claude Code는 `/reload-plugins`). `/haejwo:setup`은 선택입니다 — 모델 티어·편집 예산·리뷰어를 한 번 설정해 영구 저장하는 것뿐이고, 실행 전에도 안전 기본값이 이미 돌아가며 첫 사용 때 haejwo가 알아서 한 번 권합니다.
-
-**Codex가 없어도 됩니다** — Claude Code 호스트에 codex가 없으면 리뷰는 번들된 `deep-reasoner`가 대신합니다(같은 계열이라 독립성은 한 단계 약해집니다). 기본 `deep-reasoner` 티어는 세션 모델을 그대로 물려받으니 판단 모델이 임의로 바뀌는 일은 없고, 실행 티어(default-worker·task-worker)는 기본이 Opus입니다(잡무는 low effort). **더 저렴하게 돌리고 싶다면** `/haejwo:setup`에서 프리셋을 고르세요. 프리셋은 호스트마다 다릅니다 — Claude Code에서는 `Standard`(기본값, 설정을 건너뛰면 이게 그대로 돕니다) / `Budget`(sonnet/haiku로 내려가는 선택지, haiku는 effort 설정을 무시합니다) / `Custom`(역할별로 직접 지정), Codex에서는 `Standard` / `Budget` / `Ultra-fast chores` / `Custom`.
-
-Claude Code에서는 haejwo가 기본으로 제공하는 에이전트 정의 기준으로 `inherit`(세션 모델 상속)이 의미를 갖는 건 deep-reasoner 하나뿐입니다. default-worker와 task-worker는 호출할 때 모델을 따로 넘기지 않으면 에이전트 파일에 적힌 기본 모델로 돕니다. 위임 게이트는 설정된 핀을 놓칠 만한 모델 누락을 보고 방향만 잡아줄 뿐, 실제로 어떤 모델이 돌았는지까지 확인해 주지는 않습니다.
-
-로컬 개발용: 클론한 뒤 `/plugin marketplace add <클론 경로>` / `codex plugin marketplace add <클론 경로>`.
+훅은 세션 시작 때 로드되니 설치 후 세션을 재시작하세요. 로컬 개발용: 클론한 뒤 `/plugin marketplace add <클론 경로>` (codex도 동일).
 
 ## 무엇을 얻나
 
-| 기능 | 하는 일 |
-| --- | --- |
-| **무설정 오케스트레이션** | 첫 세션부터 **전체 오케스트레이션 규칙**을 그대로 주입합니다 — 설정 전에는 setup 안내와 `defaults — not configured` 요약이, 설정 후에는 현재 설정 요약이 함께 붙습니다. (최소 운영 코어는 규칙 파일을 읽을 수 없거나 예산을 넘겼을 때의 비상 강등 전용입니다.) 어느 쪽이든 안전 기본값은 즉시 가동 — 게이트 ON, 턴당 2파일, bash-guard ON |
-| **판단-우선 계획** | feature급 작업은 코드보다 합의가 먼저 — 기획·분석·검토의 결정들을 리뷰어와 토론해 정리한 뒤에야 구현으로 넘어갑니다 |
-| **교차-벤더 리뷰** (가능할 때) | 두 CLI가 다 있으면 리뷰어는 언제나 상대 회사의 모델 — Claude Code에선 codex가, Codex에선 claude가 검토합니다 |
-| **역할에 맞는 실행 티어** | 판단은 호스트가 맡습니다 — 호스트는 **세션에서 고른 그 모델 그대로**이며, haejwo가 절대 바꾸지 않습니다. 구현과 잡무는 설정된 워커 티어가 맡습니다 — Claude Code 기준 기본값은 default-worker·task-worker 모두 Opus이고(잡무는 low effort), Codex에서는 호스트 모델을 그대로 쓰고 역할은 reasoning effort로 구분합니다. 티어는 단가가 아니라 **검증과 재작업까지 포함한 총비용** 기준으로 고릅니다. 더 싸게 쓰려면 `Budget` 프리셋으로 내리면 됩니다(Codex에선 `spawn_agent` 모델 매핑) |
-| **물리적 위임 게이트** | PreToolUse 게이트가 턴당 **코드파일 N개**를 넘는 편집과 메인 에이전트의 Bash 코드 수정을 거부합니다. 서브에이전트는 면제, 훅 오류는 무조건 통과(fail-open) |
-| **push 동의** | 워커는 push/배포를 절대 하지 않습니다. 호스트도 `/haejwo:push auto`로 허락받기 전엔 매번 물어봅니다 |
+**판단은 비싸게.** 호스트는 언제나 **세션에서 고른 그 모델**이고, haejwo가 절대 바꾸지 않습니다. 계획·결정·검토는 호스트 몫이며, feature급 작업은 토론을 거친 계획에서 출발합니다. 그리고 `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집과 Bash 코드 수정을 **물리적으로 거부**합니다. 서브에이전트는 면제, 훅 오류는 무조건 통과(fail-open).
 
-평소엔 **해줘 명령어를 칠 일이 없습니다** — 명령어는 설정·점검용(`setup`, `status`, `gate`, `push`, 그리고 수동 트리거용 `plan`)이 전부입니다.
+**실행은 싸게.** 구현과 잡무는 설정된 워커 티어로 갑니다 — Claude Code 기준 `default-worker`는 Opus, `task-worker`는 Opus low effort, 더 싸게 쓰려면 `Budget`(sonnet/haiku); Codex에서는 `spawn_agent` 모델 매핑. 안전 기본값(게이트 ON, 턴당 2파일, bash-guard ON)은 첫 세션부터 이미 돌아가므로 `/haejwo:setup`은 선택입니다.
+
+**리뷰는 다른 회사 모델이.** 두 CLI가 다 있고 `/haejwo:setup`으로 리뷰어를 켜고 검증하면(기본값은 꺼짐) 리뷰어는 상대 회사의 모델입니다 — Claude Code에선 codex가, Codex에선 claude가. haejwo를 만드는 과정에서, 호스트 자신의 검사는 통과시킨 봉쇄(containment) 격차 6건을 이 교차-벤더 리뷰어가 찾아냈습니다(2.14, 리뷰 세 라운드). 상대 CLI가 없거나 검증 전이면 같은 계열 `deep-reasoner`가 대신합니다(독립성은 한 단계 약해집니다).
+
+자세히: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
 
 ### 조합별로 얻는 것
 
 | | Claude Code만 | Codex만 | 둘 다 |
 | --- | --- | --- | --- |
-| 게이트 + 규칙 + plan-first + push 동의 | ✓ | ✓ | ✓ |
-| 모델 티어 (판단은 상속, 실행은 설정된 티어) | ✓ 세션 모델/opus/opus (잡무는 low effort, `Budget` 프리셋은 sonnet/haiku) | ✓ `spawn_agent` 모델 매핑 (판단은 상속, 실행은 설정된 티어) | ✓ |
-| **교차-벤더 적대적 리뷰** | 대체: 같은 계열 `deep-reasoner` | 대체: 같은 모델 서브에이전트 (독립성 약함) | ✓ codex↔claude |
+| 게이트·규칙·plan-first·push 동의 | ✓ | ✓ | ✓ |
+| 모델 티어 (판단은 상속) | ✓ 세션 모델/opus/opus | ✓ `spawn_agent` 매핑 | ✓ |
+| **교차-벤더 리뷰** | 대체: `deep-reasoner` | 대체: 같은 모델 서브에이전트 | ✓ codex↔claude, setup 검증 후 |
 
-다른 쪽 CLI는 **다른 회사 모델의 리뷰**가 필요할 때만 설치하면 됩니다 — 두 번째 CLI가 사주는 게 정확히 그것이고, Claude Code를 추가하면 모델 티어도 따라옵니다. 같은 모델끼리의 대체 리뷰도 돌긴 하지만, 자기 검토가 놓치는 걸 잡는 건 결국 다른 모델입니다.
+## 명령어 (설정·점검 전용)
 
-## 명령어 (설정·점검 전용 — 조연입니다)
-
-평소엔 하나도 필요 없습니다. 하네스를 조정하거나 들여다볼 때만:
+평소엔 **하나도** 필요 없습니다.
 
 | Claude Code · Codex 스킬 | 역할 |
 | --- | --- |
-| `/haejwo:setup` · `@haejwo-setup` | 최초 1회 설정 — 티어·편집 예산·bash-guard·리뷰어. 한 번 답하면 영구 저장 |
-| `/haejwo:status` · `@haejwo-status` | 현재 설정, 이번 턴 편집 카운터, 리뷰어 상태, 훅 관찰 기록과 이상징후 |
-| `/haejwo:gate` · `@haejwo-gate` | 게이트 실시간 조정 — 예산 `N`, `on`/`off` (비상용) |
-| `/haejwo:push` · `@haejwo-push` | repo별 push 동의 — 허락하기 전까진 매번 물어봅니다 |
+| `/haejwo:setup` · `@haejwo-setup` | 최초 1회 설정 — 티어·편집 예산·bash-guard·리뷰어 |
+| `/haejwo:status` · `@haejwo-status` | 현재 설정, 이번 턴 카운터, 리뷰어 상태, 훅 관찰 기록 |
+| `/haejwo:gate` · `@haejwo-gate` | 게이트 실시간 조정 — 예산 `N`, `on`/`off` |
+| `/haejwo:push` · `@haejwo-push` | repo별 push 동의 — 허락 전까진 매번 물어봅니다 |
 | `/haejwo:plan` · `@haejwo-plan` | plan 합의 수동 트리거 (호스트가 어차피 알아서 돌립니다) |
 
-## 듀얼호스트 패리티
+## 하지 않는 것
 
-repo 하나, `hooks.json` 하나, python 코어 하나 — codex 쪽 동작은 전부 **추측이 아니라 실측**으로 확인했습니다(환경변수 호환 별칭, deny 왕복, `apply_patch` 멀티파일 파싱과 통째 거부, `turn_id` 턴 리셋, 서브에이전트 `agent_type` 면제). codex 쪽 티어는 네이티브 `spawn_agent`의 model/effort 파라미터로 돕니다 — 판단(reasoner) 티어는 호스트 모델을 그대로 물려받아 **판단이 조용히 다운그레이드되는 일은 없고**, 실행·잡무 티어는 설정된 모델과 effort로 돕니다.
+haejwo를 하네스가 아니라 그 위의 윤활층으로 붙들어 두는 경계선:
 
-## 문서
+- 스케줄러, 영속 작업 큐, 상주 에이전트 로스터
+- 범용 DAG나 재귀적 멀티에이전트 런타임
+- 모델 게이트웨이, 과금 최적화, 가격 기반 라우터
+- 교차-벤더 **워커** 라우팅 — 워커 벤더는 호스트를 따릅니다(GPT로 실행하고 싶다면 Codex 호스트로). 공식 `codex@openai-codex` 플러그인과 공존은 가능하지만, 리뷰는 haejwo의 비편집 consult 러너를 그대로 씁니다
+- 워커용 worktree 오케스트레이션이나 패치 병합
+- 호스팅 컨트롤 플레인이나 대시보드
+- 자율 push/배포/공개
+- 워크플로 DSL이나 온톨로지 프레임워크
+- 두 번째 운영 아키텍처 (예: 값싼 메인을 쓰는 어드바이저 모드)
 
-| 문서 | 내용 |
-| --- | --- |
-| [`haejwo/README.md`](haejwo/README.md) | 딥다이브: 게이트 동작 원리, 첫 실행, 명령어, 추론 정책, 검증 |
-| [`haejwo/PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) | 헌법 — 원칙 13개와 그 유래, 충돌할 때의 우선순위, 개정 규칙 |
-| [`haejwo/PROMPTS.md`](haejwo/PROMPTS.md) | LLM이 읽고 쓰는 모든 문구의 스타일 규정 (deny 문구는 테스트로 보증되는 계약) |
+**계획 없음** (보류가 아니라 닫힌 항목):
+
+- accepted-outcome 경제성 (수용된 결과당 비용 산정)
+- ask-once 레지스트리를 넘어서는 push 동의 넛지
+- plan 마커나 단어 수 게이트
+- 적응형·가격 기반 모델 라우팅
+- 세 번째 호스트 어댑터
 
 ## 검증
 
-`python3 tests/test_hooks.py` — 외부 의존성 없는(stdlib만) 계약 테스트 스위트. push마다 CI가 돌립니다.
+`python3 tests/test_hooks.py` — 외부 의존성 없는(stdlib만) 계약 테스트 스위트: 게이트 카운팅과 deny 문구, 동시성, bash-guard, codex `apply_patch`, 턴 리셋, 매니페스트 동기화, 미러 드리프트, 규칙 캐너리. 커밋은 **파이프를 타지 않은** 종료 코드로 판정하세요. push마다 CI가 돌립니다.
 
 ## 라이선스
 

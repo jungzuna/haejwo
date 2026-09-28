@@ -68,8 +68,9 @@
 #   conflicts, gitlinks (submodules) and embedded untracked repositories —
 #   none of which a plain worktree snapshot can reproduce honestly.
 #
-# Config (${CLAUDE_PLUGIN_DATA}/config.json, or the derived path — see
-# CODEX_SANDBOX below for the exact resolution rules). Keys read here:
+# Config (haejwo's OWN config.json — see CODEX_SANDBOX below for the exact
+# ownership rules; the log header discloses the selected path and its status).
+# Keys read here:
 #   codex.consult_sandbox   sandbox for consult runs (read on ANY host)
 #   codex.model             default reviewer model (env CODEX_MODEL wins)
 #   codex.effort            default reviewer effort (env CODEX_EFFORT wins)
@@ -91,18 +92,24 @@
 #                   downgrade — an invalid value here EXITS 2 naming the
 #                   three valid values. Priority: CODEX_SANDBOX env > config
 #                   `codex.consult_sandbox` > read-only (mode default). The
-#                   config path is ONLY ${CLAUDE_PLUGIN_DATA}/config.json
-#                   when that env var is set (non-empty) — a missing file
-#                   there means NO config; it never falls back to a derived
-#                   path (which could resurrect a stale danger-full-access
-#                   setting from elsewhere). Only when CLAUDE_PLUGIN_DATA is
-#                   unset/empty is the path derived from $0's resolved path:
-#                   under /.codex/ -> ~/.codex/plugins/data/haejwo-haejwo/config.json,
-#                   else ~/.claude/plugins/data/haejwo-haejwo/config.json
-#                   (empty $HOME there also means no config). A CONFIG value
-#                   that is missing, unparsable, or not in the allowlist
-#                   silently falls back to read-only — NEVER a dangerous
-#                   value on error (only the ENV path errors loudly).
+#                   config path is OWNED, never taken from the shell on
+#                   trust: a host's CLAUDE_PLUGIN_DATA names the LAST LOADED
+#                   plugin's data dir, not haejwo's. Exactly one owner path
+#                   is selected — structural (this runner's own installed
+#                   path under <plugins>/cache/haejwo/haejwo/<ver>/scripts/
+#                   -> <plugins>/data/haejwo-haejwo/config.json), else
+#                   CLAUDE_PLUGIN_DATA when its basename IS `haejwo-haejwo`,
+#                   else the derived ~/.codex|.claude/plugins/data/
+#                   haejwo-haejwo/config.json (empty $HOME = no config at
+#                   all) — and a missing or malformed file THERE means NO
+#                   config; it never falls back to another path, which could
+#                   resurrect a stale danger-full-access setting from
+#                   elsewhere. A set-but-foreign CLAUDE_PLUGIN_DATA is
+#                   ignored and disclosed once in $LOG and on stderr. A
+#                   CONFIG value that is missing, unparsable, or not in the
+#                   allowlist silently falls back to read-only — NEVER a
+#                   dangerous value on error (only the ENV path errors
+#                   loudly).
 #   CODEX_EFFORT    low|medium (runner default)|high|xhigh — scale to the
 #                   decision's stakes; xhigh for the hardest calls only, low
 #                   for probes. An invalid ENV value EXITS 2 (caller input);
@@ -334,10 +341,15 @@ SANDBOX_DISP="sandbox=$SANDBOX"
 command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex --version)" >&2; exit 3; }
 
 {
-  echo "# codex_consult v0.4  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s  $(date 2>/dev/null)"
+  echo "# codex_consult v0.4  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# codex '; bounded 20 codex --version 2>&1 | head -1
-  echo "# ---- codex exec ----"
 } > "$LOG"
+# The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is
+# appended here — the one place where it survives, and it belongs with the
+# header rather than below the section marker, where it would read as the
+# CLI's own output.
+hjw_config_disclose
+echo "# ---- codex exec ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"

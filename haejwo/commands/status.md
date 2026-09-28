@@ -3,28 +3,13 @@ description: Show haejwo's full status (read-only) — config, this turn's edit 
 argument-hint: "(no arguments)"
 ---
 
-You are the **haejwo host**. Report full plugin status. Data dir: `${CLAUDE_PLUGIN_DATA}` (if unsubstituted: `ls -d ~/.claude/plugins/data/*haejwo*`).
+You are the **haejwo host**. Report full plugin status. Data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted → `ls -d ~/.claude/plugins/data/*haejwo*`). Present compactly:
 
-Gather and present compactly:
-1. **Config** — `config.json` (configured?, gate on/off, budget, bash-guard, model tiers, codex enabled/verified_at, push auto-repos). If missing: say defaults are active and suggest `/haejwo:setup`. Reviewer freshness from `verified_at`: null/invalid → "never verified"; a future timestamp → flag as an anomaly; age > 30 days AND the reviewer is enabled → a quiet "re-run `/haejwo:setup` to re-verify"; reviewer disabled → show the date only, no nudge.
-   - If `config.json` exists but is malformed JSON: say so first — hooks are fail-open until it is repaired (2.12).
-2. **This turn** — resolve THIS session's state file the way the hooks name it: take `$CLAUDE_SESSION_ID`, replace every `[^A-Za-z0-9_-]` character with `-`, truncate to 80 chars, and read `state/<that>.json`. Report which code files the main agent has edited this turn (n/budget). If the session id is unknown, say "session id unknown — showing the newest session-state JSON, which may belong to another session" and choose the newest among `state/*.json` ONLY (never an observations file).
-3. **Reviewer CLI** — on a Claude host: `codex login status`; on a Codex host: `claude --version` plus any available login check. Report one line.
-4. **Observations** — read `state/observations.jsonl.1` (if present) then `state/observations.jsonl`, oldest-first; report the last ~10 lines from that combined order. Specifically report whether any record has a non-null `agent_type` — that shows subagent-originated records; all null in this window means none were observed, NOT proof that hooks never fire in workers. Prefer the recorded `decision`/`via` fields (2.11+) over the actor field alone; records without them predate 2.11. This is the live evidence for the gate's subagent-exemption design.
-5. **Anomalies (surface only — NEVER propose changes)** — scan the full observations file for: unexpected actor types, denial streaks (same session denied 3+ times), gaps where expected hook fires are absent, or observation shapes not seen before. Report what you see, plainly; whether it means anything is the owner's call.
-6. **Delegations & model pins** — if `state/observations.jsonl` has records with `"hook":"delegation"`: report RAW COUNTS ONLY — no compliance score, no percentages — one bullet per count, each with at most a one-line observation:
-   - delegations tallied by `subagent_type` / `requested_model`
-   - the deny count
-   - records with `plan_marker_kind=="none"` AND `prompt_bytes>1500` — feature-scale-looking briefs missing a plan marker (`prompt_bytes` is a size proxy, not feature scope)
-   - whether a reviewer-consult (`codex_consult.sh` / `claude_consult.sh`) ran this session
-   - consults observed this session / window from `state/consults.jsonl` (count, outcomes, effort mix, attempts>1) — absence means none observed, not none ran
-   - the push-consent registry state (`/haejwo:push`)
-   - tier calls with `requested_model` null — no explicit override was recorded; allowed Claude calls run at the agent-file default
-   - the `tier_pin_check` deny count
-   - the per-hook `decision` counts (gate / bash_guard / delegation), labeling the observation window's time span
-   - delegations whose `subagent_type` starts with `codex:` — the official plugin's rescue, counted separately and labeled rescue delegations: they run outside haejwo's edit budget and bash guard, and are NEVER called "ungated writes" (a call may fail or edit nothing)
-   - an on-demand model-availability check for the configured `models_codex` pins (on Codex hosts: query the CLI's model list if available) — an invalid/unknown pin is an anomaly, report it
-   - a NEW model family the CLI now supports but isn't pinned — a quiet note only ("rerun `/haejwo:setup` if desired"), never a nag
-7. **Agents** — list the three tiers and reviewer slot with their models/state from config. On a Claude host, if the stored `models.deep_reasoner` is exactly `"opus"`, add a quiet note: "legacy pin; current default is inherit — re-run `/haejwo:setup` if desired" (NEVER flag dormant/unpinned models on a Codex host).
+1. **Config** — from `config.json`: configured?, gate, budget, bash-guard, tiers, reviewer enabled/`verified_at`, push auto-repos. Missing → defaults are active, suggest `/haejwo:setup`. Malformed JSON → say so FIRST: hooks are fail-open until it is repaired (2.12).
+2. **This turn** — the state file as the hooks name it: `$CLAUDE_SESSION_ID`, every `[^A-Za-z0-9_-]` → `-`, truncated to 80 chars, read `state/<that>.json`. Report the code files the main agent edited this turn (n/budget). Unknown session id → say "session id unknown — showing the newest session-state JSON, which may belong to another session" and take the newest `state/*.json` ONLY, never an observations file.
+3. **Reviewer** — one line: the CLI probe (Claude host `codex login status`; Codex host `claude --version` plus any login check), then the stored model, effort, sandbox and consent. `verified_at` null/invalid → "never verified"; future → an anomaly; over 30 days while enabled → a quiet "re-run `/haejwo:setup` to re-verify"; disabled → the date only, no nudge.
+4. **Observations** — `state/observations.jsonl.1` (if present) then `state/observations.jsonl`, oldest-first, last ~10; report whether any record carries a non-null `agent_type` (subagent-originated) — all null means none observed in this window, NOT that hooks never fire in workers. Prefer the recorded `decision`/`via` fields (2.11+) over the actor field alone.
+5. **Anomalies (surface only — NEVER propose changes)** — scan the whole file for unexpected actor types, denial streaks (3+ denies in one session), absent expected hook fires, or shapes not seen before. Report plainly; interpreting them is your job as host, never the user's.
+6. **Delegations** — from `"hook":"delegation"` records, RAW COUNTS ONLY (no scores, no percentages), at most one line of observation each: by `subagent_type` and `requested_model` (null = no override recorded → agent-file default on Claude Code; on Codex the child INHERITS the host model), denies, `tier_pin_check` denies, per-hook `decision` counts labeled with the window's time span, `plan_marker_kind=="none"` with `prompt_bytes>1500` (a size proxy, not feature scope), whether a reviewer consult ran this session, the push-consent registry state, and `codex:`-prefixed rescue delegations separately — they run outside haejwo's edit budget and bash guard, and are NEVER called "ungated writes".
 
 End with one line: gate ACTIVE/OFF, budget N, configured yes/no.

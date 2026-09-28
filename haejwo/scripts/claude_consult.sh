@@ -90,15 +90,6 @@
 # Applies in every mode — the hazard predates --snapshot.
 # *[origin: ship review Z4]*
 #
-# Consult telemetry (2.14, D4-lite): one JSON line per run — outcome, the single
-#   attempt, duration — appended to <data-dir>/state/consults.jsonl. There is no
-#   effort, sandbox, thread id or usage on this path, so those fields are null.
-#   Bounded and best effort: any failure is a log line and never changes this
-#   runner's behavior or exit code. The data dir is NOT taken from
-#   CLAUDE_PLUGIN_DATA blindly (in a subagent's shell it can name another
-#   plugin's data dir — measured): see `hjw_telemetry_resolve`. `outcome=ok`
-#   means RUNNER success only, never host acceptance.
-#
 # Change detection (scope, honestly): HEAD, tracked file status AND per-path
 #   working-tree fingerprints, `git diff` / `git diff --cached` digests, and
 #   the CONTENTS of untracked files (sorted, first 2000; presence is covered
@@ -139,7 +130,7 @@ case "$HJW_SELF" in
   *)  HJW_SELF="$PWD/${HJW_SELF:-$0}" ;;
 esac
 HJW_LIB="${HJW_SELF%/*}/lib"
-for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py telemetry.py; do
+for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py; do
   [ -f "$HJW_LIB/$_hjw_f" ] || {
     echo "consult runner library missing: $HJW_LIB/$_hjw_f" >&2; exit 3; }
 done
@@ -281,7 +272,6 @@ if ! hjw_detect_before; then
   # `claude -p` has no sandbox to fall back on, so there is no read-only
   # exception here: the codex runner's one is a vendor capability, not a
   # shared policy. *[origin 2026-09-21 audit item 3]*
-  hjw_telemetry_refused non-git
   REFUSE_MSG="consult outside a git repo — cannot verify the no-edit contract (claude -p is unsandboxed). Run inside a git repo."
   printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
   echo "$REFUSE_MSG" >&2
@@ -308,25 +298,14 @@ else
 fi
 rc=$?
 DUR=$((SECONDS - START))
-# One attempt only on this path (no model fallback exists here), so the total
-# span and the attempt's own span are the same number.
-HJW_TEL_DUR_TOTAL=$DUR
-# effort/effort_src/events stay EMPTY: this runner has no effort knob and no
-# event stream, so the record carries nulls rather than invented values.
-if [ "$rc" -eq 124 ]; then TEL_RESULT=timeout
-elif [ "$rc" -ne 0 ]; then TEL_RESULT=failed
-else TEL_RESULT=completed
-fi
-hjw_telemetry_attempt "model=$MODEL" "model_src=$MODEL_SRC" "effort=" \
-  "effort_src=" "child_rc=$rc" "events=" "result=$TEL_RESULT"
 
 hjw_detect_after
 
 # ---- failure classifier ----
-if [ "$rc" -eq 124 ]; then fail timeout "timed out after ${TIMEOUT}s (tune with CLAUDE_TIMEOUT)"
-elif [ "$rc" -ne 0 ]; then fail exit-code "claude exit code $rc"; fi
+if [ "$rc" -eq 124 ]; then fail "timed out after ${TIMEOUT}s (tune with CLAUDE_TIMEOUT)"
+elif [ "$rc" -ne 0 ]; then fail "claude exit code $rc"; fi
 
-[ -s "$OUT" ] || fail empty-reply "empty reply (claude produced no final answer)"
+[ -s "$OUT" ] || fail "empty reply (claude produced no final answer)"
 
 # ---- mode gate (side-effect verification) ----
 # GIT_OK is necessarily 1 here: the non-git case exits 2 in the preflight

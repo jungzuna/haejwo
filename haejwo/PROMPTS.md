@@ -44,7 +44,7 @@ Shapes are for the reader; P11 governs — use them when they fit, never as ritu
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.
 
 ## Reasoning policy
-- Reviewer effort scales with the decision's stakes: `medium` = the default and routine checks (runner default), `high` = design/plan rounds and diff reviews, `xhigh` = architecture forks / security-critical / final deadlock rounds only. Never pin one level for everything — uniform max dilutes budget where judgment compounds. Non-reasoning probes (connectivity smokes) stay explicit `low`. Claude-host same-family fallback = `deep-reasoner`; other-CLI review uses the configured runner.
+- Effort policy: see the injected rules (`rules/orchestration.md`) — the single source. Mechanics only here: `CODEX_EFFORT` overrides the stored `codex.effort`, and non-reasoning probes (connectivity smokes) stay explicit `low`.
 
 ## Maintenance
 - Any prompt change bumps `plugin.json` version — patch for wording, minor for behavior.

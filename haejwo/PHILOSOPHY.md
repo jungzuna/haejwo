@@ -57,19 +57,11 @@ being true.**
     the reporter]*
 12. **The tool obeys its own rules.** Maintenance runs under the same gates it
     imposes. *[the gate forced its own maintainer to delegate a test]*
-13. **Constraints are loans.** Model-dependent constraints — physical gates,
-    behavioral norms, session-injected instructions — must keep earning their
-    cost. When a role's configured model family or tier changes, re-audit the
-    constraints calibrated to that role against representative field evidence
-    and their origin failure. Keep a physical gate while it protects its
-    countable invariant better than a thinner mechanism. Tightening requires
-    field evidence and independent adversarial rebuttal (cross-vendor when
-    available; P3-gate removals always get independent review); relaxing
-    requires an evidence-bearing re-audit and a rollback signal — never a new
-    failure incident. Durable owner-policy and safety constraints do not decay
-    with model quality. *[origin: C4 deferral — marker drift 0/3→8/8 closed
-    without a gate; uniform xhigh overuse; pre-Fable calibrations with no
-    re-audit path]*
+13. **Constraints are loans.** A role's model/tier change re-audits the
+    constraints calibrated to it. Relaxing needs an evidence-bearing re-audit
+    plus a rollback signal, never a new incident; tightening needs field
+    evidence AND independent review (cross-vendor when available), as does
+    every P3-gate removal. Durable owner policy and safety do not decay. *[C4 drift; xhigh overuse]*
 
 ## Precedence (when principles collide, the higher tier wins)
 1. **Session & trust safety** — fail open, never brick, consent before
@@ -101,3 +93,6 @@ the owner decides.
 Amend only when a real incident proves a durable rule or conflict. Every
 amendment names its origin case and removes or merges any principle it
 duplicates. Wording changes bump the plugin patch version.
+
+History: 2026-09-28 completion audit — P13 compressed (thesis remains in the
+owner's notes).

@@ -14,46 +14,47 @@ repo-wide exploration; research; log triage.
   verification, no behavior/risk/API/data-shape judgment ->
   `haejwo:task-worker`; else default-worker.
 - Isolated deep analysis or same-model verification -> `haejwo:deep-reasoner`
-  (fresh context, NOT independent authority — judgment stays with the host).
+  (fresh context, NOT independent authority).
 - Independent review / co-analysis -> the OTHER vendor's runner:
   `${CLAUDE_PLUGIN_ROOT}/scripts/{codex,claude}_consult.sh` (non-editing;
-  post-run change detection). Effort medium routine / high default /
-  xhigh ONLY for architecture forks, security-critical, deadlock rounds; model
-  fixed per session; escalation = NEW session, never --resume.
+  post-run change detection). Effort: runner default medium for routine
+  confirmations, explicit high for plan/design consensus and diff reviews,
+  xhigh ONLY for architecture forks, security-critical work, deadlock rounds;
+  model fixed per session; escalation = NEW session, never --resume.
 - Risk classes (security/concurrency/data integrity/crypto/migrations/public
   API): escalate only with a brief-named risk + independent review BEFORE
-  live deployment, commit, merge, or reporting acceptance; docs/config/
-  boilerplate never escalates.
+  deploy, commit, merge, or reported acceptance; docs/config/boilerplate
+  never escalates.
 - Generic agents (general-purpose/Explore) INHERIT the session model — on
-  Claude pass an explicit cost-appropriate model; prefer haejwo tiers. Codex
-  hosts: spawn_agent omits model only for `inherit`, else passes the
-  configured model, plus reasoning_effort (fresh/partial context forks only).
+  Claude pass an explicit cost-appropriate model; prefer haejwo tiers. Codex:
+  spawn_agent omits model only for `inherit`, else the configured model +
+  reasoning_effort (fresh/partial forks only).
 
 **Plan-first:** material judgment-bearing feature/risk work starts from an
 AGREED plan (reviewer debate; the host runs it proactively). Briefs EMBED it
-as `Plan:` or state `No plan because: <reason>`; mechanical/bounded-research
-work: `No plan because:` suffices.
+as `Plan:` or `No plan because: <reason>`, which alone suffices for
+mechanical/bounded-research work.
 
-**Briefs & acceptance:** briefs: goal, files, constraints, done-criteria —
-minimal worker judgment. Accept only diffs tracing to the brief or a
-disclosed judgment call; countable criteria need named deterministic
-evidence — none, no acceptance. Codex briefs append: verification evidence,
-concise report, `Judgment calls:`.
+**Briefs & acceptance:** goal, files, constraints, done-criteria — minimal
+worker judgment. Accept only diffs tracing to the brief or a disclosed
+judgment call; countable criteria need named deterministic evidence — none,
+no acceptance. Codex briefs append: verification evidence, concise report,
+`Judgment calls:`.
 
 **Long sessions:** workers start fresh, main re-reads everything — delegate
 even mid-size work; offer a fresh-session handoff when heavy.
 
 **Reporting:** proportional to content — one honest checkpoint, no theater.
 
-**Outward (push/deploy/publish):** host-owned, consent-based; workers NEVER
-push or deploy. Ask first unless the repo has auto-push consent
-(`/haejwo:push auto` records it).
+**Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
+Ask first unless the repo has auto-push consent (`/haejwo:push auto` records
+it).
 
 **Recovery (host's job, never the user's):** reviewer down -> one-sentence
 fallback (Claude: deep-reasoner isolated critique, host stays sole
 authority; Codex: native subagent). Worker failure: diagnose brief/skipped
-checks/tier/environment -> fix, retry once or escalate tier once (no higher
-tier: re-brief or decompose); never grind.
+checks/tier/environment -> fix, retry or escalate tier ONCE (no higher tier:
+re-brief or decompose); never grind.
 
 **Hard rules (gate-enforced):** max N distinct code files/turn for the main
 agent (default 2); more deny -> delegate. The main agent NEVER modifies code

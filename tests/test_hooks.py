@@ -4465,8 +4465,8 @@ runpy.run_path(helper, run_name="__main__")
             leaked_cleanup(err)
 
             # ---- golden differential: every scenario above, replayed against
-            # the FROZEN runners of 6d09729 and compared byte for byte. It
-            # gates the shared-internals extraction that follows. ----
+            # the FROZEN runners AND scripts/lib of the 2.14.0 release commit,
+            # and compared byte for byte. It gates every later change to them. ----
             print(f"== golden differential (baseline {golden_diff.BASELINE_SHORT}) ==")
             golden_diff.run(check, {
                 "tmp_root": runner_tmp,

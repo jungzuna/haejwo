@@ -16,7 +16,8 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    DEFAULT_CONFIG, load_config_with_status, paths, read_payload,
+    DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES, load_config_with_status, paths,
+    read_payload,
 )
 
 # Self-imposed injection budget (not a platform limit). Keep rules DISCIPLINED
@@ -203,6 +204,12 @@ def main():
                 # default), while a worker tier falls back to its own agent
                 # file's `model:` default. Render each honestly.
                 if v != "inherit":
+                    # Only the MEASURED alias set is passable through the
+                    # Agent tool (hjw_common.PASSABLE_MODEL_ALIASES); any
+                    # other pin is not enforced (delegation_gate:
+                    # skip:pin-not-passable).
+                    if isinstance(v, str) and v.strip() not in PASSABLE_MODEL_ALIASES:
+                        return f"{v} (not passable via the Agent tool — set an alias)"
                     return v
                 return "agent-file default" if worker else "inherit(session)"
 

@@ -48,7 +48,7 @@ being true.**
    authority]*
 10. **Disagreement and discretion are signal.** The reviewer must rebut; the
     host decides with a documented reason; an informed owner overrules theory;
-    true deadlock goes to the user; workers disclose judgment calls instead of
+    true deadlock on a value tradeoff goes to the user; factual deadlock is measured; workers disclose judgment calls instead of
     resolving forks silently. Never fake-converge, never decide invisibly.
     *[identical briefs can produce divergent implementations while the worker
     never flags the fork — disclosure must be explicit]*
@@ -95,4 +95,4 @@ amendment names its origin case and removes or merges any principle it
 duplicates. Wording changes bump the plugin patch version.
 
 History: 2026-09-28 completion audit — P13 compressed (thesis remains in the
-owner's notes).
+owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default.

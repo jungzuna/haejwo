@@ -31,7 +31,8 @@ import time
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, canonical, deny, gate_disabled_by_env, is_code_file, is_subagent,
+    allow, canonical, carry_session_flags, deny, gate_disabled_by_env,
+    is_code_file, is_subagent,
     load_config_with_status, load_state, malformed_note_once, observe, paths,
     read_payload, save_state, state_lock,
 )
@@ -103,11 +104,13 @@ def _decide(payload, data):
         # Turn boundary, belt & braces: prompt_id (Claude) / turn_id (Codex)
         # change (lazy) OR the UserPromptSubmit reset hook, plus a stale
         # fallback if both fail.
+        # Session-scoped once-note flags survive both resets
+        # (hjw_common.carry_session_flags).
         pid = payload.get("prompt_id") or payload.get("turn_id")
         if pid and state.get("prompt_id") != pid:
-            state = {"prompt_id": pid, "files": []}
+            state = carry_session_flags(state, {"prompt_id": pid, "files": []})
         elif state.get("updated_at") and time.time() - state["updated_at"] > STALE_TURN_SECONDS:
-            state = {"prompt_id": pid, "files": []}
+            state = carry_session_flags(state, {"prompt_id": pid, "files": []})
 
         files = state.get("files", [])
         additions = [p for p in new_paths if p not in files]

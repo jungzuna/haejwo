@@ -17,8 +17,17 @@ boundary; fail open on any ambiguity.
 Tier pin check (origin 2026-08-21 silent-downgrade): applies ONLY to the
 haejwo tier workers (prefixed or bare names). It denies only when ALL hold:
 no explicit model was requested, the configured pin for that tier is an
-explicit model (not blank/"inherit"), and that pin differs from the agent
-file's frontmatter default. An unreadable config or unreadable/malformed
+explicit model (not blank/"inherit"), that pin differs from the agent
+file's frontmatter default, and the pin is PASSABLE — a member of the
+MEASURED alias set hjw_common.PASSABLE_MODEL_ALIASES (sonnet/opus/haiku).
+Compatibility boundary: that set is what the Claude Code Agent tool's
+`model` accepted on 2026-10-02 (a full id is an InputValidationError); the
+enum may also carry account-specific aliases (e.g. `fable`), which are NOT
+in the set. Extend it only by measurement. Any pin outside the set (full
+ids, unknown words, account-specific aliases) could not be relied on to
+pass, and denying would brick that tier (P4) with a steer the host may not
+be able to follow (P6): it is allowed as "skip:pin-not-passable" with a
+once-per-session note. An unreadable config or unreadable/malformed
 frontmatter SKIPS the check (never deny on state we could not read).
 
 Envelope field semantics (v2) — one line per field:
@@ -60,6 +69,12 @@ Envelope field semantics (v2) — one line per field:
                                                  audit item 1)
                      "skip:frontmatter-unreadable" agent file missing or its
                                                  frontmatter is malformed
+                     "skip:pin-not-passable"     pin differs from the agent
+                                                 file default but is not in
+                                                 the measured passable alias
+                                                 set; allowed (the pin is not
+                                                 enforced) with a once-per-
+                                                 session note
                      "skip:fail-open"            an exception in the decision
                                                  path (allowed, as always)
   agent_type       — non-null only when this call originates inside a
@@ -84,7 +99,8 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
     allow, deny, gate_disabled_by_env, is_subagent, load_config_with_status,
-    malformed_note_once, observe, paths, read_payload,
+    PASSABLE_MODEL_ALIASES, load_state, malformed_note_once, observe, paths,
+    read_payload, save_state, state_lock,
 )
 
 KNOWN_GENERIC = {"general-purpose", "Explore"}
@@ -311,7 +327,35 @@ def _tier_pin_check(subagent_type, model, requested_model, cfg, cfg_status, root
         return "skip:frontmatter-unreadable", None, pin
     if file_default.strip() == pin.strip():
         return "pass:pin-matches-default", file_default, pin
+    if pin.strip() not in PASSABLE_MODEL_ALIASES:
+        return "skip:pin-not-passable", file_default, pin
     return "deny", file_default, pin
+
+
+def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default):
+    """The not-passable note, ONCE per session per role (same flag-in-
+    session-state pattern as hjw_common.malformed_note_once; turn_reset
+    preserves the flag). None on later calls. An unwritable state repeats the
+    note — the fail-open direction."""
+    note = (
+        f"[haejwo] {role}: configured pin `{pin}` is not enforced; allowing "
+        f"the agent-file default `{file_default}` (`{pin}` is outside the "
+        f"measured passable aliases sonnet/opus/haiku). To enforce a pin, set "
+        f"an alias in /haejwo:setup, or pass the model explicitly if your "
+        f"session's Agent tool offers it."
+    )
+    try:
+        with state_lock(data_dir, session_id):
+            state = load_state(data_dir, session_id)
+            noted = state.get("pin_unpassable_noted")
+            noted = list(noted) if isinstance(noted, list) else []
+            if role in noted:
+                return None
+            state["pin_unpassable_noted"] = noted + [role]
+            save_state(data_dir, session_id, state)
+        return note
+    except Exception:
+        return note
 
 
 # A plan marker is a LABEL AT THE HEAD OF A LINE, and hosts write that label
@@ -449,6 +493,10 @@ def main():
                     tier_pin_check, file_default, pin = _tier_pin_check(
                         subagent_type, model, requested_model, cfg, cfg_status,
                         root, on_codex)
+                    if tier_pin_check == "skip:pin-not-passable":
+                        context = _pin_not_passable_note_once(
+                            data, payload.get("session_id", "unknown"),
+                            TIER_AGENTS[subagent_type][1], pin, file_default)
                     if tier_pin_check == "deny":
                         decision = "deny"
                         # Origin 2026-08-21 silent-downgrade (kept here, out of

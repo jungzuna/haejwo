@@ -32,7 +32,7 @@ On Claude Code, with haejwo's shipped agent definitions, `inherit` is meaningful
 
 ## Zero-command by design
 Normal use involves **no haejwo commands at all**. You talk; the host does the rest automatically:
-- Feature-scale ask → the host runs the **planning consensus** procedure itself (independent-reviewer debate → agreed plan) before implementing — `/haejwo:plan` exists only as an optional manual trigger.
+- Feature-scale ask → the host runs the **planning consensus** procedure itself (independent-reviewer critique → host-decided plan) before implementing — `/haejwo:plan` exists only as an optional manual trigger.
 - Implementation → delegated to the right tier; the gate enforces it when the host forgets.
 - Push/deploy → host asks once; say "do it automatically from now on" and it records the grant.
 
@@ -41,7 +41,7 @@ Commands are for **settings and inspection only** (below). The name-integrity ru
 ## Commands
 | Command | Role |
 |---|---|
-| `/haejwo:plan <topic>` | Pre-implementation consensus: independent-reviewer debate → agreed plan (conversation-first; file only on request); feature-scale briefs embed it (`Plan:` section) |
+| `/haejwo:plan <topic>` | Pre-implementation consensus: independent-reviewer critique (one round by default) → host-decided plan (conversation-first; file only on request); feature-scale briefs embed it (`Plan:` section) |
 | `/haejwo:setup` | First-run (or re-run) interactive configuration + reviewer probe |
 | `/haejwo:status` | Config, this turn's counter, reviewer readiness, and this session's observations, anomalies and delegations, plus one machine-wide summary line. |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |

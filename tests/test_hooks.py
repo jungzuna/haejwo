@@ -1008,6 +1008,21 @@ def main():
               "deep-reasoner=inherit(session)" in ctx
               and "(inherit = omit the model override)" in ctx, ctx)
 
+        # L7: a full-id pin cannot be passed through the Agent tool — say so.
+        with open(os.path.join(data, "config.json"), "w") as f:
+            json.dump({"configured": True,
+                       "gate": {"enabled": True, "max_files_per_turn": 2, "bash_guard": True},
+                       "models": {"task_worker": "claude-sonnet-5-5",
+                                  "default_worker": "sonnet"}}, f)
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)
+        l7_ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("L7 claude host: full-id pin carries the not-passable suffix; alias does not",
+              "task-worker=claude-sonnet-5-5 (not passable via the Agent tool — set an alias)"
+              in l7_ctx and "default-worker=sonnet," in l7_ctx, l7_ctx[-600:])
+        with open(os.path.join(data, "config.json"), "w") as f:
+            json.dump({"configured": True,
+                       "gate": {"enabled": True, "max_files_per_turn": 2, "bash_guard": True}}, f)
+
         check("${CLAUDE_PLUGIN_ROOT} resolved: no literal placeholder leaks into injected rules",
               "${CLAUDE_PLUGIN_ROOT}" not in ctx)
         check("${CLAUDE_PLUGIN_ROOT} resolved: consult path resolved to the real plugin root",
@@ -2025,6 +2040,134 @@ def main():
             check("B1 codex host record: 'pass:not-a-tier'",
                   (pin_rec("sess-PINE", data_dir=pin_codex) or {}).get("tier_pin_check")
                   == "pass:not-a-tier", str(pin_rec("sess-PINE", data_dir=pin_codex)))
+
+            # L7 (2.19.0): the Claude Code Agent tool's `model` accepted only
+            # the MEASURED aliases sonnet/opus/haiku (2026-10-02). Any other
+            # pin (full id, unknown word, account-specific alias) can't be
+            # relied on to pass, so denying would brick that tier with an
+            # unfollowable steer. Allow, record 'skip:pin-not-passable', note
+            # ONCE per session per role.
+            def l7_note(pin):
+                return (
+                    f"[haejwo] task_worker: configured pin `{pin}` is not enforced; "
+                    f"allowing the agent-file default `opus` (`{pin}` is outside the "
+                    f"measured passable aliases sonnet/opus/haiku). To enforce a pin, "
+                    f"set an alias in /haejwo:setup, or pass the model explicitly if "
+                    f"your session's Agent tool offers it."
+                )
+
+            def l7_ctx(sid):
+                rc_, out_ = run("delegation_gate.py",
+                                task_payload("haejwo:task-worker", sid=sid), pin_data)
+                return rc_, out_, ((out_.get("hookSpecificOutput") or {})
+                                   .get("additionalContext") or "")
+
+            for l7_pin, l7_sid, l7_label in (
+                    ("claude-sonnet-5-5", "sess-PINX", "full-id"),
+                    ("banana", "sess-PINBN", "unknown word"),
+                    ("fable", "sess-PINFB", "account-specific alias")):
+                pin_cfg({"task_worker": l7_pin})
+                notes = []
+                for _ in range(2):
+                    rc, out, ctx_ = l7_ctx(l7_sid)
+                    check(f"L7 {l7_label} pin `{l7_pin}`, no model -> allow",
+                          rc == 0 and decision(out) != "deny", str(out))
+                    notes.append(ctx_)
+                    check(f"L7 {l7_label} record: tier_pin_check 'skip:pin-not-passable'",
+                          (pin_rec(l7_sid) or {}).get("tier_pin_check")
+                          == "skip:pin-not-passable", str(pin_rec(l7_sid)))
+                check(f"L7 {l7_label}: note present exactly once across two calls",
+                      notes[0] == l7_note(l7_pin) and notes[1] == "", str(notes))
+                check(f"L7 {l7_label}: note claims no execution",
+                      " ran" not in notes[0], notes[0])
+
+            pin_cfg({"task_worker": "claude-sonnet-5-5"})
+            run("turn_reset.py", {"session_id": "sess-PINX", "prompt_id": "p2"}, pin_data)
+            rc, out, ctx_ = l7_ctx("sess-PINX")
+            check("L7 note stays once per SESSION (survives turn_reset)", not ctx_, str(out))
+
+            # F1: gate.py's lazy (prompt_id change) and stale resets rebuild
+            # the session state — the once-note flags must survive BOTH.
+            for f1_sid, f1_kind in (("sess-PINLZ", "lazy"), ("sess-PINST", "stale")):
+                rc, out, ctx_ = l7_ctx(f1_sid)
+                check(f"F1 {f1_kind}: first delegation emits the note",
+                      ctx_ == l7_note("claude-sonnet-5-5"), ctx_)
+                f1_state = os.path.join(pin_data, "state", f1_sid + ".json")
+                with open(f1_state) as f:
+                    st = json.load(f)
+                if f1_kind == "lazy":
+                    f1_pid = "p-next"
+                else:
+                    f1_pid = st.get("prompt_id") or "p1"
+                    st["prompt_id"] = f1_pid
+                    st["files"] = ["/repo/f1/old.py"]
+                    st["updated_at"] = st.get("updated_at", time.time()) - 8000
+                    with open(f1_state, "w") as f:
+                        json.dump(st, f)
+                rc, out = run("gate.py",
+                              edit_payload(f"/repo/f1/{f1_kind}.py", sid=f1_sid, pid=f1_pid),
+                              pin_data)
+                with open(f1_state) as f:
+                    st_after = json.load(f)
+                check(f"F1 {f1_kind}: the Edit reset the turn counter",
+                      decision(out) != "deny"
+                      and st_after.get("files") == [f"/repo/f1/{f1_kind}.py"],
+                      str(st_after))
+                check(f"F1 {f1_kind}: the once-note flag survived the gate reset",
+                      st_after.get("pin_unpassable_noted") == ["task_worker"],
+                      str(st_after))
+                rc, out, ctx_ = l7_ctx(f1_sid)
+                check(f"F1 {f1_kind}: delegation after the reset -> NO second note",
+                      not ctx_, ctx_)
+
+            # F1: turn_reset holds the session state lock around its
+            # read/reset/save — hold it from the TEST and prove the child
+            # writes nothing until released.
+            tr_sid = "sess-TRL"
+            tr_lock = os.path.join(pin_data, "state", tr_sid + ".json.lock")
+            tr_state = os.path.join(pin_data, "state", tr_sid + ".json")
+            os.makedirs(os.path.dirname(tr_lock), exist_ok=True)
+            tr_holder = open(tr_lock, "w")
+            tr_child = None
+            try:
+                fcntl.flock(tr_holder, fcntl.LOCK_EX)
+                tr_child = subprocess.Popen(
+                    ["python3", os.path.join(SCRIPTS, "turn_reset.py"), PLUGIN, pin_data],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                tr_child.stdin.write(json.dumps({"session_id": tr_sid, "prompt_id": "p9"}))
+                tr_child.stdin.close()
+                tr_blocked_until = time.time() + 0.7
+                tr_blocked = True
+                while time.time() < tr_blocked_until:
+                    if os.path.exists(tr_state) or tr_child.poll() is not None:
+                        tr_blocked = False
+                        break
+                    time.sleep(0.05)
+                check("F1 turn_reset: blocked on the held session lock (no state written)",
+                      tr_blocked)
+                fcntl.flock(tr_holder, fcntl.LOCK_UN)
+                try:
+                    tr_rc = tr_child.wait(timeout=5)
+                except Exception:
+                    tr_rc = None
+                check("F1 turn_reset: completes once released, state written",
+                      tr_rc == 0 and os.path.exists(tr_state), f"rc={tr_rc}")
+            finally:
+                try:
+                    fcntl.flock(tr_holder, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                tr_holder.close()
+                if tr_child and tr_child.poll() is None:
+                    tr_child.kill()
+
+            pin_cfg({"task_worker": "sonnet"})
+            rc, dec, r = pin_run("haejwo:task-worker", "sess-PINY")
+            check("L7 alias pin that differs (sonnet vs opus) still DENIES",
+                  dec == "deny" and "defaults to 'opus'" in r, r)
+            check("L7 alias pin record: tier_pin_check 'deny'",
+                  (pin_rec("sess-PINY") or {}).get("tier_pin_check") == "deny",
+                  str(pin_rec("sess-PINY")))
         finally:
             shutil.rmtree(pin_data, ignore_errors=True)
 

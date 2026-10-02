@@ -9,7 +9,8 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    is_subagent, load_state, paths, prune_state, read_payload, save_state,
+    carry_session_flags, is_subagent, load_state, paths, prune_state,
+    read_payload, save_state, state_lock,
 )
 
 
@@ -19,14 +20,15 @@ def main():
         sys.exit(0)
     root, data = paths(sys.argv)
     sid = payload.get("session_id", "unknown")
-    state = {"prompt_id": payload.get("prompt_id"), "files": []}
-    # The turn counter resets; SESSION-scoped flags must survive it. The
-    # malformed-config note is emitted once per session, shared by gate.py /
-    # bash_guard.py / delegation_gate.py (hjw_common.malformed_note_once), so
-    # losing this flag here would repeat it every turn.
-    if load_state(data, sid).get("cfg_malformed_noted"):
-        state["cfg_malformed_noted"] = True
-    save_state(data, sid, state)
+    # The turn counter resets; SESSION-scoped once-note flags must survive it
+    # (hjw_common.carry_session_flags). Held under the same session lock the
+    # other writers use, so a concurrent gate/delegation write between our
+    # read and save cannot be lost.
+    with state_lock(data, sid):
+        state = carry_session_flags(
+            load_state(data, sid),
+            {"prompt_id": payload.get("prompt_id"), "files": []})
+        save_state(data, sid, state)
     prune_state(data)
     sys.exit(0)
 

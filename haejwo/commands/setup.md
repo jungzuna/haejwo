@@ -8,14 +8,14 @@ You are the **haejwo host**. Configure the plugin — walk ALL steps; runs once 
 **Persistence, stated once for every step:** write `config.json` IMMEDIATELY at each real state transition (python3 read-modify-write; merge; preserve unknown keys). NEVER defer a write: a stale `enabled:true` plus `danger-full-access` consent from a PREVIOUS run must not survive a verification that just failed. Every failure/STOP branch first writes `codex.enabled=false` and REMOVES `consult_sandbox` / `danger_full_access_consented_at`. Tiers: `models` on Claude Code, `models_codex` on Codex; leave the other at defaults. `codex` names reviewer state on both hosts — on Codex, the claude reviewer.
 
 ## 1. Probe the reviewer CLI (before asking)
-The reviewer is the OTHER model's CLI: Claude Code → `codex login status`, Codex → `claude --version` plus a login check if one exists. Distinguish installed+authenticated / installed-but-not-logged-in / not installed; missing or erroring is normal and supported (the reviewer is optional, review falls back per the Recovery rules) — never a failure, continue.
+The reviewer is the OTHER model's CLI: Claude Code → `codex login status`, Codex → `claude --version` plus a login check if one exists. Distinguish installed+authenticated / installed-but-not-logged-in / not installed; missing or erroring is normal and supported (optional; review falls back per the Recovery rules) — never a failure, continue.
 
 ## 2. Ask (selection UI; one call, follow-ups only where a choice needs one)
-Claude Code: AskUserQuestion. Codex: the selection UI, else numbered chat choices; persist the answers either way.
+Claude Code: AskUserQuestion. Codex: the selection UI, else numbered chat choices; persist answers either way.
 1. **Preset** — deep-reasoner / default-worker / task-worker. Say that `Standard` is what runs when setup is skipped; let the user choose on cost, not on a label.
    - Claude Code: `Standard (default)` session model / opus / opus (chores low effort); `Budget` session model / sonnet / haiku (haiku ignores effort); `Custom` per-role.
    - Codex (`models_codex`; names are account/version-dependent — offer the current lineup): `Standard (default)` host model for all three, deep-reasoner at the HOST's effort (omit `reasoning_effort`), default-worker `medium`, task-worker `low` (omit the model on `spawn_agent`); `Budget` host model / gpt-5.6-terra / gpt-5.6-luna; `Custom` per-role. Measured 2026-09-21: a child inherits the parent model and records the requested effort; overrides need a fresh or partial context fork.
-   - `Custom` → one question per role, defaulting to that role's stored value else its `Standard`; other ids via Other.
+   - `Custom` → one question per role, defaulting to that role's stored value else its `Standard`; others via Other. Claude Code accepts only Agent-tool aliases (sonnet/opus/haiku, plus any the session lists); full ids only on Codex.
 2. **Edit budget (files/turn)** — `2 (Recommended)` / `3` / `5` / `Gate off` (rules stay, no physical block).
 3. **Bash-guard** — `On (Recommended)` blocks main-agent Bash writes to code files (sed -i, >, tee...); `Off` = rules text only.
 4. **Independent reviewer** — authenticated: `Enable (Recommended)` / `Skip`. Installed, NOT logged in: `Skip for now (Recommended)` / `I'll log in now` (`! codex login`, or the `claude` login flow — then re-run setup). Not installed: `Skip (Recommended)` / a pointer to the install page.

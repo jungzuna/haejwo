@@ -183,6 +183,26 @@ def save_state(data_dir, session_id, state):
         pass  # fail open
 
 
+def carry_session_flags(prev, state):
+    """Copy SESSION-scoped once-note flags from `prev` into a fresh turn
+    `state` and return it. Every turn reset (turn_reset.py, gate.py's lazy
+    and stale paths) rebuilds the state dict; without this the once-per-
+    session notes (malformed config; tier pin not passable) repeat after
+    every reset."""
+    if prev.get("cfg_malformed_noted"):
+        state["cfg_malformed_noted"] = True
+    if isinstance(prev.get("pin_unpassable_noted"), list):
+        state["pin_unpassable_noted"] = list(prev["pin_unpassable_noted"])
+    return state
+
+
+# Tier-pin values the Claude Code Agent tool's `model` parameter accepted when
+# measured on 2026-10-02. Compatibility boundary: extend ONLY by measurement.
+# Full ids are rejected by the tool; account-specific aliases (e.g. `fable`)
+# may appear in some accounts' enum but are not in the measured set.
+PASSABLE_MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku"})
+
+
 CONFIG_MALFORMED_NOTE = (
     "[haejwo] config.json is unreadable (malformed JSON) — enforcement is "
     "disabled (fail-open) until it is repaired; run /haejwo:setup or fix the "

@@ -37,7 +37,7 @@ codex plugin add haejwo@haejwo
 
 **판단은 비싸게.** 호스트는 언제나 **세션에서 고른 그 모델**이고, haejwo가 절대 바꾸지 않습니다. 계획·결정·검토는 호스트 몫이며, feature급 작업은 토론을 거친 계획에서 출발합니다. 그리고 `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집과 Bash 코드 수정을 **물리적으로 거부**합니다. 서브에이전트는 면제, 훅 오류는 무조건 통과(fail-open).
 
-**실행은 설정된 티어로.** 구현과 잡무는 설정된 워커 티어로 갑니다 — Claude Code 기준 `default-worker`는 Opus, `task-worker`는 Opus low effort, 더 싸게 쓰려면 `Budget`(sonnet/haiku); Codex에서는 `spawn_agent` 모델 매핑. 안전 기본값(게이트 ON, 턴당 2파일, bash-guard ON)은 첫 세션부터 이미 돌아가므로 `/haejwo:setup`은 선택입니다.
+**실행은 설정된 티어로.** 구현과 잡무는 설정된 워커 티어로 갑니다 — Claude Code 기준 `default-worker`는 세션 effort와 상관없이 Opus high effort, `task-worker`는 Opus low effort, 더 싸게 쓰려면 `Budget`(sonnet/haiku); Codex에서는 `spawn_agent` 모델 매핑. 안전 기본값(게이트 ON, 턴당 2파일, bash-guard ON)은 첫 세션부터 이미 돌아가므로 `/haejwo:setup`은 선택입니다.
 
 **리뷰는 다른 회사 모델이.** 두 CLI가 다 있고 `/haejwo:setup`으로 리뷰어를 켜고 검증하면(기본값은 꺼짐) 리뷰어는 상대 회사의 모델입니다 — Claude Code에선 codex가, Codex에선 claude가. 상대 CLI가 없거나 검증 전이면 같은 계열 `deep-reasoner`가 대신합니다(독립성은 한 단계 약해집니다).
 

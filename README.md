@@ -43,7 +43,7 @@ Hooks load at session start; restart the session after install. Local install: c
 
 **Judgment stays expensive.** The host is always your session's model — haejwo never re-points it — and keeps planning, deciding and review. Feature-scale work starts from a debated plan, and a `PreToolUse` hook **physically** denies the main agent past **N distinct code files per turn** (default 2) and blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
 
-**Execution runs at configured tiers.** Implementation and chores route to configured worker tiers — Opus for `default-worker`, Opus at low effort for `task-worker`, `Budget` (sonnet/haiku) as the opt-in on Claude Code; `spawn_agent` mapping on Codex. Safe defaults (gate ON, 2 files/turn, bash-guard ON) run from the first session, so `/haejwo:setup` is optional.
+**Execution runs at configured tiers.** Implementation and chores route to worker tiers — on Claude Code, Opus for `default-worker` at high effort (whatever the session's), low for `task-worker`, `Budget` (sonnet/haiku) opt-in; `spawn_agent` mapping on Codex. Safe defaults (gate ON, 2 files/turn, bash-guard ON) run from the first session, so `/haejwo:setup` is optional.
 
 **Review comes from another vendor.** With both CLIs installed — and `/haejwo:setup` run to enable and verify the reviewer, which is OFF by default — the reviewer is the other company's model: codex on Claude Code, claude on Codex. Without the second CLI, or before that verification, review falls back to the same-family `deep-reasoner` (weaker independence).
 

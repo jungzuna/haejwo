@@ -32,6 +32,26 @@ only had an unresolved target still denies on a later literal one:
 redirect / tee / inplace / unresolved-target cases: the stripped path for a
 deny (what the deny text names), and for unresolved-target the FIRST
 unresolved word seen, raw and verbatim.
+
+Deferred on purpose (2.20) — the logic in this file is unchanged since 2.19.
+Two false-positive classes were attempted and withdrawn:
+  - a relative target after `cd` (origin 2026-10-03, MOIS field session: its
+    only deny was `SP=<abs>; cd $SP/kordoc-smoke && npm i … && cat >
+    smoke.mjs`, a scratchpad write tested against the payload cwd);
+  - redirect EXAMPLES inside a heredoc body or a quoted string (origin: the
+    host's own brief-writing commands, three observations).
+Five designs — directory arithmetic; a two-state tokenizer with a heredoc
+classifier; "a `$VAR` directory is unknown"; "a literal directory is known";
+"a leading `cat` heredoc body is data" — were each rejected in cross-vendor
+review with a reproduced deny->allow regression: a `cd` in a pipeline or in
+a string, `cd ${PWD:-.}`, `cd /tmp2>&1` (this file's own `2>&1`
+normalization rewrote the directory), `cat >a.py<<'EOF'`. Two lessons.
+Deciding where a relative path lands, or what a heredoc body is, needs the
+shell's parser, which this heuristic is not. And every incidental deny that
+a relaxation removes can unmask a gap the heuristic already has elsewhere in
+the same command. Reopen only with field evidence that a false positive
+costs more than one retry (the Write tool, or an absolute target), and only
+with a shape that leaves nothing else in the command unclassified.
 """
 import re
 import sys

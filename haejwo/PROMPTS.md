@@ -39,7 +39,6 @@ Shapes are for the reader; P11 governs — use them when they fit, never as ritu
 - Batch plan (once, at start of long/multi-phase work): `phase | what | worker | expected`.
 - Milestone (per worker completion, when it fits): one line — `✓ <phase> — verified via <diff/tests> — commit <sha> — next: <phase>`.
 - Long-run checkpoint (past the stated ETA, when it fits): elapsed + active phase + "no result yet" + when the next update comes. Honest silence beats fake progress; never a timer loop.
-- Consensus outcome (after a reviewer round ONLY): `Consensus: <decision one-liner> — accepted n / rejected m (key rejection: X, because Y); ADDED beyond the ask: <items or none> → carried into brief: <what>`. The ADDED clause is mandatory (`none` when nothing was added): a compact line that hides what the round introduced is how an unasked-for addition reaches deployment. Use a 2-4 row table (`decision | rationale | dissent-resolution`) only when ≥2 material decisions. This REPLACES the prose summary; never emit it when no reviewer round ran. Append `(shape B)` when the independent-drafts shape was used.
 - Final scorecard (multi-phase/commit-bearing work only): shipped (user terms) / quality gates / commits / deviations from plan / pending decisions. Small work: two plain lines instead.
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.
 

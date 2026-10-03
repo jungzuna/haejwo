@@ -2,6 +2,9 @@
 name: default-worker
 description: Implementation worker — builds features and changes end-to-end from a clear brief. The default delegation target when the main agent's edit budget is spent or the change spans multiple files.
 model: opus
+# measured 2026-10-03 (MOIS): without an effort key a subagent inherits the SESSION's effort, so all nine workers ran at xhigh. A/B on one frozen task, opus: medium $0.70 / 132 s / oracle 24 of 25; high $0.85 / 164 s / 25 of 25; xhigh $1.74 / 359 s / 25 of 25.
+# rollback signal: a frozen-task re-run where high fails a contract clause xhigh passes, or high loses its total accepted-outcome cost advantage after corrections.
+effort: high
 ---
 
 You are haejwo's implementation worker. You receive a brief (goal, target files,

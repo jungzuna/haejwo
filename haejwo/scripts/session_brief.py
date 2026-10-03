@@ -136,10 +136,13 @@ def main():
             reviewer_label = "claude reviewer"
             fallback = "disabled (fallback: native subagent, same-model)"
         else:
+            # The efforts are the agent files' `effort:` pins (2.20) — the only
+            # per-role effort control on Claude Code; a canary test keeps
+            # these words equal to agents/*.md.
             tiers = (
                 f"models: deep-reasoner={_default_tier(defaults['deep_reasoner'])}, "
-                f"default-worker={_default_tier(defaults['default_worker'])}, "
-                f"task-worker={_default_tier(defaults['task_worker'])} (low effort)"
+                f"default-worker={_default_tier(defaults['default_worker'])} (effort high), "
+                f"task-worker={_default_tier(defaults['task_worker'])} (effort low)"
             )
             reviewer_label = "codex reviewer"
             fallback = "disabled (fallback: deep-reasoner)"
@@ -213,11 +216,12 @@ def main():
                     return v
                 return "agent-file default" if worker else "inherit(session)"
 
+            # efforts: the agent-file pins, as in the defaults summary above
             tiers = (
                 f"models: deep-reasoner={_tier(m['deep_reasoner'])}, "
-                f"default-worker={_tier(m['default_worker'], True)}, "
-                f"task-worker={_tier(m['task_worker'], True)} "
-                f"(pass as Agent-tool model override if it differs from the agent default)"
+                f"default-worker={_tier(m['default_worker'], True)} (effort high), "
+                f"task-worker={_tier(m['task_worker'], True)} (effort low) — "
+                f"pass as Agent-tool model override if it differs from the agent default"
             )
             if m['deep_reasoner'] == "inherit":
                 tiers += " (inherit = omit the model override)"

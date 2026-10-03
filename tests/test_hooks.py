@@ -25,7 +25,7 @@ sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 from hjw_common import DEFAULT_CONFIG, observe, prune_state  # noqa: E402
 from session_brief import CORE_BODY, EMERGENCY_CORE, MAX_LEN, UNCONFIGURED_CORE  # noqa: E402
-from delegation_gate import CLAUDE_TIER_ONLY, CODEX_TIER_ONLY  # noqa: E402
+from delegation_gate import CLAUDE_TIER_ONLY, CODEX_TIER_ONLY, _agent_file_default  # noqa: E402
 
 PASS, FAIL = 0, []
 
@@ -982,8 +982,8 @@ def main():
               "[haejwo config] defaults — not configured:" in ctx, ctx[-400:])
         check("unconfigured -> defaults summary carries gate/tiers/reviewer",
               "gate=ON budget=2 files/turn bash_guard=ON" in ctx
-              and "models: deep-reasoner=session model, default-worker=opus, "
-                  "task-worker=opus (low effort)" in ctx
+              and "models: deep-reasoner=session model, default-worker=opus (effort high), "
+                  "task-worker=opus (effort low)" in ctx
               and ctx.rstrip().endswith("codex reviewer: disabled (fallback: deep-reasoner)"),
               ctx[-400:])
         check("unconfigured -> rules + nudge + summary stay under MAX_LEN",
@@ -1007,6 +1007,28 @@ def main():
         check("claude host: default deep-reasoner='inherit' renders as inherit(session) + clarifier",
               "deep-reasoner=inherit(session)" in ctx
               and "(inherit = omit the model override)" in ctx, ctx)
+        check("claude host: configured summary names the agent-file effort pins",
+              "default-worker=opus (effort high), task-worker=opus (effort low) — "
+              "pass as Agent-tool model override" in ctx, ctx[-600:])
+
+        # F8 (2.20): the summary's effort words are the agent files' pins, and
+        # the frontmatter parser still reads `model:` past the new comment +
+        # `effort:` lines of the REAL shipped default-worker.md.
+        def _fm_effort(name):
+            text = open(os.path.join(PLUGIN, "agents", name + ".md"), encoding="utf-8").read()
+            fm = re.match(r"^---\n(.*?)\n---\n", text, re.S).group(1)
+            m_ = re.search(r"^effort:\s*(\S+)", fm, re.M)
+            return m_.group(1) if m_ else None
+        check("F8 agent-file effort pins: default-worker high, task-worker low, "
+              "deep-reasoner none (inherits the session)",
+              (_fm_effort("default-worker"), _fm_effort("task-worker"),
+               _fm_effort("deep-reasoner")) == ("high", "low", None),
+              str((_fm_effort("default-worker"), _fm_effort("task-worker"),
+                   _fm_effort("deep-reasoner"))))
+        check("F8 delegation_gate parser reads model: 'opus' from the real "
+              "default-worker.md (comment + effort lines present)",
+              _agent_file_default(PLUGIN, "default-worker") == "opus",
+              str(_agent_file_default(PLUGIN, "default-worker")))
 
         # L7: a full-id pin cannot be passed through the Agent tool — say so.
         with open(os.path.join(data, "config.json"), "w") as f:
@@ -1018,7 +1040,7 @@ def main():
         l7_ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("L7 claude host: full-id pin carries the not-passable suffix; alias does not",
               "task-worker=claude-sonnet-5-5 (not passable via the Agent tool — set an alias)"
-              in l7_ctx and "default-worker=sonnet," in l7_ctx, l7_ctx[-600:])
+              in l7_ctx and "default-worker=sonnet (effort high)," in l7_ctx, l7_ctx[-600:])
         with open(os.path.join(data, "config.json"), "w") as f:
             json.dump({"configured": True,
                        "gate": {"enabled": True, "max_files_per_turn": 2, "bash_guard": True}}, f)

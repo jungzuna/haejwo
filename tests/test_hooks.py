@@ -943,11 +943,11 @@ def main():
             shutil.rmtree(os.path.join(m_skills, "haejwo-retired"))
             with open(os.path.join(m_skills, "haejwo-gate", "SKILL.md"), "a") as f:
                 f.write("hand edit\n")
-            os.remove(os.path.join(m_skills, "haejwo-push", "SKILL.md"))
+            os.remove(os.path.join(m_skills, "haejwo-status", "SKILL.md"))
             got = mirrors.drift(m_cmds, m_skills)
             check("mirror drift: a hand-edited mirror and a missing mirror are both reported",
                   any("haejwo-gate" in p and p.startswith("drift:") for p in got)
-                  and any("haejwo-push" in p and p.startswith("missing mirror:") for p in got), str(got))
+                  and any("haejwo-status" in p and p.startswith("missing mirror:") for p in got), str(got))
         finally:
             shutil.rmtree(mirror_tmp, ignore_errors=True)
 
@@ -970,11 +970,11 @@ def main():
         # b. Size ratchets on the cold-start read path: a doc nobody finishes
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
-        for rel, cap in (("README.md", 750), ("README.ko.md", 700),
-                         ("haejwo/README.md", 1500),
+        for rel, cap in (("README.md", 740), ("README.ko.md", 650),
+                         ("haejwo/README.md", 1480),
                          ("haejwo/commands/plan.md", 490),
                          ("haejwo/commands/setup.md", 900),
-                         ("haejwo/commands/status.md", 400)):
+                         ("haejwo/commands/status.md", 390)):
             words = len(open(os.path.join(repo, rel), encoding="utf-8").read().split())
             check(f"word-count ratchet: {rel} <= {cap}", words <= cap,
                   f"words={words} cap={cap}")
@@ -1004,27 +1004,40 @@ def main():
             r"consults\.jsonl", r"telemetry\.py", "golden" + "_diff",
             "tests/" + "baseline", "Ultra" + "-fast", "HJW_" + "TEL_",
         ]))
+        # The push-consent registry (retired 2.23.0). PHILOSOPHY.md is the ONE
+        # exemption: its history and worked example name the retired command.
+        retired_push_re = re.compile("|".join([
+            "/haejwo:" + "push", "haejwo" + "-push", r"push\." + "auto_repos",
+        ]))
+        push_exempt = {"haejwo/PHILOSOPHY.md"}
         listed = subprocess.run(
             ["git", "-C", repo, "ls-files", "-z", "--",
              "README.md", "README.ko.md", "AGENTS.md", "haejwo", "tests"],
             capture_output=True, text=True, timeout=30)
         tracked_paths = [x for x in listed.stdout.split("\0") if x]
-        offenders = []
+        offenders, push_offenders = [], []
         for rel in tracked_paths:
             full = os.path.join(repo, rel)
             # Tracked but absent from the worktree = a removal on its way into
             # the next commit, i.e. the retirement itself. Nothing to scan.
             if not os.path.isfile(full):
                 continue
-            hits = sorted({m.group(0) for m in
-                           retired_re.finditer(open(full, encoding="utf-8",
-                                                    errors="replace").read())})
+            text = open(full, encoding="utf-8", errors="replace").read()
+            hits = sorted({m.group(0) for m in retired_re.finditer(text)})
             if hits:
                 offenders.append(f"{rel} -> {','.join(hits)}")
+            if rel not in push_exempt:
+                push_hits = sorted({m.group(0) for m in retired_push_re.finditer(text)})
+                if push_hits:
+                    push_offenders.append(f"{rel} -> {','.join(push_hits)}")
         check("retired-surface guard: no live reference to the removed consult-telemetry "
               "or frozen-baseline surfaces",
               listed.returncode == 0 and bool(tracked_paths) and not offenders,
               f"rc={listed.returncode} scanned={len(tracked_paths)} offenders={offenders[:10]}")
+        check("retired-surface guard: no live reference to the removed push-consent registry "
+              "(only haejwo/PHILOSOPHY.md may name it)",
+              listed.returncode == 0 and bool(tracked_paths) and not push_offenders,
+              f"rc={listed.returncode} scanned={len(tracked_paths)} offenders={push_offenders[:10]}")
 
         print("== session_brief.py ==")
         rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)

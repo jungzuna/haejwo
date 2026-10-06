@@ -52,7 +52,7 @@ and delivery pending distinct.
 **Reporting:** proportional to content; one honest checkpoint, no theater.
 
 **Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
-Ask first unless `/haejwo:push auto` consent is recorded for the repo.
+Ask first unless the user already explicitly authorized the action.
 
 **Recovery (host-owned):** reviewer down -> disclose same-model fallback
 (Claude: deep-reasoner; Codex: native subagent). Worker fails: diagnose,

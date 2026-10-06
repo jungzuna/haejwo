@@ -28,7 +28,7 @@ On Claude Code the workers run at their agent file's model unless one is passed 
 Normal use involves **no haejwo commands at all**:
 - Feature-scale ask → the host runs **planning consensus** itself before implementing (`/haejwo:plan` is only a manual trigger).
 - Implementation → delegated to the right tier; the gate enforces it when the host forgets.
-- Push/deploy → host asks once; say "do it automatically from now on" and it records the grant.
+- Push/deploy → host asks first; an authorization you already gave for the action counts.
 
 The name-integrity rule: the moment users must **understand or manage the plugin** to get their work done, 해줘 stops being true.
 
@@ -39,7 +39,6 @@ The name-integrity rule: the moment users must **understand or manage the plugin
 | `/haejwo:setup` | First-run (or re-run) interactive configuration + reviewer probe |
 | `/haejwo:status` | Config, turn counter, reviewer readiness, this session's observations and delegations (read-only) |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |
-| `/haejwo:push [auto\|ask]` | Per-repo push consent — outward actions are host-owned, ask-first until granted (registry, not a gate) |
 
 Gate fires are logged to `state/observations.jsonl`; `HAEJWO_GATE=off <cmd>` overrides one command.
 

@@ -1,122 +1,25 @@
 #!/usr/bin/env bash
-# claude_consult.sh — hardened headless Claude runner (haejwo's reviewer slot
-# on a CODEX host). Mirror of codex_consult.sh: on a Codex host the
-# different-model independent reviewer is Claude (principle 9 symmetry).
-#
-# Shape (2.13): the mechanics both reviewer runners share — parsing, paths,
-# the wall clock, change detection, config, cleanup — live in `scripts/lib`
-# (`consult_common.sh` + python helpers). THIS file owns everything
-# vendor-specific: the REVIEWER CONTRACT text, the `claude -p` argv and its
-# `--disallowedTools`, the timeout default, and the non-git policy (no
-# sandbox exists on this path, so a non-repo is always refused).
-#
-# Same contract as codex_consult.sh: feed a self-contained brief via stdin or
-# file, capture the final reply, NEVER trust the exit code alone — any of
-# {rc!=0 | empty reply | repository changed | change detection unavailable}
-# exits non-zero. Stated as a guarantee, narrowed to what is actually checked:
-# rc=0 with no reply or a changed repository is never reported as success;
-# there is no event classifier on this path (codex_consult.sh has one); a
-# failure the reviewer reports only in prose is not detected.
-#
-# Direct edit tools (Edit/Write/NotebookEdit) are disabled via
-# --disallowedTools on every run. Bash remains available to the reviewer
-# (claude -p has no read-only sandbox concept) — covered by the post-run
-# change detection below, not by tool blocking. That detection is not a
-# security boundary; its exact scope is spelled out under "Change detection".
-#
-# Every input the reviewer sees is prefixed with a standing REVIEWER CONTRACT
-# (below) that forbids edits/installs/config changes — enforced by
-# instruction, backstopped by --disallowedTools and the change-detection gate.
-#
-# Usage:
-#   claude_consult.sh [--mode consult] [-o out.md] brief.md
-#   echo "..." | claude_consult.sh --mode consult -
-#
-# Mode (safety gate — enforced via change detection, since `claude -p` runs
-# with the invoking user's permissions and has no read-only sandbox):
-#   consult   (only mode) non-editing contract with post-run change detection —
-#             FAILS if the repository changed during the run.
-#   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
-#   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
-#
-# `--mode implement` was removed in 2.10 (cross-vendor worker routing is a
-# non-goal).
-#
-# Config (haejwo's OWN config.json — same OWNERSHIP rules as codex_consult.sh:
-# the structural path under this runner's own installed <plugins>/cache/haejwo/
-# haejwo/<ver>/scripts/, else CLAUDE_PLUGIN_DATA only when its basename IS
-# `haejwo-haejwo`, else the derived ~/.codex|.claude/plugins/data/haejwo-haejwo/
-# path; a missing/unparsable file at the selected path means NO config and
-# never another path, and a foreign CLAUDE_PLUGIN_DATA is ignored and disclosed
-# once. The log header names the selected path, its source and its status).
-# Key read here:
-#   codex.model   default reviewer model (env CLAUDE_MODEL wins)
-# HOST-RELATIVE reading: the `codex` block describes the reviewer of the HOST
-# that owns the data dir. This runner IS that reviewer on a CODEX host, so on
-# a VENDOR path codex.model is read only under /.codex/ and IGNORED under
-# /.claude/, where it describes the OTHER vendor's reviewer. A custom plugin
-# root names no vendor at all: there the host follows the RUNNER KIND, and
-# this runner — a Codex host's reviewer — reads the key (see lib/config.py).
-# *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex
-# host's own reviewer model, read out of a claude-host config]*
-# NOT read here: the `models_codex` config key belongs to codex-HOST worker
-# tiers (spawn_agent parameters) — it never selects this reviewer's model.
-#
-# Env (env > config > default; an EMPTY env value counts as UNSET):
-#   CLAUDE_MODEL    force a model (passed as --model; optional).
-#   CLAUDE_TIMEOUT  seconds; default 600. 0 = unlimited.
-#
-# Disclosure discipline: the model is always printed with its SOURCE
-#   (env | config | cli-default). An unselected model is `cli-default
-#   (identity unverified)` — the runner does not know which model answered.
-#
-# Artifact guard (2.21): every artifact this runner writes (reply, log,
-# temp brief, effective brief) must lie OUTSIDE the worktree it is invoked
-# from and outside that worktree's git dirs, judged lexically and through
-# symlinks; an existing artifact must be a regular file with one hard link. A
-# violation exits 2 with one line before the first write and before any paid
-# call — no file is touched. Other worktrees of the same repository are not
-# covered, and the check guards against accidental paths (a typo in `-o`, a
-# brief kept inside the repo with no `-o`), not a hostile concurrent
-# replacement. *[origin: `-o` naming a tracked file was silently overwritten —
-# change detection excludes artifacts by design]*
-# Scope: the guarantee belongs to the INVOKED runner (2.21+) and holds across
-# a forwarding hop, including a hop to an OLDER install with no guard of its
-# own — the argv-known paths are judged before the exec, and a refusal
-# forwards nothing. What a pre-2.21 runner invoked DIRECTLY does is outside
-# it.
-#
-# Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
-# the two the SAME file and the runner's own log would overwrite the reply it
-# just captured. When that collision happens the log takes `$OUT.log` instead.
-# *[origin: ship review Z4]*
-#
-# Change detection (scope, honestly): HEAD, tracked file status AND per-path
-#   working-tree fingerprints, `git diff` / `git diff --cached` digests, and
-#   the CONTENTS of untracked files (sorted, first 2000; presence is covered
-#   for all of them). Runner-owned artifacts are excluded from the status,
-#   untracked and diff-digest inputs alike. NOT covered: package installs,
-#   MCP/user/global config changes, ignored files, anything outside the repo.
-#   Concurrent writers are not distinguished — a detected change means
-#   "something changed", never "the reviewer did it". Every helper runs under
-#   a python3-enforced wall clock (no dependency on the `timeout` binary); any
-#   git/helper error or timeout FAILS the run (fail closed), and a
-#   BEFORE-snapshot failure — including a git probe that cannot tell us
-#   whether this is a repo — fails BEFORE claude is invoked, so an
-#   unverifiable run is never paid for. Files this gate cannot read are
-#   counted and disclosed, never skipped silently.
+# claude_consult.sh — headless Claude reviewer runner (haejwo's reviewer slot on a Codex host; mirror of
+# codex_consult.sh — there the different-model independent reviewer is Claude, principle 9 symmetry).
+# Feeds REVIEWER CONTRACT + a self-contained brief to `claude -p` on stdin and captures the final reply.
+# Consult (non-editing) only; the invoking directory is the work root. Options, env, exit codes: --help.
+# Shared mechanics live in lib/consult_common.sh; this file owns the vendor policy: contract text, the
+# `claude -p` argv and its --disallowedTools, the timeout default, and the non-git policy (no sandbox
+# exists here, so a non-repo is always refused).
+# NEVER trust the exit code alone: rc=0 with no reply or a changed repository is never success; there is no
+# event classifier on this path; a failure reported only in prose is not detected. Edit/Write/NotebookEdit
+# are disallowed; Bash stays available and is covered by change detection, which is not a security
+# boundary (scope: lib/detect.py).
+# Config is host-relative: codex.model is read under /.codex/ and on a vendorless custom root (the runner
+# kind names the host, lib/config.py), ignored under /.claude/. The model is disclosed with its source.
+# *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex host's own reviewer model, read out of a claude-host config]*
+# *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]* *[origin: ship review Z4]*
 set -uo pipefail
 
 # ---- shared internals ----
-# $0 is the only anchor a script has, and it must be resolved to an ABSOLUTE
-# PHYSICAL path here: the runner may be reached through a symlink (resolve it,
-# or `lib/` would be looked up next to the LINK) or relatively.
-# `realpath` is the resolver the minimal-PATH fixture provides (`readlink` is
-# not on that list); when it is absent or fails, python3 — already a hard
-# dependency — resolves it. The lexical $PWD form is a last resort that still
-# yields an absolute path.
-# EVERY required file is checked BEFORE any artifact exists: an incomplete
-# install must fail loudly and cheaply, never half-run a paid review.
+# $0 resolved to an ABSOLUTE PHYSICAL path (symlinked or relative invocation): realpath (the minimal-PATH
+# fixture has no readlink), else python3, else lexical $PWD. Every required file is checked before any
+# artifact exists: an incomplete install fails loudly, never half-runs a paid review.
 HJW_SELF="$(realpath "$0" 2>/dev/null)"
 case "$HJW_SELF" in
   /*) ;;
@@ -137,26 +40,15 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=claude
-# Declared BEFORE forwarding and init: the artifact guard derives from them,
-# on a hop too.
+# Declared BEFORE forwarding and init: the artifact guard derives from them, on a hop too.
 HJW_OUT_SIBLINGS=()  # no artifacts beyond the reply and the log
 HJW_OUT_APPENDS=()
 
-# A remembered runner path outlives the version it named: old cache versions
-# stay on disk, and a session that was updated in place keeps the path it was
-# briefed with. This is the FIRST action after sourcing — before parsing,
-# stdin, traps, temp files, config selection or any chdir — so a forwarded run
-# is indistinguishable from having invoked the installed runner directly.
-# Fail open: any doubt at all and this returns, and the run continues HERE.
-# The one thing it refuses is a hop whose argv names an artifact inside the
-# repository: that exits 2 here, before the exec (the target may predate the
-# artifact guard).
+# FIRST action after sourcing (before parsing, stdin, traps, temp files, config, chdir): a stale remembered
+# runner path forwards to the installed version. Fail open; an argv naming an artifact inside the repo exits 2.
 hjw_forward_if_stale "$@"
 
-# REVIEWER CONTRACT: prepended to every brief this script sends to claude, on
-# every input path. Durable owner policy — not brief-specific, do not let
-# callers override it. Entrypoint-owned: the shared library never invents a
-# vendor's standing instructions.
+# REVIEWER CONTRACT: prepended to every brief on every input path; durable owner policy, never caller-overridable.
 REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
@@ -175,27 +67,20 @@ Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.
   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
+  --mode implement: removed in 2.10 (cross-vendor worker routing is a non-goal)
 
---mode implement was removed in 2.10 (cross-vendor worker routing is a
-non-goal).
+Env (env > config > default; empty = unset): CLAUDE_MODEL, CLAUDE_TIMEOUT (default 600; 0 = unlimited).
+Config key codex.model supplies the default model on a Codex host (a config path under /.codex/, or a
+  custom plugin root naming no vendor); under /.claude/ it describes the other vendor's reviewer and
+  is ignored. Env wins.
 
-Env (env > config > default; empty env value = unset): CLAUDE_MODEL,
-  CLAUDE_TIMEOUT (default 600). Config key codex.model supplies the default
-  model on a CODEX host: a config path under /.codex/, or a custom plugin root
-  naming no vendor (there the runner kind names the host). Under /.claude/
-  that key describes the other vendor's reviewer and is ignored. Env wins.
+Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed, change detection
+  unavailable}; there is no event classifier on this path; a failure the reviewer reports only in
+  prose is not detected.
 
-Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed,
-  change detection unavailable}. Guarantee, narrowed to what is actually
-  checked: rc=0 with no reply or a changed repository is never reported as
-  success; there is no event classifier on this path; a failure the reviewer
-  reports only in prose is not detected.
-
-Direct edit tools (Edit/Write/NotebookEdit) are disabled via
---disallowedTools; Bash remains available and is covered by post-run change
-detection (HEAD + tracked status/fingerprints + untracked contents capped at
-2000 files; global config and ignored files never covered; concurrent writers
-are not distinguished), not by tool blocking.
+Edit/Write/NotebookEdit are disallowed; Bash remains available and is covered by post-run change
+detection (HEAD, tracked status/fingerprints, untracked contents capped at 2000 files; global config
+and ignored files never covered; concurrent writers not distinguished), not by tool blocking.
 EOF
 }
 
@@ -234,29 +119,21 @@ command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check cla
   echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
 } > "$LOG"
-# The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is
-# appended here — the one place where it survives, and it belongs with the
-# header rather than below the section marker, where it would read as the
-# CLI's own output.
+# After the header write (which truncates $LOG), so the foreign-CLAUDE_PLUGIN_DATA note survives with the header.
 hjw_config_disclose
 echo "# ---- claude -p ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"
-# $LOG cannot collide with the previous reply — the aliasing rule above
-# already renamed it.
+# $LOG cannot collide with the previous reply — the aliasing rule renamed it.
 rm -f "$OUT"
 hjw_git_preflight
 ARTIFACTS=("$OUT" "$LOG" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
-  # Not a git repo: there is no before-snapshot to take, so the no-edit
-  # contract can never be verified for this run. Refuse BEFORE the paid call
-  # (exit 2, before any reviewer call) — this used to be a post-run
-  # failure that still spent a reviewer call on a result it then discarded.
-  # `claude -p` has no sandbox to fall back on, so there is no read-only
-  # exception here: the codex runner's one is a vendor capability, not a
-  # shared policy. *[origin 2026-09-21 audit item 3]*
+  # Not a git repo: the no-edit contract can never be verified, so refuse before the paid call (was a
+  # post-run failure that paid for a discarded result). `claude -p` has no sandbox, so no read-only exception:
+  # the codex runner's is a vendor capability, not shared policy. *[origin 2026-09-21 audit item 3]*
   REFUSE_MSG="consult outside a git repo — cannot verify the no-edit contract (claude -p is unsandboxed). Run inside a git repo."
   printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
   echo "$REFUSE_MSG" >&2
@@ -287,8 +164,7 @@ elif [ "$rc" -ne 0 ]; then fail "claude exit code $rc"; fi
 [ -s "$OUT" ] || fail "empty reply (claude produced no final answer)"
 
 # ---- mode gate (side-effect verification) ----
-# GIT_OK is necessarily 1 here: the non-git case exits 2 in the preflight
-# above, before any reviewer call.
+# GIT_OK is necessarily 1 here: the non-git case exits 2 in the preflight, before any reviewer call.
 hjw_change_verdict
 
 # ---- result ----

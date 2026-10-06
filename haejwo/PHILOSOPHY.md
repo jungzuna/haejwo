@@ -33,8 +33,9 @@ being true.**
 4. **Never brick the session.** Gates are plugin affordances, not security
    boundaries; on any error or ambiguity, fail open. *[failure-classifier design]*
 5. **Hard-gate only countable invariants.** Semantic judgments get norms and
-   nudges; outward or irreversible actions get ask-once consent registries.
-   *[strict rules on judgment calls break the just-talk concept]*
+   nudges; outward or irreversible actions require explicit authorization for
+   the action. *[strict rules on judgment calls break the just-talk concept;
+   no programmatic reader of the push registry was found; the owner never set it]*
 6. **A denial must steer.** Every deny tells the model exactly what to do
    instead. *[deny→delegate payload]*
 7. **Verify side effects in the real environment.** rc=0, stale docs, and
@@ -73,8 +74,11 @@ being true.**
 6. **Lean** — delete over add
 
 Worked example (the hardest conflict): push consent vs 해줘's
-"don't ask me things". Consent won — ask once — and the per-repo registry then
-restored the name promise. *[the push-consent registry]*
+"don't ask me things". Consent won — ask first, and an authorization the user
+already gave for the action counts. A per-repo registry (`/haejwo:push auto`,
+2.9–2.22) previously allowed skipping repeat questions when consent was
+recorded; a cold audit found no programmatic reader and the owner had never
+set it, so it was retired (owner amendment, cross-vendor reviewed). *[the push-consent registry]*
 
 Meta-note: the owner sits ABOVE this document, not inside tier 3. Tier 3 covers
 in-flight value calls; changing the standing order itself is an amendment
@@ -95,4 +99,4 @@ amendment names its origin case and removes or merges any principle it
 duplicates. Wording changes bump the plugin patch version.
 
 History: 2026-09-28 completion audit — P13 compressed (thesis remains in the
-owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default.
+owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default. 2026-10-06 cold audit (no programmatic reader of the push registry was found; the owner never set it): P5 registries → explicit authorization for the action; the push command deleted (2.23.0, a tightening under P13 — owner decision + cross-vendor review).

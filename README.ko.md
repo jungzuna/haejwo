@@ -47,7 +47,7 @@ codex plugin add haejwo@haejwo
 
 | | Claude Code만 | Codex만 | 둘 다 |
 | --- | --- | --- | --- |
-| 게이트·규칙·plan-first·push 동의 | ✓ | ✓ | ✓ |
+| 게이트·규칙·plan-first·push ask-first | ✓ | ✓ | ✓ |
 | 모델 티어 (판단은 상속) | ✓ 세션 모델/opus/opus | ✓ `spawn_agent` 매핑 | ✓ |
 | **교차-벤더 리뷰** | 대체: `deep-reasoner` | 대체: 같은 모델 서브에이전트 | ✓ codex↔claude, setup 검증 후 |
 
@@ -60,7 +60,6 @@ codex plugin add haejwo@haejwo
 | `/haejwo:setup` · `@haejwo-setup` | 최초 1회 설정 — 티어·편집 예산·bash-guard·리뷰어 |
 | `/haejwo:status` · `@haejwo-status` | 현재 설정, 이번 턴 카운터, 리뷰어 상태, 훅 관찰 기록 |
 | `/haejwo:gate` · `@haejwo-gate` | 게이트 실시간 조정 — 예산 `N`, `on`/`off` |
-| `/haejwo:push` · `@haejwo-push` | repo별 push 동의 — 허락 전까진 매번 물어봅니다 |
 | `/haejwo:plan` · `@haejwo-plan` | plan 합의 수동 트리거 (호스트가 어차피 알아서 돌립니다) |
 
 ## 하지 않는 것

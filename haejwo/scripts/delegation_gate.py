@@ -44,8 +44,6 @@ Envelope field semantics (v2) — one line per field:
   plan_marker_kind — "plan" | "no_plan" | "none": which plan marker (if
                      any) the prompt text carries, checked in that order —
                      "Plan:" wins over "No plan because" if both appear.
-  prompt_bytes     — UTF-8 byte length of the prompt text; a cheap size
-                     proxy for spotting feature-scale-looking briefs.
   decision         — "allow" | "deny": the final PreToolUse decision this
                      hook actually emitted (recorded once, after deciding).
   tier_pin_check   — why the tier pin check decided what it did (additive
@@ -411,19 +409,6 @@ def _plan_marker_kind(prompt):
     return "none"
 
 
-def _prompt_bytes(prompt):
-    """UTF-8 byte length of the prompt text — a cheap size proxy. Never
-    raises: a str() guard sends non-string input straight to 0, and the
-    encode() itself tolerates malformed Unicode (e.g. a lone surrogate) via
-    errors="replace" inside a try/except that also collapses to 0."""
-    if not isinstance(prompt, str):
-        return 0
-    try:
-        return len(prompt.encode("utf-8", errors="replace"))
-    except Exception:
-        return 0
-
-
 def main():
     payload = read_payload()
     if not payload:
@@ -527,7 +512,6 @@ def main():
             "subagent_type": subagent_type,
             "requested_model": requested_model,
             "plan_marker_kind": _plan_marker_kind(prompt),
-            "prompt_bytes": _prompt_bytes(prompt),
             "decision": decision,
             "tier_pin_check": tier_pin_check,
             "agent_type": payload.get("agent_type"),

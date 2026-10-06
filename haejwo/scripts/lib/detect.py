@@ -17,8 +17,7 @@ entry in it (mktemp would pick another name). NOT protected:
 other worktrees of the same repository outside this top level. The guarantee
 covers accidental paths (a typo in `-o`), not a hostile concurrent replacement
 after the check. A non-git <cwd> has nothing to protect. "Artifacts" means the
-runner's reply/log/events/temp-brief paths — not the git worktree metadata
-that --snapshot's `git worktree add` writes into the repository's git dir.
+runner's reply/log/events/temp-brief paths.
 The guarantee belongs to the INVOKED runner (2.21+) and holds across a
 forwarding hop, including one to an OLDER install with no guard of its own:
 the invoked runner calls this on the argv-known paths before the exec. What a

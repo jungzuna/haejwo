@@ -63,7 +63,9 @@ MANIFEST = os.path.join(".claude-plugin", "plugin.json")
 # hop-marker removal, so forwarding into one would hand HJW_FORWARDED straight
 # to the reviewer CLI. Only forwarding-aware destinations are followed; a
 # downgrade to before 2.18 runs as invoked.
-REQUIRED_LIB = ("consult_common.sh", "bounded.py", "snapshot.py", "detect.py",
+# snapshot.py left this list in 2.22; the install still ships it as a
+# tombstone because 2.18-2.21 forwarders require it of a destination.
+REQUIRED_LIB = ("consult_common.sh", "bounded.py", "detect.py",
                 "config.py", "forward.py")
 
 

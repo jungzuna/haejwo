@@ -6,7 +6,6 @@ real CLI contract) and asserts allow/deny/reset behavior. No Claude Code
 required. Run: python3 tests/test_hooks.py
 """
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -1630,7 +1629,7 @@ def main():
         finally:
             shutil.rmtree(a12_data, ignore_errors=True)
 
-        print("== delegation_gate.py envelope v2 (plan_marker_kind / prompt_bytes) ==")
+        print("== delegation_gate.py envelope v2 (plan_marker_kind) ==")
         rc, out = run("delegation_gate.py", task_payload(
             "haejwo:default-worker", sid="sess-PM1",
             prompt="Implement the thing.\nPlan: per the user-approved decision above — do X."),
@@ -1668,8 +1667,8 @@ def main():
         r_plan = _last(lambda r: r.get("sid") == "sess-PM1")
         check("envelope v2: 'Plan:' prompt -> plan_marker_kind 'plan'",
               bool(r_plan) and r_plan.get("plan_marker_kind") == "plan", str(r_plan))
-        check("envelope v2: prompt_bytes > 0 recorded",
-              bool(r_plan) and r_plan.get("prompt_bytes", 0) > 0, str(r_plan))
+        check("envelope v2: prompt_bytes is no longer recorded (removed in 2.22)",
+              bool(r_plan) and "prompt_bytes" not in r_plan, str(r_plan))
 
         r_noplan = _last(lambda r: r.get("sid") == "sess-PM2")
         check("envelope v2: 'No plan because' prompt -> plan_marker_kind 'no_plan'",
@@ -1787,13 +1786,13 @@ def main():
         check("envelope: both markers present -> plan_marker_kind 'plan' (precedence)",
               bool(r_both) and r_both.get("plan_marker_kind") == "plan", str(r_both))
 
-        # (b) non-string prompt (dict) -> no crash, allow, prompt_bytes == 0
+        # (b) non-string prompt (dict) -> no crash, allow, plan_marker_kind 'none'
         rc, out = run("delegation_gate.py", task_payload(
             "haejwo:default-worker", sid="sess-PM5", prompt={"x": 1}), data)
         check("allow: non-string (dict) prompt -> no crash", rc == 0 and decision(out) != "deny", str(out))
         r_dict = _last_fresh(lambda r: r.get("sid") == "sess-PM5")
-        check("envelope: non-string prompt -> prompt_bytes == 0",
-              bool(r_dict) and r_dict.get("prompt_bytes") == 0, str(r_dict))
+        check("envelope: non-string prompt -> plan_marker_kind 'none'",
+              bool(r_dict) and r_dict.get("plan_marker_kind") == "none", str(r_dict))
 
         # (c) lone surrogate in prompt -> no crash, decision recorded
         rc, out = run("delegation_gate.py", task_payload(
@@ -2280,9 +2279,7 @@ def main():
             # argv it prints a JSONL event stream to stdout and honors
             # `-o <file>` for the reply (real codex contract); without it the
             # reply goes to stdout (claude). All behavior is scripted through
-            # env vars, globally (STUB_RC) or per call index (STUB_RC_2) — the
-            # per-call form is what makes the model-fallback and
-            # second-attempt-fails fixtures expressible.
+            # env vars, globally (STUB_RC) or per call index (STUB_RC_2).
             STUB_BODY = r'''#!/usr/bin/env bash
 set +u
 CAP="__CAP__"
@@ -2343,44 +2340,9 @@ rc="$(pick STUB_RC)"; [ -z "$rc" ] && rc=0
 noout="$(pick STUB_NO_OUT)"
 touchf="$(pick STUB_TOUCH_FILE)"
 gitc="$(pick STUB_GIT_COMMIT)"
-# STUB_MANIFEST records what the reviewer ACTUALLY sees in its own cwd — the
-# only way to assert on a snapshot that is deleted before the runner returns.
-mf="$(pick STUB_MANIFEST)"
-if [ -n "$mf" ]; then
-  : > "$mf"
-  for p in $(pick STUB_MANIFEST_PATHS); do
-    if [ -L "$p" ]; then printf 'link %s %s\n' "$p" "$(readlink "$p")" >> "$mf"
-    elif [ -f "$p" ]; then printf 'file %s %s\n' "$p" \
-      "$(python3 -c 'import hashlib,sys;print(hashlib.sha1(open(sys.argv[1],"rb").read()).hexdigest())' "$p")" >> "$mf"
-    elif [ -e "$p" ]; then printf 'other %s -\n' "$p" >> "$mf"
-    else printf 'absent %s -\n' "$p" >> "$mf"; fi
-  done
-fi
 if [ -n "$se" ] && [ -f "$se" ]; then cat "$se" >&2; fi
 if [ -n "$touchf" ]; then printf 'mutated by stub call %s\n' "$idx" > "$touchf"; fi
 if [ -n "$gitc" ]; then git commit --allow-empty -q -m "stub commit $idx" >/dev/null 2>&1; fi
-# STUB_RELEASE_FILE: written the moment the reviewer starts, so a test can
-# wait for "capture is over, the run has begun" instead of racing a sleep.
-rel="$(pick STUB_RELEASE_FILE)"
-if [ -n "$rel" ]; then printf 'released\n' > "$rel"; fi
-# STUB_WAIT_ACK: the other half of the handshake. The host writes into the
-# ORIGINAL after seeing the readiness marker and then drops this file; the
-# reviewer BLOCKS until it appears and records what it saw, so "the write
-# landed while the review was still running" is proven by the reviewer's own
-# record instead of inferred from wall-clock ordering.
-ackf="$(pick STUB_WAIT_ACK)"
-if [ -n "$ackf" ]; then
-  waited=0
-  while [ ! -f "$ackf" ] && [ "$waited" -lt 1200 ]; do
-    python3 -c 'import time; time.sleep(0.05)'
-    waited=$((waited + 1))
-  done
-  if [ -f "$ackf" ]; then
-    printf 'observed contents=%s\n' "$(cat "$ackf")" > "$CAP/call_${idx}.ack"
-  else
-    printf 'never-observed\n' > "$CAP/call_${idx}.ack"
-  fi
-fi
 spawn="$(pick STUB_SPAWN_PIDFILE)"
 if [ -n "$spawn" ]; then
   python3 -c 'import time; time.sleep(60)' &
@@ -2544,8 +2506,7 @@ exit "$rc"
                 selection misroutes under concurrent sessions). Parsing
                 refuses it: exit 2 with the removal message, no CLI call, and
                 not one artifact on disk — the refusal happens before any
-                snapshot capture or preflight work, so there is nothing to
-                clean up."""
+                preflight work, so there is nothing to clean up."""
                 bin_dir = os.path.join(runner_tmp, f"bin-{slug}")
                 cap = os.path.join(runner_tmp, f"cap-{slug}")
                 make_stub(bin_dir, cli, cap)
@@ -2805,20 +2766,19 @@ exit "$rc"
 
             # ---- (F8) non-string config values are noted, never used ----
             junk_cfg = cfg_dir_with("plugin-data-junk", {"codex": {
-                "model": 123, "effort": [], "fallback_model": None}})
+                "model": 123, "effort": []}})
             rc, out, err, calls = codex_run("config-nonstring", {"CLAUDE_PLUGIN_DATA": junk_cfg})
             check("config: non-string values -> one note per key, defaults used",
                   rc == 0
                   and "note: config codex.model ignored (not a string)" in err
                   and "note: config codex.effort ignored (not a string)" in err
-                  and "note: config codex.fallback_model ignored (not a string)" in err
                   and "model=cli-default (identity unverified)" in out
                   and "effort=medium (runner-default)" in out,
                   f"rc={rc} err={err} out={out}")
 
             # ---- (F9) the `codex` config block describes the HOST's reviewer:
             # on a codex host that reviewer is Claude, so the codex runner must
-            # ignore model/effort/fallback_model there. ----
+            # ignore model/effort there. ----
             codex_host_cfg = cfg_dir_with(os.path.join("host-codex", ".codex", "plugins", "data"),
                                           {"codex": {"model": "claude-reviewer-model"}})
             rc, out, err, calls = codex_run("model-codex-host", {"CLAUDE_PLUGIN_DATA": codex_host_cfg})
@@ -2827,109 +2787,65 @@ exit "$rc"
                   and argv_value(calls[0][0] if calls else [], "-m") is None,
                   f"out={out} argv={calls[:1]}")
 
-            # ---- (i) model-unavailable fallback: pre-execution only, once ----
-            fb_cfg = cfg_dir_with("plugin-data-fallback",
-                                  {"codex": {"fallback_model": "fb-model"}})
+            # ---- (i, 2.22) a model codex rejects PRE-EXECUTION is never
+            # retried: the run fails with codex's own error plus one hint
+            # naming CODEX_MODEL / codex.model. ----
             pre_exec_fail = events_file("ev-unknown-model-preexec.jsonl", [
                 '{"type":"thread.started","thread_id":"stub"}',
                 '{"type":"turn.failed","error":{"message":"unknown model: totally-fake-model"}}',
             ])
-            bin_dir = os.path.join(runner_tmp, "bin-fallback")
-            cap = os.path.join(runner_tmp, "cap-fallback")
+            bin_dir = os.path.join(runner_tmp, "bin-model-rejected")
+            cap = os.path.join(runner_tmp, "cap-model-rejected")
             make_stub(bin_dir, "codex", cap)
-            fb_out = os.path.join(runner_tmp, "fallback-reply.md")
-            rc, out, err = run_script(codex_script, ["-o", fb_out, brief_file("fb-brief.md")], {
+            mr_out = os.path.join(runner_tmp, "model-rejected-reply.md")
+            rc, out, err = run_script(codex_script, ["-o", mr_out, brief_file("mr-brief.md")], {
                 "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                "CLAUDE_PLUGIN_DATA": fb_cfg,
                 "CODEX_MODEL": "totally-fake-model",
-                "STUB_EVENTS_FILE_1": pre_exec_fail,
-                "STUB_RC_1": "1", "STUB_NO_OUT_1": "1",
+                "STUB_EVENTS_FILE": pre_exec_fail,
+                "STUB_RC": "1", "STUB_NO_OUT": "1",
             })
-            calls = read_calls(cap)
-            check("fallback: exactly two codex invocations (fail then retry)",
-                  len(calls) == 2, calls)
-            check("fallback: run eventually succeeds", rc == 0, f"rc={rc} err={err}")
-            if len(calls) == 2:
-                check("fallback: retry uses config codex.fallback_model",
-                      argv_value(calls[1][0], "-m") == "fb-model", calls[1][0])
-                check("fallback: both calls carry the reviewer contract",
-                      calls[0][1].startswith(CONTRACT_HEAD)
-                      and calls[1][1].startswith(CONTRACT_HEAD), calls)
-            note = "note: requested model 'totally-fake-model' unavailable; reviewed by 'fb-model' (config fallback)"
-            check("fallback: reply note names BOTH requested and effective model (stdout)",
-                  note in out, out)
-            check("fallback: the same note is persisted into the reply FILE",
-                  os.path.isfile(fb_out) and note in open(fb_out).read(),
-                  open(fb_out).read() if os.path.isfile(fb_out) else "missing")
+            mr_hints = [l for l in err.splitlines() if l.strip().startswith("hint:")]
+            check("model rejected pre-execution: exactly ONE codex invocation (no retry), run fails",
+                  rc != 0 and len(read_calls(cap)) == 1, f"rc={rc} calls={len(read_calls(cap))}")
+            check("model rejected pre-execution: codex's own error is reported",
+                  "codex reported turn.failed: unknown model: totally-fake-model" in err, err)
+            check("model rejected pre-execution: exactly one hint line naming CODEX_MODEL and codex.model",
+                  len(mr_hints) == 1 and "CODEX_MODEL" in mr_hints[0]
+                  and "codex.model" in mr_hints[0] and "totally-fake-model" in mr_hints[0],
+                  f"hints={mr_hints} err={err}")
+            check("model rejected pre-execution: no .events.2.jsonl or $OUT.tmp is written",
+                  not os.path.exists(os.path.join(runner_tmp, "model-rejected-reply.events.2.jsonl"))
+                  and not os.path.exists(mr_out + ".tmp"), mr_out)
 
             post_exec_fail = events_file("ev-unknown-model-postexec.jsonl", [
                 '{"type":"thread.started","thread_id":"stub"}',
                 '{"type":"item.started","item":{"type":"command_execution"}}',
                 '{"type":"turn.failed","error":{"message":"model not available: totally-fake-model"}}',
             ])
-            bin_dir = os.path.join(runner_tmp, "bin-fallback-postexec")
-            cap = os.path.join(runner_tmp, "cap-fallback-postexec")
+            bin_dir = os.path.join(runner_tmp, "bin-model-rejected-postexec")
+            cap = os.path.join(runner_tmp, "cap-model-rejected-postexec")
             make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, [brief_file("fb-post-brief.md")], {
+            rc, out, err = run_script(codex_script, [brief_file("mr-post-brief.md")], {
                 "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                "CLAUDE_PLUGIN_DATA": fb_cfg,
                 "CODEX_MODEL": "totally-fake-model",
                 "STUB_EVENTS_FILE": post_exec_fail,
                 "STUB_RC": "1", "STUB_NO_OUT": "1",
             })
-            calls = read_calls(cap)
-            check("fallback: unknown-model AFTER item.started -> no retry (execution had begun)",
-                  len(calls) == 1, calls)
-            check("fallback: post-execution unknown-model failure is reported, not retried",
-                  rc != 0, f"rc={rc} err={err}")
+            check("model failure AFTER item.started: one invocation, failure, no pre-execution hint",
+                  rc != 0 and len(read_calls(cap)) == 1 and "hint:" not in err,
+                  f"rc={rc} calls={len(read_calls(cap))} err={err}")
 
-            bin_dir = os.path.join(runner_tmp, "bin-fallback-twice")
-            cap = os.path.join(runner_tmp, "cap-fallback-twice")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, [brief_file("fb-twice-brief.md")], {
-                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                "CLAUDE_PLUGIN_DATA": fb_cfg,
-                "CODEX_MODEL": "totally-fake-model",
-                "STUB_EVENTS_FILE": pre_exec_fail,
-                "STUB_RC": "1", "STUB_NO_OUT": "1",
-            })
-            calls = read_calls(cap)
-            check("fallback: retry also fails -> failure, still exactly two invocations",
-                  rc != 0 and len(calls) == 2, f"rc={rc} calls={len(calls)}")
-
-            contaminated = events_file("ev-unknown-model-contaminated.jsonl", [
-                '{"type":"thread.started","thread_id":"stub"}',
-                'not json — a dropped line could have carried item.started',
-                '{"type":"turn.failed","error":{"message":"unknown model: totally-fake-model"}}',
-            ])
-            bin_dir = os.path.join(runner_tmp, "bin-fallback-contaminated")
-            cap = os.path.join(runner_tmp, "cap-fallback-contaminated")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, [brief_file("fb-contaminated-brief.md")], {
-                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                "CLAUDE_PLUGIN_DATA": fb_cfg,
-                "CODEX_MODEL": "totally-fake-model",
-                "STUB_EVENTS_FILE": contaminated,
-                "STUB_RC": "1", "STUB_NO_OUT": "1",
-            })
-            check("fallback: a malformed line BEFORE the failure event inhibits the retry",
-                  rc != 0 and len(read_calls(cap)) == 1, f"rc={rc} calls={len(read_calls(cap))}")
-
-            # the failed FIRST attempt's events and stderr traces must never
-            # fail a successful retry (each attempt is classified on its own).
-            bin_dir = os.path.join(runner_tmp, "bin-fallback-clean-retry")
-            cap = os.path.join(runner_tmp, "cap-fallback-clean-retry")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, [brief_file("fb-clean-brief.md")], {
-                "PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-                "CLAUDE_PLUGIN_DATA": fb_cfg,
-                "CODEX_MODEL": "totally-fake-model",
-                "STUB_EVENTS_FILE_1": pre_exec_fail,
-                "STUB_STDERR_FILE_1": trace_stderr,
-                "STUB_RC_1": "1", "STUB_NO_OUT_1": "1",
-            })
-            check("fallback: attempt 1 events/traces do not fail a clean retry",
-                  rc == 0 and len(read_calls(cap)) == 2, f"rc={rc} err={err}")
+            # A stored `fallback_model` key (retry removed in 2.22) is ignored
+            # silently: unknown config keys are skipped.
+            fb_cfg = cfg_dir_with("plugin-data-fallback",
+                                  {"codex": {"fallback_model": "fb-model"}})
+            rc, out, err, calls = codex_run("stored-fbkey-ignored", {"CLAUDE_PLUGIN_DATA": fb_cfg})
+            check("config: a stored codex.fallback_model is ignored silently (one call, no -m, no note)",
+                  rc == 0 and len(calls) == 1
+                  and argv_value(calls[0][0], "-m") is None
+                  and "fallback_model" not in err and "fb-model" not in out + err
+                  and "model=cli-default (identity unverified)" in out,
+                  f"rc={rc} calls={len(calls)} out={out} err={err}")
 
             # ---- (k/l/m/n) change detection ----
             head_repo = make_repo("repo-head")
@@ -3087,9 +3003,9 @@ exit "$rc"
                           rc == 2 and not stub[0] and "outside a git repo" in err
                           and ag_inside not in err, f"rc={rc} err={err}")
 
-            # ---- (2.21 review F1) codex's fallback rewrite stages through
-            # `$OUT.tmp`, written AFTER change detection — so it is judged
-            # with the other artifacts, up front. claude has no such write.
+            # ---- (2.21 review F1) `$OUT.tmp` — written by a pre-2.22 codex
+            # runner's fallback rewrite, which a hop may still reach — is
+            # judged with the other artifacts, up front. claude has no such write.
             f1_link_out = os.path.join(ag_out, "f1-link.md")
             os.symlink(ag_tracked, f1_link_out + ".tmp")
             rc, out, err, stub = ag_run("codex", "outtmp-link", ["-o", f1_link_out, ag_brief], ag_repo)
@@ -3110,90 +3026,7 @@ exit "$rc"
                   and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} stub={stub} err={err}")
             os.remove(f1_hard_out + ".tmp")
 
-            # ---- (2.21 review F2) --snapshot canonicalization is re-judged.
-            # canon_path normalizes `..` lexically and THEN resolves the
-            # parent: with scratch/repolink -> <repo> and <repo>/outlink ->
-            # safe/deep, `scratch/repolink/outlink/../r.md` resolves to
-            # safe/r.md for the first check but canonicalizes to <repo>/r.md.
-            f2_scratch = os.path.join(ag_root, "scratch")
-            f2_safe = os.path.join(ag_root, "safe")
-            os.makedirs(f2_scratch, exist_ok=True)
-            os.makedirs(os.path.join(f2_safe, "deep"), exist_ok=True)
-            os.symlink(ag_repo, os.path.join(f2_scratch, "repolink"))
-            os.symlink(os.path.join(f2_safe, "deep"), os.path.join(ag_repo, "outlink"))
-            for who in ("codex", "claude"):
-                f2_name = f"f2-{who}.md"
-                f2_o = os.path.join(f2_scratch, "repolink", "outlink", "..", f2_name)
-                f2_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
-                                           capture_output=True, text=True).stdout
-                rc, out, err, stub = ag_run(who, "f2-snap", ["--snapshot", "-o", f2_o, ag_brief], ag_repo)
-                check(f"artifact guard ({who}): --snapshot whose canonicalized -o lands in the repo -> "
-                      "refused before any call or write",
-                      ag_refused(rc, err, stub)
-                      and os.path.join(os.path.realpath(ag_repo), f2_name) in err
-                      and not os.path.exists(os.path.join(ag_repo, f2_name))
-                      and not os.path.exists(os.path.join(ag_repo, f"f2-{who}.log"))
-                      and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
-                                         capture_output=True, text=True).stdout == f2_status,
-                      f"rc={rc} stub={stub} err={err}")
-                rc, out, err, stub = ag_run(who, "f2-plain", ["-o", f2_o, ag_brief], ag_repo)
-                check(f"artifact guard ({who}): the same -o without --snapshot writes OUTSIDE "
-                      "(through the links) and the review runs",
-                      rc == 0 and stub[0] and os.path.isfile(os.path.join(f2_safe, f2_name))
-                      and not os.path.exists(os.path.join(ag_repo, f2_name)), f"rc={rc} err={err}")
-
-            # ---- (2.21 confirmation G1) the mktemp DIRECTORY is judged in its
-            # canonical form too under --snapshot. TMPDIR=scratch/repolink/
-            # outlink/.. is outside lexically AND resolved (safe/), yet
-            # canonicalizes to <repo> — where the reply and log derived from a
-            # stdin temp brief land once hjw_canonicalize has run.
             AG_DIR_INSIDE = "artifact directory is inside the reviewed repository"
-            g1_tmp = os.path.join(f2_scratch, "repolink", "outlink", "..")
-            for who in ("codex", "claude"):
-                g1_script = codex_script if who == "codex" else claude_script
-                g1_bin = os.path.join(ag_root, f"bin-{who}-g1")
-                g1_cap = os.path.join(ag_root, f"cap-{who}-g1")
-                make_stub(g1_bin, who, g1_cap)
-                g1_env = {"PATH": g1_bin + os.pathsep + os.environ.get("PATH", ""),
-                          "TMPDIR": g1_tmp}
-                g1_safe_before = sorted(os.listdir(f2_safe))
-                g1_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
-                                           capture_output=True, text=True).stdout
-                rc, out, err = run_script(g1_script, ["--snapshot", "-"], g1_env,
-                                          stdin_data="Stdin brief body.\n", cwd=ag_repo)
-                g1_lines = err.strip().splitlines()
-                check(f"artifact guard ({who}): --snapshot `-` without -o, TMPDIR canonicalizing "
-                      "into the repo -> exit 2, one refusal line naming the canonical directory, "
-                      "reviewer never called, no temp brief created",
-                      rc == 2 and len(g1_lines) == 1 and AG_DIR_INSIDE in g1_lines[0]
-                      and os.path.realpath(ag_repo) in g1_lines[0] and "set TMPDIR" in g1_lines[0]
-                      and not (os.path.isdir(g1_cap) and os.listdir(g1_cap))
-                      and sorted(os.listdir(f2_safe)) == g1_safe_before
-                      and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
-                                         capture_output=True, text=True).stdout == g1_status,
-                      f"rc={rc} err={err}")
-                rc, out, err = run_script(g1_script, ["-"], g1_env,
-                                          stdin_data="Stdin brief body.\n", cwd=ag_repo)
-                check(f"artifact guard ({who}): the same TMPDIR without --snapshot (nothing "
-                      "canonicalizes; it resolves outside) -> the review runs",
-                      rc == 0 and bool(read_calls(g1_cap)), f"rc={rc} err={err}")
-                # (follow-up) under --snapshot with a NAMED brief and `-o`, nothing
-                # canonicalized derives from TMPDIR — the temp files use the RAW
-                # TMPDIR, which resolves outside — so the canonical form must
-                # not refuse the run.
-                g1n_bin = os.path.join(ag_root, f"bin-{who}-g1n")
-                g1n_cap = os.path.join(ag_root, f"cap-{who}-g1n")
-                make_stub(g1n_bin, who, g1n_cap)
-                rc, out, err = run_script(
-                    g1_script, ["--snapshot", "-o", os.path.join(ag_out, f"g1n-{who}.md"), ag_brief],
-                    {"PATH": g1n_bin + os.pathsep + os.environ.get("PATH", ""), "TMPDIR": g1_tmp},
-                    cwd=ag_repo)
-                check(f"artifact guard ({who}): --snapshot with a named outside brief and outside "
-                      "-o under that TMPDIR -> the review runs (the canonical TMPDIR is unused)",
-                      rc == 0 and bool(read_calls(g1n_cap))
-                      and os.path.isfile(os.path.join(ag_out, f"g1n-{who}.md")),
-                      f"rc={rc} err={err}")
-            os.remove(os.path.join(ag_repo, "outlink"))
 
             # ---- (2.21 confirmation G2) for mktemp artifacts only the
             # DIRECTORY is judged: an existing entry literally named like the
@@ -3629,7 +3462,7 @@ exit "$rc"
                   sbx == "read-only", sbx)
 
             # malformed SHAPE (codex is not an object) is "no config" too —
-            # model/effort/fallback_model must not crash or leak a value.
+            # model/effort must not crash or leak a value.
             cfg_dir4 = cfg_dir_with("plugin-data-shape", {"codex": "not-an-object"})
             sbx = sandbox_used({"CLAUDE_PLUGIN_DATA": cfg_dir4}, "config-shape")
             check("config shape: codex not an object -> read-only, no crash",
@@ -4019,70 +3852,8 @@ exit "$rc"
             check("claude normal run: Edit,Write,NotebookEdit value present",
                   "Edit,Write,NotebookEdit" in argv, argv)
 
-            # ---- (B8) --snapshot: the reviewer reads a detached worktree
-            # snapshot instead of the live working copy. Every fixture below
-            # is hermetic (stub CLIs, stub git/mktemp where a failure must be
-            # forced) and asserts on what the reviewer ACTUALLY saw — the
-            # snapshot itself is gone by the time the runner returns. The
-            # whole matrix runs against BOTH runners: the capture code is
-            # duplicated by design, so it must be proven twice. ----
-            def worktree_count(repo):
-                """-1 when git could not answer: an unreadable listing must
-                FAIL a 'nothing leaked' check, never silently satisfy it."""
-                p = subprocess.run(["git", "-C", repo, "worktree", "list"],
-                                   capture_output=True, text=True)
-                if p.returncode != 0:
-                    return -1
-                return len([l for l in p.stdout.splitlines() if l.strip()])
-
-            def read_cwd(capture_dir, n=1):
-                p = os.path.join(capture_dir, f"call_{n}.cwd")
-                return open(p).read().strip() if os.path.isfile(p) else ""
-
-            def read_ack(capture_dir, n=1):
-                """What the reviewer itself recorded about the host's write.
-                The handshake (STUB_WAIT_ACK) makes "the write landed WHILE the
-                review was running" an observation of the reviewer's, not an
-                inference from wall-clock ordering."""
-                p = os.path.join(capture_dir, f"call_{n}.ack")
-                return open(p).read().strip() if os.path.isfile(p) else "<absent>"
-
-            def read_end(capture_dir, n=1):
-                p = os.path.join(capture_dir, f"call_{n}.end")
-                try:
-                    return float(open(p).read().strip())
-                except Exception:
-                    return None
-
-            def snap_log_path(log_path):
-                """The runner records the snapshot it built into $LOG."""
-                head = "# ---- snapshot: "
-                for line in (open(log_path).read().splitlines()
-                             if os.path.isfile(log_path) else []):
-                    if line.startswith(head) and line.endswith(" ----"):
-                        return line[len(head):-len(" ----")]
-                return ""
-
-            def sha1_text(text):
-                return hashlib.sha1(text.encode()).hexdigest()
-
-            def hermetic_env(extra_env):
-                """Same env discipline as run_script, for the fixtures that
-                need their own process handling (combined stream, signals)."""
-                env = dict(os.environ)
-                for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
-                            "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
-                            "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID",
-                            "CLAUDE_EFFORT"):
-                    env.pop(var, None)
-                if "CLAUDE_PLUGIN_DATA" not in extra_env:
-                    env["CLAUDE_PLUGIN_DATA"] = empty_data_dir_named("nocfg-h-")
-                env.update({k: v for k, v in extra_env.items() if v is not None})
-                return env
-
             def make_repo_committed(name, base=None):
-                """A repo with one commit — `make_repo` leaves HEAD unborn,
-                which --snapshot refuses by design."""
+                """A repo with one commit — `make_repo` leaves HEAD unborn."""
                 d = make_repo(name, base)
                 write_file(os.path.join(d, "seed.txt"), "seed\n")
                 subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
@@ -4090,688 +3861,28 @@ exit "$rc"
                                check=True, capture_output=True)
                 return d
 
-            def dirty_snap_repo(name, base=None):
-                """Every working-tree shape the snapshot must reproduce —
-                staged, unstaged, binary, deletion, untracked, symlink — plus
-                an ignored file it must NOT carry."""
-                d = make_repo(name, base)
-                write_file(os.path.join(d, "staged.txt"), "committed\n")
-                write_file(os.path.join(d, "unstaged.txt"), "committed\n")
-                with open(os.path.join(d, "binary.dat"), "wb") as f:
-                    f.write(b"\x00\x01committed\x02")
-                write_file(os.path.join(d, "deleted.txt"), "committed\n")
-                write_file(os.path.join(d, ".gitignore"), "ignored.txt\n")
-                subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "commit", "-q", "-m", "seed"],
-                               check=True, capture_output=True)
-                write_file(os.path.join(d, "staged.txt"), "staged change\n")
-                subprocess.run(["git", "-C", d, "add", "staged.txt"], check=True,
-                               capture_output=True)
-                write_file(os.path.join(d, "unstaged.txt"), "unstaged change\n")
-                with open(os.path.join(d, "binary.dat"), "wb") as f:
-                    f.write(b"\x00\x01changed\x02\x03")
-                os.remove(os.path.join(d, "deleted.txt"))
-                write_file(os.path.join(d, "untracked.txt"), "untracked\n")
-                os.symlink("unstaged.txt", os.path.join(d, "link.txt"))
-                write_file(os.path.join(d, "ignored.txt"), "ignored\n")
-                return d
-
-            def gitlink_repo(name, base=None):
-                d = make_repo_committed(name, base)
-                sha = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
-                                     capture_output=True, text=True).stdout.strip()
-                subprocess.run(["git", "-C", d, "update-index", "--add",
-                                "--cacheinfo", f"160000,{sha},nested"],
-                               check=True, capture_output=True)
-                return d
-
-            def embedded_repo(name, base=None):
-                d = make_repo_committed(name, base)
-                subprocess.run(["git", "init", "-q", os.path.join(d, "vendor")],
-                               check=True, capture_output=True)
-                return d
-
-            def conflict_repo(name, base=None):
-                d = make_repo_committed(name, base)
-                branch = subprocess.run(["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
-                                        capture_output=True, text=True).stdout.strip()
-                write_file(os.path.join(d, "c.txt"), "base\n")
-                subprocess.run(["git", "-C", d, "add", "c.txt"], check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "commit", "-q", "-m", "base"],
-                               check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "checkout", "-q", "-b", "side"],
-                               check=True, capture_output=True)
-                write_file(os.path.join(d, "c.txt"), "side\n")
-                subprocess.run(["git", "-C", d, "commit", "-q", "-am", "side"],
-                               check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "checkout", "-q", branch],
-                               check=True, capture_output=True)
-                write_file(os.path.join(d, "c.txt"), "main\n")
-                subprocess.run(["git", "-C", d, "commit", "-q", "-am", "main"],
-                               check=True, capture_output=True)
-                subprocess.run(["git", "-C", d, "merge", "side"], capture_output=True)
-                return d
-
-            def big_untracked_repo(name, base=None):
-                d = make_repo_committed(name, base)
-                for i in range(2001):
-                    write_file(os.path.join(d, "untracked", f"f{i:05d}.txt"), "x\n")
-                return d
-
-            def make_snapshot_git_stub(bin_dir, mode, nth=1, touch=""):
-                """git wrapper for the capture fixtures: fail `apply`, fail
-                `worktree remove`, mutate a tracked file just before the Nth
-                tracked-patch diff, or mutate an untracked file just before
-                the Nth untracked listing — everything else passes through to
-                the real git."""
-                os.makedirs(bin_dir, exist_ok=True)
-                real_git = shutil.which("git")
-                counter = os.path.join(bin_dir, "_snapcount")
-                path = os.path.join(bin_dir, "git")
-                body = ["#!/usr/bin/env bash"]
-                if mode == "apply":
-                    body += ['for a in "$@"; do',
-                             '  if [ "$a" = "apply" ]; then',
-                             '    echo "fatal: stubbed git apply failure" >&2; exit 1',
-                             '  fi',
-                             'done']
-                elif mode == "worktree-list":
-                    # Only the LISTING fails: cleanup must then assume the
-                    # snapshot is registered and still remove it through git.
-                    body += ['wt=0; lst=0',
-                             'for a in "$@"; do',
-                             '  [ "$a" = "worktree" ] && wt=1',
-                             '  [ "$a" = "list" ] && lst=1',
-                             'done',
-                             'if [ "$wt" = 1 ] && [ "$lst" = 1 ]; then',
-                             '  echo "fatal: stubbed worktree list failure" >&2; exit 1',
-                             'fi']
-                elif mode == "worktree-remove":
-                    # `worktree list` still passes through: cleanup must be
-                    # able to see that the snapshot IS registered.
-                    body += ['wt=0; rmv=0',
-                             'for a in "$@"; do',
-                             '  [ "$a" = "worktree" ] && wt=1',
-                             '  [ "$a" = "remove" ] && rmv=1',
-                             'done',
-                             'if [ "$wt" = 1 ] && [ "$rmv" = 1 ]; then',
-                             '  echo "fatal: stubbed worktree remove failure" >&2; exit 1',
-                             'fi']
-                elif mode in ("drift", "drift-untracked"):
-                    if mode == "drift":
-                        # --binary AND --no-ext-diff identify the tracked-patch
-                        # call only (the `git apply` replay carries --binary too).
-                        cond = ('b=0; e=0\n'
-                                'for a in "$@"; do\n'
-                                '  [ "$a" = "--binary" ] && b=1\n'
-                                '  [ "$a" = "--no-ext-diff" ] && e=1\n'
-                                'done\n'
-                                'hit=0; [ "$b" = 1 ] && [ "$e" = 1 ] && hit=1')
-                    else:
-                        # --others without --ignored = the untracked listing
-                        # (preflight, capture, drift — in that order).
-                        cond = ('o=0; g=0\n'
-                                'for a in "$@"; do\n'
-                                '  [ "$a" = "--others" ] && o=1\n'
-                                '  [ "$a" = "--ignored" ] && g=1\n'
-                                'done\n'
-                                'hit=0; [ "$o" = 1 ] && [ "$g" = 0 ] && hit=1')
-                    body += cond.split("\n")
-                    body += ['if [ "$hit" = 1 ]; then',
-                             f"  c=1; if [ -f '{counter}' ]; then c=$(( $(cat '{counter}') + 1 )); fi",
-                             f"  echo \"$c\" > '{counter}'",
-                             f"  if [ \"$c\" -eq {nth} ]; then",
-                             f"    printf 'torn by a concurrent writer\\n' > '{touch}'",
-                             '  fi',
-                             'fi']
-                body.append(f'exec {real_git} "$@"')
-                with open(path, "w") as f:
-                    f.write("\n".join(body) + "\n")
-                os.chmod(path, 0o755)
-                return path
-
-            def make_mktemp_stub(bin_dir, rules):
-                """mktemp wrapper: each (template-suffix, path) rule returns a
-                FIXED directory for that template, everything else passes
-                through. Pinning the snapshot path is the only way to reach
-                the containment guard; pinning the EFFECTIVE-BRIEF path to a
-                directory is the only way to make its write fail."""
-                os.makedirs(bin_dir, exist_ok=True)
-                real = shutil.which("mktemp")
-                path = os.path.join(bin_dir, "mktemp")
-                body = ["#!/usr/bin/env bash", 'for a in "$@"; do', '  case "$a" in']
-                for suffix, fixed in rules:
-                    body += [f'    *{suffix})',
-                             f'      mkdir -p "{fixed}" || exit 1',
-                             f'      printf "%s\\n" "{fixed}"; exit 0 ;;']
-                body += ['  esac', 'done', f'exec {real} "$@"']
-                with open(path, "w") as f:
-                    f.write("\n".join(body) + "\n")
-                os.chmod(path, 0o755)
-                return path
-
-            def capture_helper_path(script_path):
-                """The capture helper is a FILE in the runner's library since
-                2.13 (`scripts/lib/snapshot.py`), not a heredoc embedded in the
-                entrypoint. Resolved exactly the way the runner resolves it —
-                from its OWN resolved directory — so the fixture runs the
-                shipped file, not a copy of it, and can drive a race the shell
-                cannot reach."""
-                lib = os.path.join(os.path.dirname(os.path.realpath(script_path)),
-                                   "lib", "snapshot.py")
-                return lib if os.path.isfile(lib) else ""
-
-            RACE_DRIVER = '''import runpy, shutil, sys
-
-helper, args = sys.argv[1], sys.argv[2:]
-_real = shutil.copy2
-
-
-def racing_copy2(src, dst, follow_symlinks=True):
-    # A writer wins the race with the reader: the file changes BEFORE its
-    # bytes are copied, so the destination holds content the pre-copy source
-    # hash never covered. That is exactly the window the source/destination
-    # comparison exists to close.
-    with open(src, "a") as fh:
-        fh.write("racing writer\\n")
-    return _real(src, dst, follow_symlinks=follow_symlinks)
-
-
-shutil.copy2 = racing_copy2
-sys.argv = [helper] + args
-runpy.run_path(helper, run_name="__main__")
-'''
-
-            # Both runners, same capture contract, so both get the same matrix.
-            SNAP_RUNNERS = (("codex", codex_script, "codex", "=== Codex reply"),
-                            ("claude", claude_script, "claude", "=== Claude reply"))
-
-            for who, snap_script, snap_cli, reply_head in SNAP_RUNNERS:
-                def snap_run(label, repo, args=None, env_extra=None, bin_dir=None,
-                             _s=snap_script, _c=snap_cli):
-                    """One hermetic --snapshot run: fresh stub, fresh capture
-                    dir, explicit -o so the fixture knows where $LOG lands."""
-                    bin_dir = bin_dir or os.path.join(runner_tmp, f"bin-{label}")
-                    cap = os.path.join(runner_tmp, f"cap-{label}")
-                    make_stub(bin_dir, _c, cap)
-                    out_path = os.path.join(runner_tmp, f"{label}.reply.md")
-                    env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
-                    env.update(env_extra or {})
-                    brief = brief_file(f"brief-{label}.md")
-                    rc, out, err = run_script(
-                        _s, ["--snapshot", "-o", out_path] + (args or []) + [brief],
-                        env, cwd=repo)
-                    log_path = os.path.join(runner_tmp, f"{label}.reply.log")
-                    return {"rc": rc, "out": out, "err": err, "cap": cap,
-                            "bin": bin_dir, "calls": read_calls(cap),
-                            "log": log_path, "snap": snap_log_path(log_path)}
-
-                # (i) every working-tree shape reaches the snapshot; the
-                # ignored file does not; the reviewer's cwd IS the snapshot.
-                shapes_repo = dirty_snap_repo(f"repo-snap-shapes-{who}")
-                shapes_wt = worktree_count(shapes_repo)
-                shapes_manifest = os.path.join(runner_tmp, f"snap-shapes-{who}.manifest")
-                r = snap_run(f"snap-shapes-{who}", shapes_repo, env_extra={
-                    "STUB_MANIFEST": shapes_manifest,
-                    "STUB_MANIFEST_PATHS": ("staged.txt unstaged.txt binary.dat deleted.txt "
-                                            "untracked.txt link.txt ignored.txt")})
-                check(f"{who} snapshot: a dirty repository is captured and the run succeeds",
-                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
-                seen = {}
-                for line in (open(shapes_manifest).read().splitlines()
-                             if os.path.isfile(shapes_manifest) else []):
-                    kind, name, rest = (line.split(" ", 2) + ["", ""])[:3]
-                    seen[name] = (kind, rest)
-                cwd_seen = read_cwd(r["cap"])
-                check(f"{who} snapshot: the reviewer's cwd is the snapshot, never the original",
-                      bool(cwd_seen) and bool(r["snap"])
-                      and os.path.realpath(cwd_seen) == os.path.realpath(r["snap"])
-                      and os.path.realpath(cwd_seen) != os.path.realpath(shapes_repo),
-                      f"cwd={cwd_seen} snap={r['snap']} orig={shapes_repo}")
-                check(f"{who} snapshot: a STAGED change is present in the snapshot",
-                      seen.get("staged.txt") == ("file", sha1_text("staged change\n")),
-                      seen.get("staged.txt"))
-                check(f"{who} snapshot: an UNSTAGED change is present in the snapshot",
-                      seen.get("unstaged.txt") == ("file", sha1_text("unstaged change\n")),
-                      seen.get("unstaged.txt"))
-                check(f"{who} snapshot: a BINARY change is present in the snapshot",
-                      seen.get("binary.dat") == (
-                          "file", hashlib.sha1(b"\x00\x01changed\x02\x03").hexdigest()),
-                      seen.get("binary.dat"))
-                check(f"{who} snapshot: a DELETED file is absent in the snapshot",
-                      seen.get("deleted.txt", ("", ""))[0] == "absent", seen.get("deleted.txt"))
-                check(f"{who} snapshot: an UNTRACKED file is copied into the snapshot",
-                      seen.get("untracked.txt") == ("file", sha1_text("untracked\n")),
-                      seen.get("untracked.txt"))
-                check(f"{who} snapshot: a symlink is preserved AS A LINK, never followed",
-                      seen.get("link.txt") == ("link", "unstaged.txt"), seen.get("link.txt"))
-                check(f"{who} snapshot: an IGNORED file is omitted from the snapshot",
-                      seen.get("ignored.txt", ("", ""))[0] == "absent", seen.get("ignored.txt"))
-                check(f"{who} snapshot: start and result lines disclose sha7 + dirty counts",
-                      "snapshot=" in r["err"] and "+dirty(4,2)" in r["err"]
-                      and "+dirty(4,2)" in r["out"], f"out={r['out']} err={r['err']}")
-                check(f"{who} snapshot: the log records SNAP, HEAD, interval, patch, digest",
-                      all(s in open(r["log"]).read() for s in (
-                          "# snapshot HEAD: ", "# snapshot capture: ", "# snapshot patch: ",
-                          "# snapshot untracked: ", "# snapshot digest: sha256 ",
-                          "# snapshot omissions: ignored_entries=1")), open(r["log"]).read())
-                check(f"{who} snapshot: the effective brief carries contract THEN the note",
-                      bool(r["calls"]) and r["calls"][0][1].startswith(CONTRACT_HEAD)
-                      and "SNAPSHOT: this run executes in a detached snapshot of" in r["calls"][0][1]
-                      and "read the snapshot, never the original" in r["calls"][0][1]
-                      and "Do not write." in r["calls"][0][1], r["calls"][:1])
-                check(f"{who} snapshot: the worktree list is restored after a SUCCESSFUL run",
-                      shapes_wt > 0 and worktree_count(shapes_repo) == shapes_wt,
-                      f"{worktree_count(shapes_repo)} != {shapes_wt}")
-
-                # (ii) the host keeps working in the ORIGINAL while the
-                # reviewer runs — the whole point of the snapshot. Proven by a
-                # two-way HANDSHAKE, not by wall-clock ordering: the stub
-                # releases a marker the moment it starts, the host writes into
-                # the original and then drops the ack file, and the reviewer
-                # BLOCKS until it sees that file and records what it read. So
-                # "the write landed while the review was still running" is the
-                # reviewer's OWN observation — no sleep, no timestamps.
-                conc_repo = dirty_snap_repo(f"repo-snap-concurrent-{who}")
-                conc_release = os.path.join(runner_tmp, f"snap-release-{who}")
-                conc_ack = os.path.join(runner_tmp, f"snap-host-write-{who}.ack")
-                conc_target = os.path.join(conc_repo, "unstaged.txt")
-                conc_observed = []
-
-                def host_writes(_rel=conc_release, _t=conc_target, _a=conc_ack,
-                                _o=conc_observed):
-                    # A timeout must NOT fall through into the write: if the
-                    # marker never appeared the fixture proved nothing, so it
-                    # leaves _o empty, never drops the ack, and the checks below
-                    # fail rather than pass vacuously.
-                    deadline = time.time() + 30
-                    while time.time() < deadline and not os.path.isfile(_rel):
-                        time.sleep(0.02)
-                    if not os.path.isfile(_rel):
-                        return
-                    _o.append(True)
-                    write_file(_t, "the host kept working\n")
-                    write_file(_a, "host-write-acked")
-
-                writer = threading.Thread(target=host_writes)
-                writer.start()
-                r = snap_run(f"snap-concurrent-{who}", conc_repo, env_extra={
-                    "STUB_RELEASE_FILE": conc_release, "STUB_WAIT_ACK": conc_ack})
-                writer.join()
-                check(f"{who} snapshot: a host write into the ORIGINAL mid-run does not fail it",
-                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
-                check(f"{who} snapshot: the reviewer ACKNOWLEDGED that write mid-review "
-                      "(handshake, not wall-clock ordering)",
-                      bool(conc_observed)
-                      and read_ack(r["cap"]) == "observed contents=host-write-acked"
-                      and open(conc_target).read() == "the host kept working\n",
-                      f"observed={conc_observed} ack={read_ack(r['cap'])!r} "
-                      f"content={open(conc_target).read()!r}")
-
-                # (iii) a write INSIDE the snapshot still trips the no-edit
-                # gate, and the original never sees the file.
-                wrote_repo = dirty_snap_repo(f"repo-snap-wrote-{who}")
-                wrote_wt = worktree_count(wrote_repo)
-                r = snap_run(f"snap-wrote-{who}", wrote_repo,
-                             env_extra={"STUB_TOUCH_FILE": "reviewer-wrote-this.txt"})
-                check(f"{who} snapshot: a reviewer write inside the snapshot fails by path",
-                      r["rc"] != 0 and "repository changed during the run" in r["err"]
-                      and "reviewer-wrote-this.txt" in r["err"],
-                      f"rc={r['rc']} err={r['err']}")
-                check(f"{who} snapshot: the ORIGINAL never receives the reviewer's file",
-                      not os.path.exists(os.path.join(wrote_repo, "reviewer-wrote-this.txt")),
-                      wrote_repo)
-                check(f"{who} snapshot: the FAILURE line still discloses the snapshot",
-                      "snapshot=" in r["err"], r["err"])
-                check(f"{who} snapshot: the worktree list is restored after a FAILED run",
-                      wrote_wt > 0 and worktree_count(wrote_repo) == wrote_wt,
-                      f"{worktree_count(wrote_repo)} != {wrote_wt}")
-
-                # (v) --snapshot --resume: --resume is rejected FIRST, with
-                # the same 2.13 removal message — no combined-refusal wording
-                # survives, and the snapshot is never captured.
-                resume_repo = make_repo_committed(f"repo-snap-resume-{who}")
-                resume_wt = worktree_count(resume_repo)
-                check_resume_removed(f"snap-resume-{who}",
-                                     f"{who} --snapshot --resume",
-                                     snap_script, snap_cli,
-                                     ["--snapshot", "--resume"], cwd=resume_repo)
-                check(f"{who} --snapshot --resume: no snapshot worktree is created",
-                      resume_wt > 0 and worktree_count(resume_repo) == resume_wt,
-                      f"{worktree_count(resume_repo)} != {resume_wt}")
-
-                # (vi) shapes a worktree snapshot cannot reproduce honestly
-                # are refused up front, unpaid, each with ITS OWN reason.
-                for kind, builder, reason in (
-                        ("unborn HEAD", make_repo,
-                         "snapshot unavailable: unborn HEAD — there is no commit to snapshot"),
-                        ("gitlink", gitlink_repo,
-                         "snapshot unavailable: gitlink (submodule) entry present"),
-                        ("embedded repo", embedded_repo,
-                         "snapshot unavailable: embedded untracked repository: vendor"),
-                        ("merge conflict", conflict_repo,
-                         "snapshot unavailable: unresolved merge conflicts in the working tree")):
-                    slug = kind.split()[0]
-                    r = snap_run(f"snap-refuse-{slug}-{who}", builder(f"repo-snap-{slug}-{who}"))
-                    check(f"{who} snapshot: {kind} -> exit 2 with its own reason, zero calls",
-                          r["rc"] == 2 and reason in r["err"] and len(r["calls"]) == 0,
-                          f"rc={r['rc']} err={r['err']}")
-
-                # (vii) a patch that will not replay is a HOLE in the
-                # snapshot, not a degraded run: refuse before the paid call.
-                apply_repo = dirty_snap_repo(f"repo-snap-apply-{who}")
-                apply_wt = worktree_count(apply_repo)
-                apply_bin = os.path.join(runner_tmp, f"bin-snap-apply-{who}")
-                make_snapshot_git_stub(apply_bin, "apply")
-                r = snap_run(f"snap-apply-{who}", apply_repo, bin_dir=apply_bin)
-                check(f"{who} snapshot: a patch that cannot be replayed -> exit 2, zero calls",
-                      r["rc"] == 2
-                      and "snapshot unavailable: cannot replay the working-tree patch" in r["err"]
-                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
-                check(f"{who} snapshot: a refusal after `worktree add` leaves no worktree behind",
-                      apply_wt > 0 and worktree_count(apply_repo) == apply_wt,
-                      f"{worktree_count(apply_repo)} != {apply_wt}")
-
-                # (viii) untracked coverage above the cap is PARTIAL, and that
-                # word reaches the reviewer's brief as well as the result line.
-                big_repo = big_untracked_repo(f"repo-snap-big-{who}")
-                r = snap_run(f"snap-big-{who}", big_repo)
-                check(f"{who} snapshot: >2000 untracked files -> success, partial coverage",
-                      r["rc"] == 0 and "+dirty(0,2000,partial)" in r["out"],
-                      f"rc={r['rc']} out={r['out']} err={r['err']}")
-                check(f"{who} snapshot: partial coverage is stated in the reviewer's own brief",
-                      bool(r["calls"])
-                      and "Untracked coverage is partial (first 2000 of 2001 eligible files)."
-                      in r["calls"][0][1], r["calls"][:1])
-
-                # (ix) capture is NOT atomic — a writer that tears it must
-                # refuse, never ship a state that never existed. Both halves
-                # of the drift check get their own fixture.
-                drift_repo = dirty_snap_repo(f"repo-snap-drift-{who}")
-                drift_bin = os.path.join(runner_tmp, f"bin-snap-drift-{who}")
-                make_snapshot_git_stub(drift_bin, "drift", nth=2,
-                                       touch=os.path.join(drift_repo, "unstaged.txt"))
-                r = snap_run(f"snap-drift-{who}", drift_repo, bin_dir=drift_bin)
-                check(f"{who} snapshot: a TRACKED file torn during capture -> refuse, zero calls",
-                      r["rc"] == 2
-                      and "snapshot unavailable: original changed during capture" in r["err"]
-                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
-
-                udrift_repo = dirty_snap_repo(f"repo-snap-udrift-{who}")
-                udrift_bin = os.path.join(runner_tmp, f"bin-snap-udrift-{who}")
-                # 3rd untracked listing = the drift re-check (preflight,
-                # capture, drift); the stub rewrites a COPIED untracked file
-                # just before it, so the recomputed source fingerprint differs
-                # from the one taken before the copy.
-                make_snapshot_git_stub(udrift_bin, "drift-untracked", nth=3,
-                                       touch=os.path.join(udrift_repo, "untracked.txt"))
-                r = snap_run(f"snap-udrift-{who}", udrift_repo, bin_dir=udrift_bin)
-                check(f"{who} snapshot: an UNTRACKED file torn during capture -> refuse",
-                      r["rc"] == 2
-                      and "snapshot unavailable: original changed during capture" in r["err"]
-                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
-
-                # (x) a leftover worktree is never swallowed by a successful
-                # review. ONE combined stream proves the ORDER: reply first,
-                # cleanup failure after.
-                leak_repo = dirty_snap_repo(f"repo-snap-leak-{who}")
-                leak_bin = os.path.join(runner_tmp, f"bin-snap-leak-{who}")
-                leak_cap = os.path.join(runner_tmp, f"cap-snap-leak-{who}")
-                make_snapshot_git_stub(leak_bin, "worktree-remove")
-                make_stub(leak_bin, snap_cli, leak_cap)
-                leak_out = os.path.join(runner_tmp, f"snap-leak-{who}.reply.md")
-                leak_stream = os.path.join(runner_tmp, f"snap-leak-{who}.combined")
-                with open(leak_stream, "w") as fh:
-                    lp = subprocess.run(
-                        ["bash", snap_script, "--snapshot", "-o", leak_out,
-                         brief_file(f"snap-leak-{who}-brief.md")],
-                        input="", stdout=fh, stderr=subprocess.STDOUT, text=True,
-                        timeout=60, cwd=leak_repo,
-                        env=hermetic_env({"PATH": leak_bin + os.pathsep
-                                          + os.environ.get("PATH", "")}))
-                combined = open(leak_stream).read()
-                check(f"{who} snapshot: cleanup failure -> non-zero exit though the review passed",
-                      lp.returncode != 0, f"rc={lp.returncode} stream={combined}")
-                check(f"{who} snapshot: the reply is printed BEFORE the cleanup failure",
-                      reply_head in combined and "snapshot cleanup failed: " in combined
-                      and combined.index(reply_head) < combined.index("snapshot cleanup failed: ")
-                      and "STUB-REPLY-OK-1" in combined, combined)
-                leaked_snap = ""
-                for line in combined.splitlines():
-                    if line.startswith("snapshot cleanup failed: "):
-                        leaked_snap = line[len("snapshot cleanup failed: "):].strip()
-                check(f"{who} snapshot: the leftover snapshot is named and still on disk",
-                      bool(leaked_snap) and os.path.isdir(leaked_snap), leaked_snap)
-                if leaked_snap and os.path.isdir(leaked_snap):
-                    shutil.rmtree(leaked_snap, ignore_errors=True)
-
-                # ...and the SAME fixture with the streams kept APART: the
-                # merged run above proves their ORDER, this one proves their
-                # IDENTITY. A caller that pipes stdout into a file must get the
-                # reply and nothing else, and the operator problem must be on
-                # stderr where a pipeline cannot swallow it.
-                split_repo = dirty_snap_repo(f"repo-snap-leak-split-{who}")
-                split_bin = os.path.join(runner_tmp, f"bin-snap-leak-split-{who}")
-                split_cap = os.path.join(runner_tmp, f"cap-snap-leak-split-{who}")
-                make_snapshot_git_stub(split_bin, "worktree-remove")
-                make_stub(split_bin, snap_cli, split_cap)
-                split_out = os.path.join(runner_tmp, f"snap-leak-split-{who}.reply.md")
+            # ---- (2.22) --snapshot was removed: it is an unknown option on
+            # both runners — exit 2, the parser's one line, no reviewer call. ----
+            for who, script, cli in (("codex", codex_script, "codex"),
+                                     ("claude", claude_script, "claude")):
+                rs_bin = os.path.join(runner_tmp, f"bin-snapshot-removed-{who}")
+                rs_cap = os.path.join(runner_tmp, f"cap-snapshot-removed-{who}")
+                make_stub(rs_bin, cli, rs_cap)
+                rs_dir = os.path.join(runner_tmp, f"snapshot-removed-{who}")
+                rs_brief = brief_file(f"snapshot-removed-{who}/brief.md")
                 rc, out, err = run_script(
-                    snap_script, ["--snapshot", "-o", split_out,
-                                  brief_file(f"snap-leak-split-{who}-brief.md")],
-                    {"PATH": split_bin + os.pathsep + os.environ.get("PATH", "")},
-                    cwd=split_repo)
-                check(f"{who} snapshot: cleanup failure -> the reply is on STDOUT only",
-                      rc != 0 and reply_head in out and "STUB-REPLY-OK-1" in out
-                      and reply_head not in err and "STUB-REPLY-OK-1" not in err,
-                      f"rc={rc} out={out!r} err={err!r}")
-                check(f"{who} snapshot: ...and the leaked path is reported on STDERR only",
-                      "snapshot cleanup failed: " in err
-                      and "snapshot cleanup failed: " not in out,
-                      f"out={out!r} err={err!r}")
-                split_leak = ""
-                for line in err.splitlines():
-                    if line.startswith("snapshot cleanup failed: "):
-                        split_leak = line[len("snapshot cleanup failed: "):].strip()
-                check(f"{who} snapshot: the stderr line names the worktree still on disk",
-                      bool(split_leak) and os.path.isdir(split_leak), split_leak)
-                if split_leak and os.path.isdir(split_leak):
-                    shutil.rmtree(split_leak, ignore_errors=True)
-
-                # (xi) a caller artifact inside the snapshot would be deleted
-                # with it — refuse. Unreachable through mktemp's randomness,
-                # so the fixture pins the snapshot path with a stub.
-                inside_repo = dirty_snap_repo(f"repo-snap-inside-{who}")
-                inside_bin = os.path.join(runner_tmp, f"bin-snap-inside-{who}")
-                pinned_snap = os.path.join(runner_tmp, f"pinned-snapshot-{who}")
-                make_mktemp_stub(inside_bin, [("hjw_snap.XXXXXX", pinned_snap)])
-                r = snap_run(f"snap-inside-{who}", inside_repo, bin_dir=inside_bin,
-                             args=["-o", os.path.join(pinned_snap, "reply.md")])
-                check(f"{who} snapshot: an output path inside the snapshot -> exit 2, zero calls",
-                      r["rc"] == 2
-                      and "snapshot unavailable: a caller path lies inside the snapshot"
-                      in r["err"] and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
-
-                # (xii) an interrupted run must not leave a worktree behind
-                # either. bash does not fire the EXIT trap for an uncaught
-                # INT/TERM, so BOTH are trapped and BOTH exit through cleanup
-                # with the runner's OWN status — 143/130 EXACTLY, not merely
-                # "non-zero": the status the trap sees belongs to whatever was
-                # interrupted, and passing that through would misreport the run.
-                for signame, want_rc, sig in (("TERM", 143, signal.SIGTERM),
-                                              ("INT", 130, signal.SIGINT)):
-                    slug = signame.lower()
-                    term_repo = dirty_snap_repo(f"repo-snap-{slug}-{who}")
-                    term_wt = worktree_count(term_repo)
-                    term_bin = os.path.join(runner_tmp, f"bin-snap-{slug}-{who}")
-                    term_cap = os.path.join(runner_tmp, f"cap-snap-{slug}-{who}")
-                    make_stub(term_bin, snap_cli, term_cap)
-                    term_release = os.path.join(runner_tmp, f"snap-{slug}-release-{who}")
-                    term_proc = subprocess.Popen(
-                        ["bash", snap_script, "--snapshot", "-o",
-                         os.path.join(runner_tmp, f"snap-{slug}-{who}.reply.md"),
-                         brief_file(f"snap-{slug}-{who}-brief.md")],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, text=True, cwd=term_repo,
-                        env=hermetic_env({"PATH": term_bin + os.pathsep
-                                          + os.environ.get("PATH", ""),
-                                          "STUB_RELEASE_FILE": term_release,
-                                          "STUB_SLEEP": "2"}))
-                    deadline = time.time() + 30
-                    while time.time() < deadline and not os.path.isfile(term_release):
-                        time.sleep(0.02)
-                    released = os.path.isfile(term_release)
-                    term_proc.send_signal(sig)
-                    try:
-                        term_proc.communicate(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        term_proc.kill()
-                        term_proc.communicate()
-                    check(f"{who} snapshot: the SIG{signame} fixture really interrupted "
-                          "a live run (the readiness marker was seen first)",
-                          released, term_release)
-                    check(f"{who} snapshot: SIG{signame} mid-run -> exits {want_rc} exactly",
-                          term_proc.returncode == want_rc,
-                          f"rc={term_proc.returncode} want={want_rc}")
-                    check(f"{who} snapshot: SIG{signame} mid-run leaves NO worktree behind",
-                          term_wt > 0 and worktree_count(term_repo) == term_wt,
-                          f"{worktree_count(term_repo)} != {term_wt}")
-
-                # (Z1a) a temp root carrying a TAB and a space: the porcelain
-                # listing must still identify the snapshot, and git — not
-                # rm -rf — must be what removes it.
-                odd_tmp = os.path.join(runner_tmp, f"tmp dir\twith ws {who}")
-                os.makedirs(odd_tmp, exist_ok=True)
-                odd_repo = dirty_snap_repo(f"repo-snap-oddtmp-{who}")
-                odd_wt = worktree_count(odd_repo)
-                r = snap_run(f"snap-oddtmp-{who}", odd_repo, env_extra={"TMPDIR": odd_tmp})
-                check(f"{who} snapshot: a TMPDIR with a tab and a space still runs",
-                      r["rc"] == 0, f"rc={r['rc']} err={r['err']}")
-                check(f"{who} snapshot: and `git worktree list` ends clean afterwards",
-                      odd_wt > 0 and worktree_count(odd_repo) == odd_wt
-                      and not [n for n in os.listdir(odd_tmp) if n.startswith("hjw_snap.")],
-                      f"{worktree_count(odd_repo)} != {odd_wt} left={os.listdir(odd_tmp)}")
-
-                # (Z1b) a listing we cannot read is NOT a licence to rm -rf: the
-                # removal still goes through git, and the worktree really goes.
-                wl_repo = dirty_snap_repo(f"repo-snap-wtlist-{who}")
-                wl_wt = worktree_count(wl_repo)
-                wl_bin = os.path.join(runner_tmp, f"bin-snap-wtlist-{who}")
-                make_snapshot_git_stub(wl_bin, "worktree-list")
-                r = snap_run(f"snap-wtlist-{who}", wl_repo, bin_dir=wl_bin)
-                check(f"{who} snapshot: an unreadable worktree listing still succeeds",
-                      r["rc"] == 0 and "snapshot cleanup failed" not in r["err"],
-                      f"rc={r['rc']} err={r['err']}")
-                check(f"{who} snapshot: and the snapshot is still removed THROUGH git",
-                      wl_wt > 0 and worktree_count(wl_repo) == wl_wt,
-                      f"{worktree_count(wl_repo)} != {wl_wt}")
-
-                # (Z2) an effective brief that cannot be written refuses before
-                # the paid call — a reviewer must never get the contract
-                # without the snapshot note.
-                eb_repo = dirty_snap_repo(f"repo-snap-brief-{who}")
-                eb_bin = os.path.join(runner_tmp, f"bin-snap-brief-{who}")
-                eb_blocker = os.path.join(runner_tmp, f"effective-is-a-dir-{who}")
-                make_mktemp_stub(eb_bin, [("_effective.XXXXXX.md", eb_blocker)])
-                r = snap_run(f"snap-brief-{who}", eb_repo, bin_dir=eb_bin)
-                check(f"{who} snapshot: an unwritable effective brief -> exit 2, zero calls",
-                      r["rc"] == 2
-                      and "snapshot unavailable: cannot write the effective brief" in r["err"]
-                      and len(r["calls"]) == 0, f"rc={r['rc']} err={r['err']}")
-
-                # (Z3a) a brief whose FILE NAME ends in a newline must resolve
-                # to itself — $(cat)/$() would have eaten the newline.
-                nl_brief = os.path.join(runner_tmp, f"nl-brief-{who}.md\n")
-                write_file(nl_brief, "Newline-named brief body.\n")
-                nlb_repo = dirty_snap_repo(f"repo-snap-nlbrief-{who}")
-                nlb_bin = os.path.join(runner_tmp, f"bin-snap-nlbrief-{who}")
-                nlb_cap = os.path.join(runner_tmp, f"cap-snap-nlbrief-{who}")
-                make_stub(nlb_bin, snap_cli, nlb_cap)
-                rc, out, err = run_script(
-                    snap_script,
-                    ["--snapshot", "-o", os.path.join(runner_tmp, f"nl-brief-{who}.reply.md"),
-                     nl_brief],
-                    {"PATH": nlb_bin + os.pathsep + os.environ.get("PATH", "")},
-                    cwd=nlb_repo)
-                nlb_calls = read_calls(nlb_cap)
-                check(f"{who} snapshot: a brief NAMED with a trailing newline is read losslessly",
-                      rc == 0 and bool(nlb_calls)
-                      and "Newline-named brief body." in nlb_calls[0][1],
-                      f"rc={rc} err={err} calls={nlb_calls[:1]}")
-
-                # (Z3b) a repository root that ENDS in a newline survives
-                # preflight AND cleanup (the cleanup runs `git -C ORIG`).
-                nlw_repo = dirty_snap_repo(f"repo-snap-nlwd-{who}\n")
-                nlw_wt = worktree_count(nlw_repo)
-                r = snap_run(f"snap-nlwd-{who}", nlw_repo)
-                check(f"{who} snapshot: a working directory ending in a newline captures",
-                      r["rc"] == 0 and "+dirty(4,2)" in r["out"],
-                      f"rc={r['rc']} out={r['out']} err={r['err']}")
-                check(f"{who} snapshot: and its snapshot is removed through that same root",
-                      nlw_wt > 0 and worktree_count(nlw_repo) == nlw_wt,
-                      f"{worktree_count(nlw_repo)} != {nlw_wt}")
-
-                # (Z4) -o x.log: the derived log must not devour the reply.
-                alias_repo = dirty_snap_repo(f"repo-snap-alias-{who}")
-                alias_out = os.path.join(runner_tmp, f"alias-{who}.log")
-                write_file(alias_out, "PREVIOUS REPLY\n")
-                alias_bin = os.path.join(runner_tmp, f"bin-snap-alias-{who}")
-                alias_cap = os.path.join(runner_tmp, f"cap-snap-alias-{who}")
-                make_snapshot_git_stub(alias_bin, "apply")
-                make_stub(alias_bin, snap_cli, alias_cap)
-                rc, out, err = run_script(
-                    snap_script, ["--snapshot", "-o", alias_out,
-                                  brief_file(f"snap-alias-{who}-brief.md")],
-                    {"PATH": alias_bin + os.pathsep + os.environ.get("PATH", "")},
-                    cwd=alias_repo)
-                check(f"{who} -o x.log: a capture refusal leaves the previous reply intact",
-                      rc == 2 and open(alias_out).read() == "PREVIOUS REPLY\n",
-                      f"rc={rc} content={open(alias_out).read()!r} err={err}")
-                alias_bin2 = os.path.join(runner_tmp, f"bin-snap-alias2-{who}")
-                alias_cap2 = os.path.join(runner_tmp, f"cap-snap-alias2-{who}")
-                make_stub(alias_bin2, snap_cli, alias_cap2)
-                rc, out, err = run_script(
-                    snap_script, ["--snapshot", "-o", alias_out,
-                                  brief_file(f"snap-alias2-{who}-brief.md")],
-                    {"PATH": alias_bin2 + os.pathsep + os.environ.get("PATH", "")},
-                    cwd=alias_repo)
-                check(f"{who} -o x.log: the reply lands in x.log and the log in x.log.log",
-                      rc == 0 and "STUB-REPLY-OK-1" in open(alias_out).read()
-                      and os.path.isfile(alias_out + ".log")
-                      and "# snapshot HEAD: " in open(alias_out + ".log").read(),
-                      f"rc={rc} reply={open(alias_out).read()!r} err={err}")
-
-                # (Z6) the copy/hash race itself. The shell cannot reach the
-                # window between shutil.copy2 and the destination hash, so the
-                # fixture runs the runner's OWN capture helper — the shipped
-                # scripts/lib/snapshot.py, under runpy — with a copy that
-                # loses the race.
-                helper_path = capture_helper_path(snap_script)
-                helper_src = (open(helper_path, encoding="utf-8").read()
-                              if helper_path else "")
-                check(f"{who} snapshot: the capture helper source is extractable",
-                      bool(helper_src) and "untracked file changed during capture" in helper_src,
-                      len(helper_src))
-                if helper_src:
-                    race_repo = dirty_snap_repo(f"repo-snap-race-{who}")
-                    race_sha = subprocess.run(["git", "-C", race_repo, "rev-parse", "HEAD"],
-                                              capture_output=True, text=True).stdout.strip()
-                    driver_path = write_file(os.path.join(runner_tmp, f"race-driver-{who}.py"),
-                                             RACE_DRIVER)
-                    race_meta = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-meta-{who}-")
-                    race_snap = tempfile.mkdtemp(dir=runner_tmp, prefix=f"race-snap-{who}-")
-                    rp = subprocess.run(
-                        [sys.executable, driver_path, helper_path, "build", race_repo,
-                         race_sha, race_snap, race_meta],
-                        capture_output=True, text=True, timeout=120)
-                    race_refuse = os.path.join(race_meta, "refuse")
-                    race_reason = open(race_refuse).read() if os.path.isfile(race_refuse) else ""
-                    check(f"{who} snapshot: a file that changes between hash and copy is refused",
-                          rp.returncode == 3
-                          and "untracked file changed during capture" in race_reason,
-                          f"rc={rp.returncode} reason={race_reason!r} stderr={rp.stderr}")
-                    subprocess.run(["git", "-C", race_repo, "worktree", "remove",
-                                    "--force", race_snap], capture_output=True)
+                    script, ["--snapshot", rs_brief],
+                    {"PATH": rs_bin + os.pathsep + os.environ.get("PATH", "")})
+                check(f"{who} --snapshot (removed in 2.22): exit 2 with the unknown-option line",
+                      rc == 2 and err.strip() == "unknown option: --snapshot",
+                      f"rc={rc} out={out} err={err}")
+                check(f"{who} --snapshot: the CLI is never invoked and nothing is written",
+                      read_calls(rs_cap) == [] and sorted(os.listdir(rs_dir)) == ["brief.md"],
+                      f"calls={read_calls(rs_cap)} left={sorted(os.listdir(rs_dir))}")
+                rc, out, err = run_script(script, ["--help"], {})
+                check(f"{who} --help: the usage names the 2.22 --snapshot removal and its replacement",
+                      rc == 0 and "--snapshot: removed in 2.22 — review the live working copy" in out
+                      and "[--snapshot]" not in out, out)
 
             # ---- (A3) non-git precondition: refuse BEFORE the paid call ----
             # A consult whose no-edit contract can never be verified used to
@@ -4828,7 +3939,7 @@ runpy.run_path(helper, run_name="__main__")
                 lm_tree = os.path.realpath(os.path.join(runner_tmp, f"libmissing-{who}"))
                 shutil.copytree(SCRIPTS, lm_tree,
                                 ignore=shutil.ignore_patterns("__pycache__"))
-                lm_gone = os.path.join(lm_tree, "lib", "snapshot.py")
+                lm_gone = os.path.join(lm_tree, "lib", "detect.py")
                 os.rename(lm_gone, lm_gone + ".moved")
                 lm_bin = os.path.join(runner_tmp, f"bin-libmissing-{who}")
                 lm_cap = os.path.join(runner_tmp, f"cap-libmissing-{who}")
@@ -4848,11 +3959,8 @@ runpy.run_path(helper, run_name="__main__")
                       sorted(os.listdir(lm_dir)))
 
             # ---- (2.13) $HJW_LIB is ABSOLUTE and PHYSICAL, with no realpath ----
-            # $0 is the only anchor the runner has, and $HJW_LIB is used again
-            # AFTER the process chdirs — into the snapshot for the reviewer
-            # call, and back to $ORIG during cleanup — so a relative value
-            # would be looked up wherever the runner happened to land, and an
-            # unresolved symlink would look for `lib/` beside the LINK. This
+            # $0 is the only anchor the runner has: an unresolved symlink
+            # would look for `lib/` beside the LINK. This
             # PATH deliberately omits realpath: the python3 resolver is what
             # is under test.
             for who, cli in (("codex", "codex"), ("claude", "claude")):
@@ -4867,7 +3975,6 @@ runpy.run_path(helper, run_name="__main__")
                                check=True, capture_output=True)
                 subprocess.run(["git", "-C", nr_repo, "commit", "-q", "-m", "scripts"],
                                check=True, capture_output=True)
-                nr_wt = worktree_count(nr_repo)
                 nr_out = os.path.join(runner_tmp, f"norealpath-{who}.reply.md")
                 nr_brief = brief_file(f"norealpath-{who}-brief.md")
                 for i, (tag, rel, cwd, extra) in enumerate((
@@ -4876,9 +3983,7 @@ runpy.run_path(helper, run_name="__main__")
                         ("relative from a subdirectory",
                          f"../../haejwo/scripts/{who}_consult.sh",
                          os.path.join(nr_repo, "sub", "dir"), []),
-                        ("through a symlink", f"./link-{who}.sh", nr_repo, []),
-                        ("--snapshot (chdir + cleanup)",
-                         f"./haejwo/scripts/{who}_consult.sh", nr_repo, ["--snapshot"]))):
+                        ("through a symlink", f"./link-{who}.sh", nr_repo, []))):
                     # hermetic per invocation: fresh symlink farm, fresh capture
                     nr_cap = os.path.join(runner_tmp, f"cap-norealpath-{who}-{i}")
                     nr_bin = make_minimal_bin(f"bin-norealpath-{who}-{i}", nr_cap,
@@ -4892,9 +3997,6 @@ runpy.run_path(helper, run_name="__main__")
                     check(f"{who} no-realpath PATH, {tag}: the run succeeds",
                           rc == 0 and "STUB-REPLY-OK-1" in out,
                           f"rc={rc} out={out} err={err}")
-                check(f"{who} no-realpath PATH: the snapshot left no worktree behind",
-                      nr_wt > 0 and worktree_count(nr_repo) == nr_wt,
-                      f"{worktree_count(nr_repo)} != {nr_wt}")
 
             # ---- runner POSTCONDITIONS: what a finished run must have left on
             # disk, and what it must not have. Every check below is an explicit
@@ -4906,16 +4008,14 @@ runpy.run_path(helper, run_name="__main__")
 
             # The temp names a RUNNER allocates. `<kind>_brief.*` is the stdin
             # brief, `<kind>_effective.*` the contract+brief it actually feeds
-            # the reviewer, `<kind>_snap.*` the change-detection metadata, and
-            # `hjw_snap*` the capture worktree and its scratch dir. They are
+            # the reviewer, and `<kind>_snap.*` the change-detection metadata. They are
             # named here for the READER only: the postconditions below match the
             # WHOLE surviving set, never a list of prefixes, so a leftover under
             # a name nobody anticipated fails them just the same.
 
             for who, script, cli in (("codex", codex_script, "codex"),
                                      ("claude", claude_script, "claude")):
-                # (1) a FILE brief with an explicit -o, under --snapshot (the
-                # path that allocates the most temp state), in a TMPDIR of its
+                # (1) a FILE brief with an explicit -o, in a TMPDIR of its
                 # own so the postcondition can name every survivor.
                 pc_tmp = os.path.join(runner_tmp, f"pc-tmp-{who}")
                 pc_out_dir = os.path.join(runner_tmp, f"pc-out-{who}")
@@ -4925,10 +4025,9 @@ runpy.run_path(helper, run_name="__main__")
                 pc_cap = os.path.join(runner_tmp, f"cap-pc-{who}")
                 make_stub(pc_bin, cli, pc_cap)
                 pc_out = os.path.join(pc_out_dir, "reply.md")
-                pc_repo = dirty_snap_repo(f"repo-pc-{who}")
-                pc_wt = worktree_count(pc_repo)
+                pc_repo = make_repo_committed(f"repo-pc-{who}")
                 rc, out, err = run_script(
-                    script, ["--snapshot", "-o", pc_out,
+                    script, ["-o", pc_out,
                              brief_file(f"pc-{who}-brief.md")],
                     {"PATH": pc_bin + os.pathsep + os.environ.get("PATH", ""),
                      "TMPDIR": pc_tmp}, cwd=pc_repo)
@@ -4936,8 +4035,8 @@ runpy.run_path(helper, run_name="__main__")
                       rc == 0 and "STUB-REPLY-OK-1" in out, f"rc={rc} err={err}")
                 left = sorted(os.listdir(pc_tmp))
                 check(f"{who} postconditions: the run's own dedicated $TMPDIR is "
-                      "EMPTY — no effective brief, no detection metadata, no "
-                      "capture worktree, and nothing under any other name either",
+                      "EMPTY — no effective brief, no detection metadata, and "
+                      "nothing under any other name either",
                       left == [], f"survivors: {left}")
                 pc_log = os.path.join(pc_out_dir, "reply.log")
                 pc_events = os.path.join(pc_out_dir, "reply.events.jsonl")
@@ -4957,7 +4056,7 @@ runpy.run_path(helper, run_name="__main__")
                       "with the runner's own record in it",
                       os.path.realpath(pc_log) != os.path.realpath(pc_out)
                       and os.stat(pc_log).st_ino != os.stat(pc_out).st_ino
-                      and "# snapshot HEAD: " in open(pc_log).read()
+                      and f"# {who}_consult " in open(pc_log).read()
                       and "STUB-REPLY-OK-1" not in open(pc_log).read(),
                       f"log={open(pc_log).read()[:200]!r}")
                 if who == "codex":
@@ -4968,10 +4067,6 @@ runpy.run_path(helper, run_name="__main__")
                           (os.stat(pc_out).st_ino, os.stat(pc_log).st_ino)
                           and '"type":"turn.completed"' in open(pc_events).read(),
                           sorted(os.listdir(pc_out_dir)))
-                check(f"{who} postconditions: the capture worktree is gone from git's "
-                      "own bookkeeping too",
-                      pc_wt > 0 and worktree_count(pc_repo) == pc_wt,
-                      f"{worktree_count(pc_repo)} != {pc_wt}")
 
                 # (2) a STDIN brief: the runner materializes the brief itself,
                 # so its artifacts are DERIVED from that temp name and land in
@@ -5077,92 +4172,6 @@ runpy.run_path(helper, run_name="__main__")
                       and sorted(os.listdir(nl_dir)) == ["brief.md"],
                       f"calls={read_calls(nl_cap)} left={sorted(os.listdir(nl_dir))}")
 
-            # ---- a cleanup failure is observable on EVERY exit path, because
-            # the removal is attempted — and reported — before the temp inputs
-            # go, on a FAILED and on a REFUSED exit alike, not only after a
-            # successful review. Observed through the exit code, stderr and the
-            # runner's own log. ----
-            def two_fault_git(bin_dir):
-                """git that fails BOTH the patch replay (so the capture REFUSES
-                after `worktree add`) and `worktree remove` (so cleaning that
-                half-built snapshot up fails too) — the only way to reach a
-                REFUSAL whose cleanup also failed."""
-                os.makedirs(bin_dir, exist_ok=True)
-                real_git = shutil.which("git")
-                path = os.path.join(bin_dir, "git")
-                with open(path, "w") as f:
-                    f.write("#!/usr/bin/env bash\n"
-                            "wt=0; rmv=0\n"
-                            'for a in "$@"; do\n'
-                            '  if [ "$a" = "apply" ]; then\n'
-                            '    echo "fatal: stubbed git apply failure" >&2; exit 1\n'
-                            "  fi\n"
-                            '  [ "$a" = "worktree" ] && wt=1\n'
-                            '  [ "$a" = "remove" ] && rmv=1\n'
-                            "done\n"
-                            'if [ "$wt" = 1 ] && [ "$rmv" = 1 ]; then\n'
-                            '  echo "fatal: stubbed worktree remove failure" >&2; exit 1\n'
-                            "fi\n"
-                            f'exec {real_git} "$@"\n')
-                os.chmod(path, 0o755)
-
-            def leaked_cleanup(err_text):
-                for line in err_text.splitlines():
-                    if line.startswith("snapshot cleanup failed: "):
-                        shutil.rmtree(line[len("snapshot cleanup failed: "):].strip(),
-                                      ignore_errors=True)
-
-            # (a) a FAILED review whose worktree removal also fails: BOTH the
-            # review's own failure and the leftover must be reported.
-            cfr_repo = dirty_snap_repo("repo-cleanup-failed-run")
-            cfr_bin = os.path.join(runner_tmp, "bin-cleanup-failed-run")
-            cfr_cap = os.path.join(runner_tmp, "cap-cleanup-failed-run")
-            make_snapshot_git_stub(cfr_bin, "worktree-remove")
-            make_stub(cfr_bin, "codex", cfr_cap)
-            cfr_out = os.path.join(runner_tmp, "cleanup-failed-run.reply.md")
-            rc, out, err = run_script(
-                codex_script, ["--snapshot", "-o", cfr_out,
-                               brief_file("cleanup-failed-run-brief.md")],
-                {"PATH": cfr_bin + os.pathsep + os.environ.get("PATH", ""),
-                 "STUB_TOUCH_FILE": "reviewer-wrote-this.txt"}, cwd=cfr_repo)
-            check("cleanup failure on a FAILED review: non-zero exit, and the review's "
-                  "OWN failure is still reported",
-                  rc != 0 and "repository changed during the run" in err
-                  and "reviewer-wrote-this.txt" in err, f"rc={rc} err={err}")
-            check("cleanup failure on a FAILED review: the leftover worktree is reported "
-                  "too — a failed run never swallows it",
-                  "snapshot cleanup failed: " in err, err)
-            leaked_cleanup(err)
-
-            # (b) a REFUSAL after a half-built snapshot whose removal also
-            # fails: the refusal reason AND the leftover, with zero paid calls.
-            cfx_repo = dirty_snap_repo("repo-cleanup-failed-refusal")
-            cfx_bin = os.path.join(runner_tmp, "bin-cleanup-failed-refusal")
-            cfx_cap = os.path.join(runner_tmp, "cap-cleanup-failed-refusal")
-            two_fault_git(cfx_bin)
-            make_stub(cfx_bin, "codex", cfx_cap)
-            cfx_out = os.path.join(runner_tmp, "cleanup-failed-refusal.reply.md")
-            rc, out, err = run_script(
-                codex_script, ["--snapshot", "-o", cfx_out,
-                               brief_file("cleanup-failed-refusal-brief.md")],
-                {"PATH": cfx_bin + os.pathsep + os.environ.get("PATH", "")}, cwd=cfx_repo)
-            cfx_log = cfx_out[:-len(".md")] + ".log"
-            check("cleanup failure on a REFUSAL: exit 2 with the refusal's own reason "
-                  "and ZERO reviewer calls",
-                  rc == 2 and read_calls(cfx_cap) == []
-                  and "snapshot unavailable: cannot replay the working-tree patch" in err,
-                  f"rc={rc} calls={read_calls(cfx_cap)} err={err}")
-            check("cleanup failure on a REFUSAL: the leftover worktree is reported as "
-                  "well — a refusal is not an excuse to stay quiet",
-                  "snapshot cleanup failed: " in err, err)
-            check("cleanup failure on a REFUSAL: the reason reaches the log too, for a "
-                  "caller who keeps only $LOG",
-                  os.path.isfile(cfx_log)
-                  and "# ---- snapshot unavailable: cannot replay the working-tree patch"
-                  in open(cfx_log).read(),
-                  open(cfx_log).read()[-400:] if os.path.isfile(cfx_log) else "<no log>")
-            leaked_cleanup(err)
-
             # ==== (2.18) a runner invoked from a STALE cache path forwards
             # itself to the INSTALLED version. FIELD DEFECT 2026-09-28: a
             # session started on 2.16.1, 2.17.0 was installed while it was
@@ -5195,7 +4204,7 @@ runpy.run_path(helper, run_name="__main__")
                   "entrypoints' pre-source checks name the SAME helpers — the "
                   "entrypoints cannot read the list from a file they are still "
                   "checking for, so a test keeps the three in sync",
-                  len(fw_required) >= 6
+                  len(fw_required) >= 5
                   and fw_entry_lists["codex"] == fw_required
                   and fw_entry_lists["claude"] == fw_required,
                   f"forward.py={fw_required} codex={fw_entry_lists['codex']} "
@@ -5687,6 +4696,89 @@ runpy.run_path(helper, run_name="__main__")
                       "plugin=2.18.0" in fw_log_for(t12_brief),
                       fw_log_for(t12_brief)[:200])
 
+            # ---- (t14, 2.22) OLD FORWARDER -> NEW INSTALL. The 2.18-2.21
+            # forward.py requires lib/snapshot.py of every destination; 2.22
+            # ships it only as a tombstone so those runners still forward
+            # here. The stale side is the ACTUAL v2.21.0 scripts, read out of
+            # git history — a relabeled copy of today's would prove nothing. ----
+            t14_commit = "v2.21.0"
+            t14_ls = subprocess.run(
+                ["git", "ls-tree", "-r", "--name-only", t14_commit, "--",
+                 "haejwo/scripts"],
+                cwd=os.path.dirname(HERE), capture_output=True, text=True)
+            t14_files = t14_ls.stdout.split() if t14_ls.returncode == 0 else []
+            if not t14_files:
+                print(f"  SKIP t14 old forwarder: {t14_commit} is not in this clone")
+                check("forwarding/t14: the old-forwarder fixture RUNS under CI "
+                      "(full-history checkout)", not os.environ.get("CI"),
+                      f"{t14_commit} unreachable in a CI checkout")
+            else:
+                def t14_install(case, tombstone=True):
+                    plugins = fw_install(case, ["9.9.0"])
+                    root = fw_dir(plugins, "2.21.0")
+                    for rel in t14_files:
+                        if "__pycache__" in rel:
+                            continue
+                        blob = subprocess.run(["git", "show", f"{t14_commit}:{rel}"],
+                                              cwd=os.path.dirname(HERE),
+                                              capture_output=True)
+                        dest = os.path.join(root, os.path.relpath(rel, "haejwo"))
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        with open(dest, "wb") as f:
+                            f.write(blob.stdout)
+                        os.chmod(dest, 0o755)
+                    fw_manifest(root, "2.21.0")
+                    if not tombstone:
+                        os.remove(os.path.join(fw_dir(plugins, "9.9.0"), "scripts",
+                                               "lib", "snapshot.py"))
+                    fw_reg_entries(plugins, [fw_entry(plugins, "9.9.0")])
+                    return plugins
+
+                t14_plugins = t14_install("t14-oldfwd")
+                t14_old_req = fw_named_list(
+                    os.path.join(fw_dir(t14_plugins, "2.21.0"), "scripts", "lib",
+                                 "forward.py"),
+                    r"REQUIRED_LIB = \(([^)]*)\)", r'"([^"]+)"')
+                check("t14 old forwarder: the fixture really IS 2.21's forward.py — it "
+                      "requires snapshot.py of a destination, today's does not",
+                      "snapshot.py" in t14_old_req and "snapshot.py" not in fw_required,
+                      f"old={t14_old_req} new={fw_required}")
+                t14_tomb = subprocess.run(
+                    [sys.executable, os.path.join(SCRIPTS, "lib", "snapshot.py")],
+                    capture_output=True, text=True)
+                check("t14 tombstone: lib/snapshot.py exits 2 with one sentence and "
+                      "does nothing else",
+                      t14_tomb.returncode == 2 and t14_tomb.stdout == ""
+                      and t14_tomb.stderr.strip()
+                      == "snapshot review was removed in 2.22; review the live working copy",
+                      f"rc={t14_tomb.returncode} err={t14_tomb.stderr!r}")
+                for who in ("codex", "claude"):
+                    t14_brief = brief_file(f"fw-t14-{who}.md")
+                    rc, out, err, cap = fw_run(
+                        f"t14-{who}", fw_script(t14_plugins, "2.21.0", who), who,
+                        args=[t14_brief])
+                    hops = fw_hops(err)
+                    check(f"t14 {who} old forwarder: a 2.21.0 runner forwards to the new "
+                          "install carrying the tombstone, and the new install ran",
+                          rc == 0 and len(hops) == 1
+                          and "runner 2.21.0 is stale — forwarding to 9.9.0" in hops[0]
+                          and len(read_calls(cap)) == 1
+                          and "plugin=9.9.0" in fw_log_for(t14_brief)
+                          and fw_marker_gone(cap),
+                          f"rc={rc} hops={hops} calls={len(read_calls(cap))} "
+                          f"log={fw_log_for(t14_brief)[:200]}")
+                # Control: WITHOUT the tombstone the old forwarder judges the
+                # new install incomplete and runs as invoked — the tombstone is
+                # what keeps 2.18-2.21 sessions forwarding.
+                t14n_plugins = t14_install("t14-notomb", tombstone=False)
+                rc, out, err, cap, t14n_brief = fw_no_forward(
+                    "t14", "a 2.21.0 forwarder facing a destination WITHOUT the "
+                    "tombstone", "t14-notomb",
+                    fw_script(t14n_plugins, "2.21.0", "codex"), "codex")
+                check("t14 control: without the tombstone it is 2.21.0 that ran",
+                      "plugin=2.21.0" in fw_log_for(t14n_brief),
+                      fw_log_for(t14n_brief)[:200])
+
             # ---- (t13, 2.21) the artifact guard HOLDS ACROSS A HOP. The
             # registry may select an OLDER install (t2: downgrades are
             # followed), and a pre-2.21 runner has no artifact guard — so the
@@ -5782,65 +4874,31 @@ runpy.run_path(helper, run_name="__main__")
                       t13_off == 0 and not os.listdir(t13_tmpdir),
                       f"offset={t13_off} tmpdir={os.listdir(t13_tmpdir)}")
 
-                # (3b, confirmation G1) `--snapshot -` with NO `-o`: the reply
-                # and log derive from the temp brief and are canonicalized on
-                # the other side. With <scratch>/repolink -> <repo> and
-                # <repo>/outlink -> <scratch>/safe/deep, TMPDIR=
-                # <scratch>/repolink/outlink/.. is outside lexically and
-                # resolved, yet canonicalizes into the repo — so the hop is
-                # refused before the exec, and before stdin is read.
-                t13_g1 = tempfile.mkdtemp(dir=runner_tmp, prefix=f"t13-{who}-g1-")
-                t13_g1_safe = os.path.join(t13_g1, "safe")
-                os.makedirs(os.path.join(t13_g1_safe, "deep"))
-                os.symlink(repo_dir, os.path.join(t13_g1, "repolink"))
-                t13_outlink = os.path.join(repo_dir, f"t13-{who}-outlink")
-                os.symlink(os.path.join(t13_g1_safe, "deep"), t13_outlink)
-                try:
-                    t13_g1_env = dict(t13_env)
-                    t13_g1_env["TMPDIR"] = os.path.join(
-                        t13_g1, "repolink", f"t13-{who}-outlink", "..")
-                    with open(t13_stdin, "rb") as t13_in_f:
-                        p = subprocess.run(["bash", t13_self, "--snapshot", "-"],
-                                           stdin=t13_in_f, capture_output=True, text=True,
-                                           timeout=60, cwd=repo_dir, env=t13_g1_env)
-                        t13_off = os.lseek(t13_in_f.fileno(), 0, os.SEEK_CUR)
-                    t13_lines = p.stderr.strip().splitlines()
-                    check(f"t13 {who} hop guard: `--snapshot -` without `-o`, TMPDIR "
-                          "canonicalizing into the repo with an OLDER guardless target -> "
-                          "exit 2, one refusal line, never forwarded (no marker, no "
-                          "reviewer call), stdin unread, no temp brief",
-                          p.returncode == 2 and len(t13_lines) == 1
-                          and "artifact directory is inside the reviewed repository" in t13_lines[0]
-                          and os.path.realpath(repo_dir) in t13_lines[0]
-                          and not fw_hops(p.stderr) and not os.path.exists(t13_marker)
-                          and "GUARDLESS-TARGET-RAN" not in p.stdout
-                          and not (os.path.isdir(t13_cap) and os.listdir(t13_cap))
-                          and t13_off == 0
-                          and os.listdir(t13_g1_safe) == ["deep"]
-                          and not os.listdir(os.path.join(t13_g1_safe, "deep")),
-                          f"rc={p.returncode} marker={os.path.exists(t13_marker)} "
-                          f"offset={t13_off} err={p.stderr}")
-                    # ... while a NAMED outside brief with an outside `-o` under
-                    # the same TMPDIR derives nothing canonicalized from it: the
-                    # hop proceeds exactly as before.
-                    rc, out, err, cap = fw_run(
-                        f"t13-{who}-g1-named", t13_self, who,
-                        args=["--snapshot", "-o",
-                              os.path.join(runner_tmp, f"t13-{who}-g1-named.md"),
-                              brief_file(f"fw-t13-{who}-g1-named.md")],
-                        cwd=repo_dir, env_extra={"TMPDIR": t13_g1_env["TMPDIR"]})
-                    hops = fw_hops(err)
-                    check(f"t13 {who} hop guard: `--snapshot` with a named outside brief and "
-                          "outside `-o` under that TMPDIR -> forwarded as before (one hop "
-                          "line, the target ran)",
-                          rc == 0 and len(hops) == 1
-                          and "runner 9.9.0 is stale — forwarding to 9.8.0" in hops[0]
-                          and os.path.exists(t13_marker) and "GUARDLESS-TARGET-RAN" in out,
-                          f"rc={rc} hops={hops} out={out} err={err}")
-                finally:
-                    os.remove(t13_outlink)
-                    if os.path.exists(t13_marker):
-                        os.remove(t13_marker)
+                # (3c, 2.22 downgrade regression) the 2.22 codex runner no longer
+                # writes `.events.2.jsonl` or `$OUT.tmp`, but the OLDER target a
+                # hop reaches still does — so an `-o` whose legacy sibling is a
+                # pre-existing symlink INTO the repo is refused before the exec.
+                if who == "codex":
+                    t13_tracked = write_file(os.path.join(repo_dir, "t13-tracked.txt"),
+                                             "tracked bytes\n")
+                    for leg, sib in (("events2", ".events.2.jsonl"), ("outtmp", ".tmp")):
+                        t13_lo = os.path.join(runner_tmp, f"t13-legacy-{leg}.md")
+                        t13_sib = (t13_lo + sib if sib == ".tmp"
+                                   else os.path.splitext(t13_lo)[0] + sib)
+                        os.symlink(t13_tracked, t13_sib)
+                        try:
+                            rc, out, err, cap = fw_run(
+                                f"t13-codex-legacy-{leg}", t13_self, who,
+                                args=["-o", t13_lo, brief_file(f"fw-t13-legacy-{leg}.md")])
+                            check(f"t13 codex hop guard (2.22 downgrade): a legacy `{sib}` "
+                                  "sibling symlinked into the repo, with an OLDER guardless "
+                                  "target -> refused before the exec, bytes unchanged",
+                                  t13_refused(rc, out, err, cap) and t13_sib in err
+                                  and open(t13_tracked).read() == "tracked bytes\n",
+                                  f"rc={rc} marker={os.path.exists(t13_marker)} err={err}")
+                        finally:
+                            os.remove(t13_sib)
+                    os.remove(t13_tracked)
 
                 # (4) `-o` OUTSIDE the repository: forwarded exactly as before.
                 rc, out, err, cap = fw_run(

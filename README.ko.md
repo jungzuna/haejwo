@@ -80,7 +80,7 @@ haejwo를 하네스가 아니라 그 위의 윤활층으로 붙들어 두는 경
 
 ## 검증
 
-`python3 tests/test_hooks.py` — 외부 의존성 없는(stdlib만) 계약 테스트 스위트: 게이트 카운팅과 deny 문구, 동시성, bash-guard, codex `apply_patch`, 턴 리셋, 매니페스트 동기화, 미러 드리프트, 규칙 캐너리. 커밋은 **파이프를 타지 않은** 종료 코드로 판정하세요. push마다 CI가 돌립니다.
+`python3 tests/test_hooks.py` — Python은 표준 라이브러리만 쓰지만 bash, git, Unix 호스트가 필요한 계약 테스트 스위트(한 테스트는 이 저장소의 git 이력이 필요): 게이트 카운팅과 deny 문구, 동시성, bash-guard, codex `apply_patch`, 턴 리셋, 매니페스트 동기화, 미러 드리프트, 규칙 캐너리. 커밋은 **파이프를 타지 않은** 종료 코드로 판정하세요. push마다 CI가 돌립니다.
 
 변경 내역은 [Releases](https://github.com/jungzuna/haejwo/releases), 전체 버전은 [tags](https://github.com/jungzuna/haejwo/tags)에서 확인하세요.
 

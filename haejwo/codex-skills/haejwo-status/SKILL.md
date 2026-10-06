@@ -4,7 +4,8 @@ description: Show haejwo's full status (read-only) — config, this turn's edit 
 ---
 
 <!-- MIRROR of commands/status.md for the Codex host — do not edit by hand;
-     edit commands/status.md and regenerate. Drift is canary-tested. -->
+     edit commands/status.md and run `python3 tests/mirrors.py --write`.
+     Drift is canary-tested. -->
 
 
 You are the **haejwo host**. Report compactly from data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted → `ls -d ~/.claude/plugins/data/*haejwo*`):

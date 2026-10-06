@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Config reading for haejwo's two reviewer runners.
 
-  values  <codex|claude> <config.json>   model / effort / fallback_model
+  values  <codex|claude> <config.json>   model / effort
   sandbox <config.json>                  codex.consult_sandbox, raw
   status  <config.json>                  ok | absent | malformed
 
 HOST-RELATIVE reading: the `codex` block describes the reviewer of the HOST
 that owns the data dir. On a CODEX host (config path under /.codex/) that
-reviewer is CLAUDE, so the codex runner IGNORES codex.model/effort/
-fallback_model there and the claude runner reads them; under /.claude/ it is
+reviewer is CLAUDE, so the codex runner IGNORES codex.model/effort
+there and the claude runner reads them; under /.claude/ it is
 the other way round. That "only under /.codex/" rule covers VENDOR paths only
 — a vendorless custom root is decided by runner kind instead (see below). The
 host is decided from the SELECTED path's TEXT, never from its canonical target
@@ -31,15 +31,16 @@ valid one. The model/effort values are whitespace-FOLDED (config values are
 tolerant); an empty ENV value counts as unset, but that trimming belongs to
 the caller.
 
-Any parse failure is "no config" — a reviewer runner never guesses. NOT read
-here: `models_codex` belongs to codex-HOST worker tiers (spawn_agent
+Any parse failure is "no config" — a reviewer runner never guesses. Unknown
+keys are skipped, so a stored `fallback_model` (retry removed in 2.22) is
+ignored silently. NOT read here: `models_codex` belongs to codex-HOST worker tiers (spawn_agent
 parameters) and never selects this reviewer.
 """
 import json
 import os
 import sys
 
-KEYS = ("model", "effort", "fallback_model")
+KEYS = ("model", "effort")
 
 
 def _codex_block(path):
@@ -64,7 +65,7 @@ def cmd_values(argv):
     wanted = is_codex_host if kind == "claude" else not is_codex_host
     if not wanted or not path or not os.path.isfile(path):
         return
-    vals = {"model": "", "effort": "", "fallback_model": ""}
+    vals = {"model": "", "effort": ""}
     ignored = []
     try:
         codex = _codex_block(path)
@@ -78,10 +79,10 @@ def cmd_values(argv):
                 else:
                     ignored.append(key)
     except Exception:
-        vals = {"model": "", "effort": "", "fallback_model": ""}
+        vals = {"model": "", "effort": ""}
         ignored = []
-    sys.stdout.write("model=%s\neffort=%s\nfallback_model=%s\nignored=%s\n"
-                     % (vals["model"], vals["effort"], vals["fallback_model"], ",".join(ignored)))
+    sys.stdout.write("model=%s\neffort=%s\nignored=%s\n"
+                     % (vals["model"], vals["effort"], ",".join(ignored)))
 
 
 def cmd_sandbox(argv):

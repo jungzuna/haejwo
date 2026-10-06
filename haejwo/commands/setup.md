@@ -10,7 +10,7 @@ You are the **haejwo host**. Configure the plugin — walk ALL steps, once per a
 ## 1. Probe the reviewer CLI (before asking)
 The reviewer is the OTHER model's CLI: Claude Code → `codex login status`; Codex → `claude --version` plus any login check. Distinguish authenticated / not logged in / not installed; missing is normal — continue.
 
-## 2. Ask (one call; follow-ups only where a choice needs one)
+## 2. Ask (one call; follow-ups only where needed)
 Claude Code: AskUserQuestion. Codex: the selection UI, else numbered chat choices.
 1. **Preset** — deep-reasoner / default-worker / task-worker. Say `Standard` runs when setup is skipped.
    - Claude Code: `Standard (default)` session model / opus (effort high) / opus (effort low); `Budget` session model / sonnet / haiku (haiku ignores effort); `Custom` per-role.
@@ -25,8 +25,8 @@ Gate, bash-guard and tier answers persist with `"configured": true` in ONE write
 
 ## 3. Reviewer enabled → verify end-to-end (consent-gated)
 Before recording `verified_at`, confirm the log header's `config=<path>` is the file setup writes.
-0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`) so the stored values are what is verified; the smoke pins `CODEX_EFFORT=low`, the repo-read probe uses the stored effort.
-1. **Self-contained smoke** — a tiny brief needing no repo access. Claude Code host:
+0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`) so stored values are verified; the smoke pins `CODEX_EFFORT=low`, the repo-read probe runs under `env -u CODEX_EFFORT` to verify the stored effort.
+1. **Self-contained smoke** — a tiny brief, no repo access. Claude Code host:
    ```
    printf 'MODE: consult\nReply with exactly: HAEJWO-OK\n' | env -u CODEX_MODEL CODEX_EFFORT=low CODEX_TIMEOUT=90 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh" --mode consult -
    ```

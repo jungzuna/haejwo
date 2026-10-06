@@ -899,19 +899,58 @@ def main():
               claude_pj["version"] == codex_pj["version"],
               f'claude={claude_pj["version"]} codex={codex_pj["version"]}')
 
-        frontmatter_re = re.compile(r"^---\n.*?\n---\n", re.S)
-        commands_dir = os.path.join(PLUGIN, "commands")
-        for fn in sorted(os.listdir(commands_dir)):
-            if not fn.endswith(".md"):
-                continue
-            name = fn[:-3]
-            cmd_text = open(os.path.join(commands_dir, fn), encoding="utf-8").read()
-            skill_path = os.path.join(PLUGIN, "codex-skills", f"haejwo-{name}", "SKILL.md")
-            skill_text = open(skill_path, encoding="utf-8").read()
-            cmd_body = " ".join(frontmatter_re.sub("", cmd_text, count=1).split())
-            skill_body = " ".join(frontmatter_re.sub("", skill_text, count=1).split())
-            check(f"mirror drift: commands/{fn} content present in codex-skills/haejwo-{name}/SKILL.md",
-                  cmd_body in skill_body)
+        # The canary and the generator share ONE comparison (tests/mirrors.py):
+        # a mirror is exact, not "the body appears somewhere in it". Never
+        # `--write` from here — a test that regenerates hides the drift.
+        import mirrors
+        mirror_problems = mirrors.drift()
+        check("mirror drift: every codex-skills mirror matches its command exactly, none missing or orphaned "
+              "(fix: python3 tests/mirrors.py --write)", mirror_problems == [], "; ".join(mirror_problems))
+        mirror_tmp = tempfile.mkdtemp(prefix="hjw-test-mirrors-")
+        try:
+            m_cmds = os.path.join(mirror_tmp, "commands")
+            m_skills = os.path.join(mirror_tmp, "codex-skills")
+            shutil.copytree(os.path.join(PLUGIN, "commands"), m_cmds)
+            shutil.copytree(os.path.join(PLUGIN, "codex-skills"), m_skills)
+            check("mirror drift: a faithful temp copy has no drift",
+                  mirrors.drift(m_cmds, m_skills) == [])
+            # Bytes, not text: a CRLF-only rewrite of a mirror is drift.
+            crlf_path = os.path.join(m_skills, "haejwo-status", "SKILL.md")
+            crlf_orig = open(crlf_path, "rb").read()
+            with open(crlf_path, "wb") as f:
+                f.write(crlf_orig.replace(b"\n", b"\r\n"))
+            check("mirror drift: a CRLF-only rewrite of a mirror is drift (compared as bytes)",
+                  any("haejwo-status" in p and p.startswith("drift:")
+                      for p in mirrors.drift(m_cmds, m_skills)))
+            with open(crlf_path, "wb") as f:
+                f.write(crlf_orig)
+            # The canary and the generator share expected_mirror(), so pin it
+            # against an INDEPENDENT golden pair: a frozen command and its
+            # byte-exact expected mirror. A generator bug cannot validate its
+            # own output here.
+            fx_dir = os.path.join(HERE, "fixtures", "mirror-gate")
+            fx_cmd = open(os.path.join(fx_dir, "command.md"), "rb").read()
+            fx_want = open(os.path.join(fx_dir, "SKILL.md"), "rb").read()
+            fx_got = mirrors.expected_mirror_bytes("gate", fx_cmd)
+            check("mirror generator: expected_mirror() reproduces the golden fixture byte for byte "
+                  "(tests/fixtures/mirror-gate)", fx_got == fx_want,
+                  f"got {len(fx_got)} bytes, want {len(fx_want)}")
+            os.makedirs(os.path.join(m_skills, "haejwo-retired"))
+            with open(os.path.join(m_skills, "haejwo-retired", "SKILL.md"), "w") as f:
+                f.write("---\nname: haejwo-retired\n---\n")
+            check("mirror drift: an ORPHAN mirror (no command) is drift",
+                  any("orphan mirror: codex-skills/haejwo-retired" in p
+                      for p in mirrors.drift(m_cmds, m_skills)))
+            shutil.rmtree(os.path.join(m_skills, "haejwo-retired"))
+            with open(os.path.join(m_skills, "haejwo-gate", "SKILL.md"), "a") as f:
+                f.write("hand edit\n")
+            os.remove(os.path.join(m_skills, "haejwo-push", "SKILL.md"))
+            got = mirrors.drift(m_cmds, m_skills)
+            check("mirror drift: a hand-edited mirror and a missing mirror are both reported",
+                  any("haejwo-gate" in p and p.startswith("drift:") for p in got)
+                  and any("haejwo-push" in p and p.startswith("missing mirror:") for p in got), str(got))
+        finally:
+            shutil.rmtree(mirror_tmp, ignore_errors=True)
 
         print("== docs canaries (effort single-source, size ratchets, retired surfaces) ==")
         repo = os.path.dirname(HERE)
@@ -1329,6 +1368,18 @@ def main():
               }, str(DEFAULT_CONFIG["models_codex"]))
         check("gate.delegation_guard defaults True",
               DEFAULT_CONFIG["gate"]["delegation_guard"] is True)
+
+        # The fallback data dir is the one Claude Code really creates
+        # (`<marketplace>-<plugin>`), not a bare `haejwo` nobody writes to.
+        import hjw_common as _hjw_common
+        _saved_data = os.environ.pop("CLAUDE_PLUGIN_DATA", None)
+        try:
+            _fallback = _hjw_common.paths(["hook"])[1]
+        finally:
+            if _saved_data is not None:
+                os.environ["CLAUDE_PLUGIN_DATA"] = _saved_data
+        check("paths(): no CLAUDE_PLUGIN_DATA and no argv -> ~/.claude/plugins/data/haejwo-haejwo",
+              _fallback == os.path.expanduser("~/.claude/plugins/data/haejwo-haejwo"), _fallback)
 
         print("== hjw_common.observe() 1-generation rotation ==")
         rot_data = tempfile.mkdtemp(prefix="hjw-test-rotate-")
@@ -2908,17 +2959,316 @@ exit "$rc"
             check("change detection: a path containing a space is named intact",
                   "note file.txt" in err, err)
 
-            artifact_repo = make_repo("repo-artifacts")
-            bin_dir = os.path.join(runner_tmp, "bin-artifacts")
-            cap = os.path.join(runner_tmp, "cap-artifacts")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(
-                codex_script,
-                ["-o", os.path.join(artifact_repo, "reply.md"), brief_file("artifact-brief.md")],
-                {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
-                cwd=artifact_repo)
-            check("change detection: runner-owned artifacts inside the repo do NOT trigger it",
-                  rc == 0, f"rc={rc} err={err}")
+            # ---- (2.21) artifact guard: no runner artifact inside the repo ----
+            # The log header truncates $LOG and `rm -f` clears $OUT (and the
+            # events), while change detection EXCLUDES every artifact by design
+            # — so before 2.21 a typo in `-o` naming a project file overwrote
+            # it silently. Every artifact path is now refused before the first
+            # write: exit 2, one line, no paid call, no file touched.
+            ag_root = tempfile.mkdtemp(dir=runner_tmp, prefix="artguard-")
+            ag_repo = make_repo("repo", base=ag_root)
+            ag_tracked = write_file(os.path.join(ag_repo, "tracked.md"), "committed content\n")
+            write_file(os.path.join(ag_repo, "sub", "keep.md"), "sub\n")
+            subprocess.run(["git", "-C", ag_repo, "add", "-A"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", ag_repo, "commit", "-q", "-m", "seed"],
+                           check=True, capture_output=True)
+            ag_tracked_bytes = open(ag_tracked, "rb").read()
+            ag_out = os.path.join(ag_root, "outside")
+            os.makedirs(ag_out, exist_ok=True)
+            ag_brief = write_file(os.path.join(ag_out, "brief.md"), "Test brief body.\n")
+            # outside -> INTO the repo (a directory link, so the reply is new)
+            os.symlink(ag_repo, os.path.join(ag_out, "into-repo"))
+            # inside the repo -> OUTSIDE (the lexical path is what is inside)
+            os.symlink(os.path.join(ag_out, "target.md"), os.path.join(ag_repo, "out-link.md"))
+            # an outside artifact hard-linked to a second outside name
+            ag_hard = write_file(os.path.join(ag_out, "hard.md"), "old reply\n")
+            os.link(ag_hard, os.path.join(ag_out, "hard-twin.md"))
+            ag_wt = os.path.join(ag_root, "linked-wt")
+            subprocess.run(["git", "-C", ag_repo, "worktree", "add", "-q", "--detach", ag_wt],
+                           check=True, capture_output=True)
+            ag_nongit = os.path.join(ag_root, "nongit")
+            os.makedirs(ag_nongit, exist_ok=True)
+
+            def ag_run(who, slug, args, cwd):
+                bin_dir = os.path.join(ag_root, f"bin-{who}-{slug}")
+                cap = os.path.join(ag_root, f"cap-{who}-{slug}")
+                make_stub(bin_dir, who, cap)
+                rc, out, err = run_script(codex_script if who == "codex" else claude_script,
+                                          args, {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
+                                          cwd=cwd)
+                # `called`: a real reviewer call was recorded. `traced`: the
+                # stub left ANY trace — a refusal must not even reach the
+                # `--version` probe.
+                called = os.path.isfile(os.path.join(cap, "call_1.stdin"))
+                traced = os.path.isdir(cap) and bool(os.listdir(cap))
+                return rc, out, err, (called, traced)
+
+            def ag_refused(rc, err, stub, reason="artifact path is inside the reviewed repository"):
+                lines = err.strip().splitlines()
+                return (rc == 2 and not stub[1] and len(lines) == 1 and reason in lines[0]
+                        and "pass -o with a path outside it" in lines[0])
+
+            ag_inside = "artifact path is inside the reviewed repository"
+            for who in ("codex", "claude"):
+                tag = f"artifact guard ({who})"
+                ag_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                           capture_output=True, text=True).stdout
+                rc, out, err, stub = ag_run(who, "tracked", ["-o", ag_tracked, ag_brief], ag_repo)
+                check(f"{tag}: -o on a TRACKED file -> exit 2, one refusal line, reviewer never called",
+                      ag_refused(rc, err, stub), f"rc={rc} stub={stub} err={err}")
+                check(f"{tag}: -o on a TRACKED file -> the file's bytes are unchanged",
+                      open(ag_tracked, "rb").read() == ag_tracked_bytes)
+                check(f"{tag}: -o on a TRACKED file -> no log or events created, git status unchanged",
+                      not os.path.exists(os.path.join(ag_repo, "tracked.log"))
+                      and not os.path.exists(os.path.join(ag_repo, "tracked.events.jsonl"))
+                      and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                         capture_output=True, text=True).stdout == ag_status)
+                rc, out, err, stub = ag_run(who, "untracked",
+                                              ["-o", os.path.join(ag_repo, "new-reply.md"), ag_brief],
+                                              ag_repo)
+                check(f"{tag}: -o on an untracked path inside the repo -> refused",
+                      ag_refused(rc, err, stub) and not os.path.exists(
+                          os.path.join(ag_repo, "new-reply.md")), f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "relative", ["-o", "rel-reply.md", ag_brief], ag_repo)
+                check(f"{tag}: a RELATIVE -o resolving inside the repo -> refused",
+                      ag_refused(rc, err, stub), f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "via-link",
+                                              ["-o", os.path.join(ag_out, "into-repo", "r.md"), ag_brief],
+                                              ag_repo)
+                check(f"{tag}: -o through an outside symlink pointing INTO the repo -> refused",
+                      ag_refused(rc, err, stub), f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "in-link",
+                                              ["-o", os.path.join(ag_repo, "out-link.md"), ag_brief],
+                                              ag_repo)
+                check(f"{tag}: -o on an in-repo symlink pointing OUTSIDE -> refused",
+                      ag_refused(rc, err, stub)
+                      and not os.path.exists(os.path.join(ag_out, "target.md")), f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "outside",
+                                              ["-o", os.path.join(ag_out, f"{who}-reply.md"), ag_brief],
+                                              ag_repo)
+                check(f"{tag}: -o outside the repo -> the review runs",
+                      rc == 0 and stub[0], f"rc={rc} err={err}")
+                in_brief = write_file(os.path.join(ag_repo, f"{who}-brief.md"), "Test brief body.\n")
+                rc, out, err, stub = ag_run(who, "brief-in", [in_brief], ag_repo)
+                check(f"{tag}: no -o and the brief inside the repo -> refused (default reply inside)",
+                      ag_refused(rc, err, stub) and f"{who}-brief.reply.md" in err, f"rc={rc} err={err}")
+                os.remove(in_brief)
+                rc, out, err, stub = ag_run(who, "brief-out", [ag_brief], ag_repo)
+                check(f"{tag}: no -o and the brief outside the repo -> the review runs",
+                      rc == 0 and stub[0], f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "subdir", ["-o", "../tracked.md", ag_brief],
+                                              os.path.join(ag_repo, "sub"))
+                check(f"{tag}: invoked from a SUBDIRECTORY, -o ../tracked.md -> refused, bytes unchanged",
+                      ag_refused(rc, err, stub)
+                      and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "subdir-out",
+                                              ["-o", os.path.join(ag_out, f"{who}-sub.md"), ag_brief],
+                                              os.path.join(ag_repo, "sub"))
+                check(f"{tag}: invoked from a SUBDIRECTORY, -o outside -> the review runs",
+                      rc == 0 and stub[0], f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "worktree",
+                                              ["-o", os.path.join(ag_wt, "wt-reply.md"), ag_brief], ag_wt)
+                check(f"{tag}: a LINKED worktree as cwd, -o under its top level -> refused",
+                      ag_refused(rc, err, stub), f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "hardlink", ["-o", ag_hard, ag_brief], ag_repo)
+                check(f"{tag}: an existing hard-linked outside artifact -> refused",
+                      ag_refused(rc, err, stub, "more than one hard link")
+                      and open(ag_hard).read() == "old reply\n", f"rc={rc} err={err}")
+                rc, out, err, stub = ag_run(who, "nongit",
+                                              ["-o", os.path.join(ag_out, f"{who}-ng.md"), ag_brief],
+                                              ag_nongit)
+                if who == "codex":
+                    check(f"{tag}: a non-git cwd has nothing to protect -> the review runs",
+                          rc == 0 and stub[0], f"rc={rc} err={err}")
+                else:
+                    # claude has no sandbox: its OWN non-git policy refuses —
+                    # the guard must not be the reason.
+                    check(f"{tag}: a non-git cwd passes the guard (the runner's own non-git policy decides)",
+                          rc == 2 and not stub[0] and "outside a git repo" in err
+                          and ag_inside not in err, f"rc={rc} err={err}")
+
+            # ---- (2.21 review F1) codex's fallback rewrite stages through
+            # `$OUT.tmp`, written AFTER change detection — so it is judged
+            # with the other artifacts, up front. claude has no such write.
+            f1_link_out = os.path.join(ag_out, "f1-link.md")
+            os.symlink(ag_tracked, f1_link_out + ".tmp")
+            rc, out, err, stub = ag_run("codex", "outtmp-link", ["-o", f1_link_out, ag_brief], ag_repo)
+            check("artifact guard (codex): a pre-existing $OUT.tmp symlink into the repo -> refused "
+                  "before any call, tracked bytes unchanged",
+                  ag_refused(rc, err, stub) and f1_link_out + ".tmp" in err
+                  and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} stub={stub} err={err}")
+            rc, out, err, stub = ag_run("claude", "outtmp-link", ["-o", f1_link_out, ag_brief], ag_repo)
+            check("artifact guard (claude): $OUT.tmp is codex's artifact, never claude's -> the review runs",
+                  rc == 0 and stub[0], f"rc={rc} err={err}")
+            os.remove(f1_link_out + ".tmp")
+            f1_hard_out = os.path.join(ag_out, "f1-hard.md")
+            os.link(ag_tracked, f1_hard_out + ".tmp")
+            rc, out, err, stub = ag_run("codex", "outtmp-hard", ["-o", f1_hard_out, ag_brief], ag_repo)
+            check("artifact guard (codex): a pre-existing $OUT.tmp hard link to a tracked file -> refused "
+                  "before any call",
+                  ag_refused(rc, err, stub, "more than one hard link") and f1_hard_out + ".tmp" in err
+                  and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} stub={stub} err={err}")
+            os.remove(f1_hard_out + ".tmp")
+
+            # ---- (2.21 review F2) --snapshot canonicalization is re-judged.
+            # canon_path normalizes `..` lexically and THEN resolves the
+            # parent: with scratch/repolink -> <repo> and <repo>/outlink ->
+            # safe/deep, `scratch/repolink/outlink/../r.md` resolves to
+            # safe/r.md for the first check but canonicalizes to <repo>/r.md.
+            f2_scratch = os.path.join(ag_root, "scratch")
+            f2_safe = os.path.join(ag_root, "safe")
+            os.makedirs(f2_scratch, exist_ok=True)
+            os.makedirs(os.path.join(f2_safe, "deep"), exist_ok=True)
+            os.symlink(ag_repo, os.path.join(f2_scratch, "repolink"))
+            os.symlink(os.path.join(f2_safe, "deep"), os.path.join(ag_repo, "outlink"))
+            for who in ("codex", "claude"):
+                f2_name = f"f2-{who}.md"
+                f2_o = os.path.join(f2_scratch, "repolink", "outlink", "..", f2_name)
+                f2_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                           capture_output=True, text=True).stdout
+                rc, out, err, stub = ag_run(who, "f2-snap", ["--snapshot", "-o", f2_o, ag_brief], ag_repo)
+                check(f"artifact guard ({who}): --snapshot whose canonicalized -o lands in the repo -> "
+                      "refused before any call or write",
+                      ag_refused(rc, err, stub)
+                      and os.path.join(os.path.realpath(ag_repo), f2_name) in err
+                      and not os.path.exists(os.path.join(ag_repo, f2_name))
+                      and not os.path.exists(os.path.join(ag_repo, f"f2-{who}.log"))
+                      and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                         capture_output=True, text=True).stdout == f2_status,
+                      f"rc={rc} stub={stub} err={err}")
+                rc, out, err, stub = ag_run(who, "f2-plain", ["-o", f2_o, ag_brief], ag_repo)
+                check(f"artifact guard ({who}): the same -o without --snapshot writes OUTSIDE "
+                      "(through the links) and the review runs",
+                      rc == 0 and stub[0] and os.path.isfile(os.path.join(f2_safe, f2_name))
+                      and not os.path.exists(os.path.join(ag_repo, f2_name)), f"rc={rc} err={err}")
+
+            # ---- (2.21 confirmation G1) the mktemp DIRECTORY is judged in its
+            # canonical form too under --snapshot. TMPDIR=scratch/repolink/
+            # outlink/.. is outside lexically AND resolved (safe/), yet
+            # canonicalizes to <repo> — where the reply and log derived from a
+            # stdin temp brief land once hjw_canonicalize has run.
+            AG_DIR_INSIDE = "artifact directory is inside the reviewed repository"
+            g1_tmp = os.path.join(f2_scratch, "repolink", "outlink", "..")
+            for who in ("codex", "claude"):
+                g1_script = codex_script if who == "codex" else claude_script
+                g1_bin = os.path.join(ag_root, f"bin-{who}-g1")
+                g1_cap = os.path.join(ag_root, f"cap-{who}-g1")
+                make_stub(g1_bin, who, g1_cap)
+                g1_env = {"PATH": g1_bin + os.pathsep + os.environ.get("PATH", ""),
+                          "TMPDIR": g1_tmp}
+                g1_safe_before = sorted(os.listdir(f2_safe))
+                g1_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                           capture_output=True, text=True).stdout
+                rc, out, err = run_script(g1_script, ["--snapshot", "-"], g1_env,
+                                          stdin_data="Stdin brief body.\n", cwd=ag_repo)
+                g1_lines = err.strip().splitlines()
+                check(f"artifact guard ({who}): --snapshot `-` without -o, TMPDIR canonicalizing "
+                      "into the repo -> exit 2, one refusal line naming the canonical directory, "
+                      "reviewer never called, no temp brief created",
+                      rc == 2 and len(g1_lines) == 1 and AG_DIR_INSIDE in g1_lines[0]
+                      and os.path.realpath(ag_repo) in g1_lines[0] and "set TMPDIR" in g1_lines[0]
+                      and not (os.path.isdir(g1_cap) and os.listdir(g1_cap))
+                      and sorted(os.listdir(f2_safe)) == g1_safe_before
+                      and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                         capture_output=True, text=True).stdout == g1_status,
+                      f"rc={rc} err={err}")
+                rc, out, err = run_script(g1_script, ["-"], g1_env,
+                                          stdin_data="Stdin brief body.\n", cwd=ag_repo)
+                check(f"artifact guard ({who}): the same TMPDIR without --snapshot (nothing "
+                      "canonicalizes; it resolves outside) -> the review runs",
+                      rc == 0 and bool(read_calls(g1_cap)), f"rc={rc} err={err}")
+                # (follow-up) under --snapshot with a NAMED brief and `-o`, nothing
+                # canonicalized derives from TMPDIR — the temp files use the RAW
+                # TMPDIR, which resolves outside — so the canonical form must
+                # not refuse the run.
+                g1n_bin = os.path.join(ag_root, f"bin-{who}-g1n")
+                g1n_cap = os.path.join(ag_root, f"cap-{who}-g1n")
+                make_stub(g1n_bin, who, g1n_cap)
+                rc, out, err = run_script(
+                    g1_script, ["--snapshot", "-o", os.path.join(ag_out, f"g1n-{who}.md"), ag_brief],
+                    {"PATH": g1n_bin + os.pathsep + os.environ.get("PATH", ""), "TMPDIR": g1_tmp},
+                    cwd=ag_repo)
+                check(f"artifact guard ({who}): --snapshot with a named outside brief and outside "
+                      "-o under that TMPDIR -> the review runs (the canonical TMPDIR is unused)",
+                      rc == 0 and bool(read_calls(g1n_cap))
+                      and os.path.isfile(os.path.join(ag_out, f"g1n-{who}.md")),
+                      f"rc={rc} err={err}")
+            os.remove(os.path.join(ag_repo, "outlink"))
+
+            # ---- (2.21 confirmation G2) for mktemp artifacts only the
+            # DIRECTORY is judged: an existing entry literally named like the
+            # template is not the file mktemp will create, so it must not
+            # refuse — whatever it is. A TMPDIR that is itself inside the repo
+            # (lexically, or resolved through a link) still refuses.
+            g2_tmp = os.path.join(ag_root, "g2-tmp")
+            os.makedirs(g2_tmp, exist_ok=True)
+            for who in ("codex", "claude"):
+                g2_script = codex_script if who == "codex" else claude_script
+                g2_lits = [os.path.join(g2_tmp, f"{who}_{kind}.XXXXXX.md")
+                           for kind in ("effective", "brief")]
+                for shape in ("directory", "inward symlink"):
+                    for lit in g2_lits:
+                        if shape == "directory":
+                            os.makedirs(lit, exist_ok=True)
+                        else:
+                            os.rmdir(lit)
+                            os.symlink(ag_tracked, lit)
+                    g2_bin = os.path.join(ag_root, f"bin-{who}-g2-{shape[0]}")
+                    g2_cap = os.path.join(ag_root, f"cap-{who}-g2-{shape[0]}")
+                    make_stub(g2_bin, who, g2_cap)
+                    rc, out, err = run_script(
+                        g2_script, ["-o", os.path.join(ag_out, f"g2-{who}-{shape[0]}.md"), "-"],
+                        {"PATH": g2_bin + os.pathsep + os.environ.get("PATH", ""),
+                         "TMPDIR": g2_tmp},
+                        stdin_data="Stdin brief body.\n", cwd=ag_repo)
+                    check(f"artifact guard ({who}): a {shape} literally named like the mktemp "
+                          "template in TMPDIR -> the review runs (mktemp picks another name)",
+                          rc == 0 and bool(read_calls(g2_cap))
+                          and open(ag_tracked, "rb").read() == ag_tracked_bytes,
+                          f"rc={rc} err={err}")
+                for lit in g2_lits:
+                    os.remove(lit)
+                for slug, g2_bad in (("resolved", os.path.join(ag_out, "into-repo")),
+                                     ("lexical", os.path.join(ag_repo, "sub"))):
+                    g2_bin = os.path.join(ag_root, f"bin-{who}-g2-{slug}")
+                    g2_cap = os.path.join(ag_root, f"cap-{who}-g2-{slug}")
+                    make_stub(g2_bin, who, g2_cap)
+                    g2_status = subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                               capture_output=True, text=True).stdout
+                    rc, out, err = run_script(
+                        g2_script, ["-o", os.path.join(ag_out, f"g2-{who}-{slug}.md"), ag_brief],
+                        {"PATH": g2_bin + os.pathsep + os.environ.get("PATH", ""),
+                         "TMPDIR": g2_bad}, cwd=ag_repo)
+                    g2_lines = err.strip().splitlines()
+                    check(f"artifact guard ({who}): a TMPDIR {slug}ly inside the repo -> refused, "
+                          "reviewer never called, nothing written",
+                          rc == 2 and len(g2_lines) == 1 and AG_DIR_INSIDE in g2_lines[0]
+                          and not (os.path.isdir(g2_cap) and os.listdir(g2_cap))
+                          and subprocess.run(["git", "-C", ag_repo, "status", "--porcelain"],
+                                             capture_output=True, text=True).stdout == g2_status,
+                          f"rc={rc} err={err}")
+
+            # ---- (2.21 review F3) a stdin brief is read only AFTER every
+            # path known from argv is judged: with -o inside the repo the
+            # temp brief is never created (mktemp never runs).
+            for who in ("codex", "claude"):
+                f3_bin = os.path.join(ag_root, f"bin-{who}-f3")
+                f3_cap = os.path.join(ag_root, f"cap-{who}-f3")
+                f3_calls = os.path.join(ag_root, f"f3-{who}-mktemp.calls")
+                make_stub(f3_bin, who, f3_cap)
+                with open(os.path.join(f3_bin, "mktemp"), "w") as f:
+                    f.write(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{f3_calls}"\n'
+                            f'exec {shutil.which("mktemp")} "$@"\n')
+                os.chmod(os.path.join(f3_bin, "mktemp"), 0o755)
+                rc, out, err = run_script(codex_script if who == "codex" else claude_script,
+                                          ["-o", ag_tracked, "-"],
+                                          {"PATH": f3_bin + os.pathsep + os.environ.get("PATH", "")},
+                                          stdin_data="Stdin brief body.\n", cwd=ag_repo)
+                f3_traced = os.path.isdir(f3_cap) and bool(os.listdir(f3_cap))
+                check(f"artifact guard ({who}): stdin brief with -o inside the repo -> refused BEFORE "
+                      "stdin is read (no temp brief created)",
+                      ag_refused(rc, err, (False, f3_traced)) and not os.path.exists(f3_calls)
+                      and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} err={err}")
 
             big_repo = make_repo("repo-big")
             for i in range(2001):
@@ -2949,35 +3299,27 @@ exit "$rc"
                   and repr("b\nsame")[1:-1] not in err, f"rc={rc} err={err}")
 
             # ---- (F4) artifact exclusion completeness ----
-            tracked_out_repo = make_repo("repo-tracked-out")
-            tracked_out = os.path.join(tracked_out_repo, "tracked-out.md")
-            write_file(tracked_out, "committed content\n")
-            subprocess.run(["git", "-C", tracked_out_repo, "add", "tracked-out.md"],
-                           check=True, capture_output=True)
-            subprocess.run(["git", "-C", tracked_out_repo, "commit", "-q", "-m", "seed"],
-                           check=True, capture_output=True)
-            bin_dir = os.path.join(runner_tmp, "bin-tracked-out")
-            cap = os.path.join(runner_tmp, "cap-tracked-out")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, ["-o", tracked_out,
-                                                     brief_file("tracked-out-brief.md")],
-                                      {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
-                                      cwd=tracked_out_repo)
-            check("change detection: -o over a TRACKED file does not self-trip the gate",
-                  rc == 0, f"rc={rc} err={err}")
-
+            # Since 2.21 the runners refuse any artifact inside the repo, so the
+            # exclusion can no longer be reached through them; it is kept (and
+            # pinned here, on the helper itself) as defense in depth. A runner
+            # artifact written into a NEW directory must stay excluded: a
+            # collapsed `fresh/` status entry would hide it (-uall).
             newdir_repo = make_repo("repo-newdir")
             newdir = os.path.join(newdir_repo, "fresh")
             os.makedirs(newdir, exist_ok=True)  # empty: invisible to git
-            bin_dir = os.path.join(runner_tmp, "bin-newdir")
-            cap = os.path.join(runner_tmp, "cap-newdir")
-            make_stub(bin_dir, "codex", cap)
-            rc, out, err = run_script(codex_script, ["-o", os.path.join(newdir, "reply.md"),
-                                                     brief_file("newdir-brief.md")],
-                                      {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")},
-                                      cwd=newdir_repo)
+            nd_art = os.path.join(newdir, "reply.md")
+            detect_py = os.path.join(SCRIPTS, "lib", "detect.py")
+            nd_before = os.path.join(runner_tmp, "newdir-before.json")
+            nd_after = os.path.join(runner_tmp, "newdir-after.json")
+            subprocess.run(["python3", detect_py, "snapshot", newdir_repo, nd_before, nd_art],
+                           check=True, capture_output=True)
+            write_file(nd_art, "reply\n")
+            subprocess.run(["python3", detect_py, "snapshot", newdir_repo, nd_after, nd_art],
+                           check=True, capture_output=True)
+            p = subprocess.run(["python3", detect_py, "compare", nd_before, nd_after],
+                               capture_output=True, text=True)
             check("change detection: artifacts in a new directory are excluded (-uall, not a collapsed dir)",
-                  rc == 0, f"rc={rc} err={err}")
+                  p.returncode == 0 and "changed=\n" in p.stdout, f"rc={p.returncode} out={p.stdout}")
 
             # ---- (F5) per-path fingerprints: an already-dirty tracked file
             # edited AGAIN keeps its status but must still be named ----
@@ -5344,6 +5686,174 @@ runpy.run_path(helper, run_name="__main__")
                 check("t12 legacy: the invoked 2.18.0 runner is the one that ran",
                       "plugin=2.18.0" in fw_log_for(t12_brief),
                       fw_log_for(t12_brief)[:200])
+
+            # ---- (t13, 2.21) the artifact guard HOLDS ACROSS A HOP. The
+            # registry may select an OLDER install (t2: downgrades are
+            # followed), and a pre-2.21 runner has no artifact guard — so the
+            # INVOKED runner judges the argv before the exec. The destination
+            # here is a complete install whose runner is a guardless stand-in
+            # that leaves a marker the moment it runs: a refusal must leave
+            # no marker, no paid call, no temp brief, and must not read stdin.
+            FW_INSIDE = "artifact path is inside the reviewed repository"
+            for who in ("codex", "claude"):
+                t13_plugins = fw_install(f"t13-{who}", ["9.9.0", "9.8.0"])
+                t13_marker = os.path.join(fw_root, f"t13-{who}-target-ran")
+                t13_target = fw_script(t13_plugins, "9.8.0", who)
+                with open(t13_target, "w") as f:
+                    f.write("#!/usr/bin/env bash\n"
+                            "# a guardless pre-2.21 destination\n"
+                            f"echo ran > '{t13_marker}'\n"
+                            "echo GUARDLESS-TARGET-RAN\n")
+                os.chmod(t13_target, 0o755)
+                fw_reg_entries(t13_plugins, [fw_entry(t13_plugins, "9.8.0")])
+                t13_self = fw_script(t13_plugins, "9.9.0", who)
+
+                def t13_refused(rc, out, err, cap):
+                    lines = err.strip().splitlines()
+                    return (rc == 2 and len(lines) == 1 and FW_INSIDE in lines[0]
+                            and not fw_hops(err) and not os.path.exists(t13_marker)
+                            and "GUARDLESS-TARGET-RAN" not in out
+                            and not (os.path.isdir(cap) and os.listdir(cap)))
+
+                # (1) `-o` inside the repository: refused BEFORE the exec.
+                t13_in = os.path.join(repo_dir, f"t13-{who}-reply.md")
+                for spelling, args in (("-o X", ["-o", t13_in]),
+                                       ("-oX", ["-o" + t13_in])):
+                    rc, out, err, cap = fw_run(
+                        f"t13-{who}-in-{len(args)}", t13_self, who,
+                        args=args + [brief_file(f"fw-t13-{who}.md")])
+                    check(f"t13 {who} hop guard: `{spelling}` inside the repo with a "
+                          "registry-selected OLDER guardless target -> exit 2, one "
+                          "refusal line, never forwarded (no marker, no reviewer call)",
+                          t13_refused(rc, out, err, cap),
+                          f"rc={rc} marker={os.path.exists(t13_marker)} err={err}")
+                    check(f"t13 {who} hop guard: `{spelling}` refusal wrote nothing in "
+                          "the repo",
+                          not os.path.exists(t13_in)
+                          and not os.path.exists(os.path.splitext(t13_in)[0] + ".log"))
+
+                # (2) the brief positional inside the repo, no `-o`: its default
+                # reply lands next to it — refused too.
+                t13_rbrief = write_file(os.path.join(repo_dir, f"t13-{who}-brief.md"),
+                                        "Test brief body.\n")
+                try:
+                    rc, out, err, cap = fw_run(f"t13-{who}-rbrief", t13_self, who,
+                                               args=[t13_rbrief])
+                    check(f"t13 {who} hop guard: a brief INSIDE the repo with no `-o` "
+                          "-> refused before the exec",
+                          t13_refused(rc, out, err, cap)
+                          and not os.path.exists(os.path.join(
+                              repo_dir, f"t13-{who}-brief.reply.md")),
+                          f"rc={rc} marker={os.path.exists(t13_marker)} err={err}")
+                finally:
+                    os.remove(t13_rbrief)
+
+                # (3) a `-` brief with `-o` inside: refused before stdin is
+                # read. Stdin is a FILE whose offset the child shares, so any
+                # read moves it; $TMPDIR is a fresh dir that must stay empty
+                # (no temp brief was ever created).
+                t13_tmpdir = tempfile.mkdtemp(dir=runner_tmp, prefix=f"t13-{who}-tmp-")
+                t13_stdin = os.path.join(runner_tmp, f"t13-{who}-stdin.md")
+                with open(t13_stdin, "w") as f:
+                    f.write("Stdin brief body.\n" * 64)
+                t13_bin = os.path.join(runner_tmp, f"bin-fw-t13-{who}-stdin")
+                t13_cap = os.path.join(runner_tmp, f"cap-fw-t13-{who}-stdin")
+                make_stub(t13_bin, who, t13_cap)
+                t13_env = dict(os.environ)
+                for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
+                            "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
+                            "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT"):
+                    t13_env.pop(var, None)
+                t13_env.update({
+                    "PATH": t13_bin + os.pathsep + os.environ.get("PATH", ""),
+                    "CLAUDE_PLUGIN_DATA": empty_data_dir_named("nocfg-"),
+                    "TMPDIR": t13_tmpdir})
+                with open(t13_stdin, "rb") as t13_in_f:
+                    p = subprocess.run(["bash", t13_self, "-o", t13_in, "-"],
+                                       stdin=t13_in_f, capture_output=True, text=True,
+                                       timeout=60, cwd=repo_dir, env=t13_env)
+                    t13_off = os.lseek(t13_in_f.fileno(), 0, os.SEEK_CUR)
+                check(f"t13 {who} hop guard: a `-` brief with `-o` inside -> refused "
+                      "before the exec",
+                      t13_refused(p.returncode, p.stdout, p.stderr, t13_cap),
+                      f"rc={p.returncode} marker={os.path.exists(t13_marker)} err={p.stderr}")
+                check(f"t13 {who} hop guard: ... and before stdin is read (offset 0, "
+                      "no temp brief created)",
+                      t13_off == 0 and not os.listdir(t13_tmpdir),
+                      f"offset={t13_off} tmpdir={os.listdir(t13_tmpdir)}")
+
+                # (3b, confirmation G1) `--snapshot -` with NO `-o`: the reply
+                # and log derive from the temp brief and are canonicalized on
+                # the other side. With <scratch>/repolink -> <repo> and
+                # <repo>/outlink -> <scratch>/safe/deep, TMPDIR=
+                # <scratch>/repolink/outlink/.. is outside lexically and
+                # resolved, yet canonicalizes into the repo — so the hop is
+                # refused before the exec, and before stdin is read.
+                t13_g1 = tempfile.mkdtemp(dir=runner_tmp, prefix=f"t13-{who}-g1-")
+                t13_g1_safe = os.path.join(t13_g1, "safe")
+                os.makedirs(os.path.join(t13_g1_safe, "deep"))
+                os.symlink(repo_dir, os.path.join(t13_g1, "repolink"))
+                t13_outlink = os.path.join(repo_dir, f"t13-{who}-outlink")
+                os.symlink(os.path.join(t13_g1_safe, "deep"), t13_outlink)
+                try:
+                    t13_g1_env = dict(t13_env)
+                    t13_g1_env["TMPDIR"] = os.path.join(
+                        t13_g1, "repolink", f"t13-{who}-outlink", "..")
+                    with open(t13_stdin, "rb") as t13_in_f:
+                        p = subprocess.run(["bash", t13_self, "--snapshot", "-"],
+                                           stdin=t13_in_f, capture_output=True, text=True,
+                                           timeout=60, cwd=repo_dir, env=t13_g1_env)
+                        t13_off = os.lseek(t13_in_f.fileno(), 0, os.SEEK_CUR)
+                    t13_lines = p.stderr.strip().splitlines()
+                    check(f"t13 {who} hop guard: `--snapshot -` without `-o`, TMPDIR "
+                          "canonicalizing into the repo with an OLDER guardless target -> "
+                          "exit 2, one refusal line, never forwarded (no marker, no "
+                          "reviewer call), stdin unread, no temp brief",
+                          p.returncode == 2 and len(t13_lines) == 1
+                          and "artifact directory is inside the reviewed repository" in t13_lines[0]
+                          and os.path.realpath(repo_dir) in t13_lines[0]
+                          and not fw_hops(p.stderr) and not os.path.exists(t13_marker)
+                          and "GUARDLESS-TARGET-RAN" not in p.stdout
+                          and not (os.path.isdir(t13_cap) and os.listdir(t13_cap))
+                          and t13_off == 0
+                          and os.listdir(t13_g1_safe) == ["deep"]
+                          and not os.listdir(os.path.join(t13_g1_safe, "deep")),
+                          f"rc={p.returncode} marker={os.path.exists(t13_marker)} "
+                          f"offset={t13_off} err={p.stderr}")
+                    # ... while a NAMED outside brief with an outside `-o` under
+                    # the same TMPDIR derives nothing canonicalized from it: the
+                    # hop proceeds exactly as before.
+                    rc, out, err, cap = fw_run(
+                        f"t13-{who}-g1-named", t13_self, who,
+                        args=["--snapshot", "-o",
+                              os.path.join(runner_tmp, f"t13-{who}-g1-named.md"),
+                              brief_file(f"fw-t13-{who}-g1-named.md")],
+                        cwd=repo_dir, env_extra={"TMPDIR": t13_g1_env["TMPDIR"]})
+                    hops = fw_hops(err)
+                    check(f"t13 {who} hop guard: `--snapshot` with a named outside brief and "
+                          "outside `-o` under that TMPDIR -> forwarded as before (one hop "
+                          "line, the target ran)",
+                          rc == 0 and len(hops) == 1
+                          and "runner 9.9.0 is stale — forwarding to 9.8.0" in hops[0]
+                          and os.path.exists(t13_marker) and "GUARDLESS-TARGET-RAN" in out,
+                          f"rc={rc} hops={hops} out={out} err={err}")
+                finally:
+                    os.remove(t13_outlink)
+                    if os.path.exists(t13_marker):
+                        os.remove(t13_marker)
+
+                # (4) `-o` OUTSIDE the repository: forwarded exactly as before.
+                rc, out, err, cap = fw_run(
+                    f"t13-{who}-out", t13_self, who,
+                    args=["-o", os.path.join(runner_tmp, f"t13-{who}-out.md"),
+                          brief_file(f"fw-t13-{who}-out.md")])
+                hops = fw_hops(err)
+                check(f"t13 {who} hop guard: `-o` OUTSIDE the repo -> forwarded to the "
+                      "older target as before (one hop line, the target ran)",
+                      rc == 0 and len(hops) == 1
+                      and "runner 9.9.0 is stale — forwarding to 9.8.0" in hops[0]
+                      and os.path.exists(t13_marker) and "GUARDLESS-TARGET-RAN" in out,
+                      f"rc={rc} hops={hops} out={out} err={err}")
 
 
         finally:

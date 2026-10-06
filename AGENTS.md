@@ -11,8 +11,9 @@ anything:
 Hard rules (each earned by a real incident):
 - Run `python3 tests/test_hooks.py` before any commit and gate the commit on
   the UNPIPED exit code — piped/tailed output hides failures.
-- Editing any `haejwo/commands/*.md` requires regenerating the
-  `haejwo/codex-skills/` mirrors; the drift canary fails otherwise.
+- Editing any `haejwo/commands/*.md` requires `python3 tests/mirrors.py --write`
+  (regenerates the `haejwo/codex-skills/` mirrors); the drift canary fails
+  otherwise.
 - Version bumps update BOTH `haejwo/.claude-plugin/plugin.json` and
   `haejwo/.codex-plugin/plugin.json` (sync is tested). Patch = wording,
   minor = behavior.

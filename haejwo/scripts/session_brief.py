@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""haejwo session-brief — SessionStart (startup|resume|clear).
+"""haejwo session-brief — SessionStart (startup|resume|clear|compact).
 
 Injects the operating layer into every session:
 - configured   -> orchestration rules + current config summary
@@ -93,7 +93,7 @@ def main():
     # /.codex/plugins (measured) — no extra probe needed. Detected BEFORE the
     # configured branch: the unconfigured nudge names the tiers too, and on
     # Codex it must never advertise Claude aliases (origin 2026-09-14: a fresh
-    # Codex session was told to use sonnet/haiku, which it cannot pass).
+    # Codex session was told to use Claude aliases, which it cannot pass).
     on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
 
     if not cfg.get("configured"):

@@ -60,7 +60,7 @@
 #   conflicts, gitlinks (submodules) and embedded untracked repositories.
 #
 # `--mode implement` was removed in 2.10 (cross-vendor worker routing is a
-# non-goal); use the standalone collab tool for manual implement runs.
+# non-goal).
 #
 # Config (haejwo's OWN config.json — same OWNERSHIP rules as codex_consult.sh:
 # the structural path under this runner's own installed <plugins>/cache/haejwo/
@@ -79,9 +79,8 @@
 # this runner — a Codex host's reviewer — reads the key (see lib/config.py).
 # *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex
 # host's own reviewer model, read out of a claude-host config]*
-# NOT read here: the `efforts_codex` / `models_codex` config keys belong to
-# codex-HOST worker tiers (spawn_agent parameters) — they never select this
-# reviewer's model.
+# NOT read here: the `models_codex` config key belongs to codex-HOST worker
+# tiers (spawn_agent parameters) — it never selects this reviewer's model.
 #
 # Env (env > config > default; an EMPTY env value counts as UNSET):
 #   CLAUDE_MODEL    force a model (passed as --model; optional).
@@ -90,6 +89,23 @@
 # Disclosure discipline: the model is always printed with its SOURCE
 #   (env | config | cli-default). An unselected model is `cli-default
 #   (identity unverified)` — the runner does not know which model answered.
+#
+# Artifact guard (2.21): every artifact this runner writes (reply, log,
+# temp brief, effective brief) must lie OUTSIDE the worktree it is invoked
+# from and outside that worktree's git dirs, judged lexically and through
+# symlinks; an existing artifact must be a regular file with one hard link. A
+# violation exits 2 with one line before the first write and before any paid
+# call — no file is touched. Other worktrees of the same repository are not
+# covered, and the check guards against accidental paths (a typo in `-o`, a
+# brief kept inside the repo with no `-o`), not a hostile concurrent
+# replacement. *[origin: `-o` naming a tracked file was silently overwritten —
+# change detection excludes artifacts by design]*
+# Scope: the guarantee belongs to the INVOKED runner (2.21+) and holds across
+# a forwarding hop, including a hop to an OLDER install with no guard of its
+# own — the argv-known paths are judged before the exec, and a refusal
+# forwards nothing. What a pre-2.21 runner invoked DIRECTLY does is outside
+# it. It covers these artifacts, not the git worktree metadata --snapshot's
+# `git worktree add` writes into the repository's git dir.
 #
 # Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
 # the two the SAME file and the runner's own log would overwrite the reply it
@@ -146,6 +162,10 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=claude
+# Declared BEFORE forwarding and init: the artifact guard derives from them,
+# on a hop too.
+HJW_OUT_SIBLINGS=()  # no artifacts beyond the reply and the log
+HJW_OUT_APPENDS=()
 
 # A remembered runner path outlives the version it named: old cache versions
 # stay on disk, and a session that was updated in place keeps the path it was
@@ -153,6 +173,9 @@ HJW_RUNNER_KIND=claude
 # stdin, traps, temp files, config selection or any chdir — so a forwarded run
 # is indistinguishable from having invoked the installed runner directly.
 # Fail open: any doubt at all and this returns, and the run continues HERE.
+# The one thing it refuses is a hop whose argv names an artifact inside the
+# repository: that exits 2 here, before the exec (the target may predate the
+# artifact guard).
 hjw_forward_if_stale "$@"
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to claude, on
@@ -183,7 +206,7 @@ Mode:
             isolation, not containment.
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
-non-goal); use the standalone collab tool for manual implement runs.
+non-goal).
 
 Env (env > config > default; empty env value = unset): CLAUDE_MODEL,
   CLAUDE_TIMEOUT (default 600). Config key codex.model supplies the default
@@ -243,7 +266,7 @@ else MODEL_DISP="model=cli-default (identity unverified)"; fi
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
 {
-  echo "# claude_consult v1.2  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
 } > "$LOG"
 # The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is

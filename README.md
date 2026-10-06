@@ -53,7 +53,7 @@ Deep dive: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PH
 
 | | Claude Code only | Codex only | Both CLIs |
 | --- | --- | --- | --- |
-| Gate, rules, plan-first, push consent | ✓ | ✓ | ✓ |
+| Gate, rules, plan-first, ask-first push | ✓ | ✓ | ✓ |
 | Model tiers (judgment inherits) | ✓ session model/opus/opus | ✓ `spawn_agent` mapping | ✓ |
 | **Cross-vendor review** | fallback: `deep-reasoner` | fallback: same-model subagent | ✓ codex↔claude, after setup verifies |
 
@@ -66,7 +66,6 @@ Normal use needs **none** of these.
 | `/haejwo:setup` · `@haejwo-setup` | One-time config — tiers, budget, bash-guard, reviewer |
 | `/haejwo:status` · `@haejwo-status` | Config, this turn's counter, reviewer readiness, observations |
 | `/haejwo:gate` · `@haejwo-gate` | Tune the gate live — budget `N`, `on`/`off` |
-| `/haejwo:push` · `@haejwo-push` | Per-repo push consent — ask-first until granted |
 | `/haejwo:plan` · `@haejwo-plan` | Manual trigger for plan consensus (host-run by default) |
 
 ## Non-goals

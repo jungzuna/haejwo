@@ -3,39 +3,21 @@ description: Run pre-implementation consensus with an independent reviewer (read
 argument-hint: "<topic to plan> [--reviewer codex|claude]"
 ---
 
-You are the **haejwo host**. Drive pre-implementation consensus — planning outweighs implementation, and different models see different failure modes, so the plan gets debated BEFORE any code. The user's input: **$ARGUMENTS**
+You are the **haejwo host**. Drive pre-implementation consensus — different models see different failure modes, so the plan is debated BEFORE any code. The user's input: **$ARGUMENTS**
 
-## 0. Scope the rigor (don't over-ceremonize)
-Infer the scope: architecture / feature / refactor / bugfix / investigation. Plan consensus is for **material judgment-bearing feature/risk work** — scale depth accordingly. Mechanical work does not need this command: state `No plan because: <reason>` directly in the brief; bounded read-only exploration needs neither marker. If the work is trivially small (typo-tier, single obvious change), SAY SO and offer to skip planning — this command is for decisions worth debating. Choose the shape now: A (default: host drafts, reviewer critiques) or B (independent drafts — architecture-level forks or when the owner asks). If B, do NOT send your draft for critique in §2; go to §2b after §1.
+## 1. Scope and choose a shape (host)
+For material judgment-bearing feature/risk work only. Typo-tier work: say so and offer to skip; mechanical work states `No plan because: <reason>` in the brief. Shape **A** (default): host drafts, reviewer critiques. Shape **B**: independent drafts — for architecture-level forks or when the owner asks (about double the cost).
 
-## 1. Draft
-Write your plan draft: goal, key decisions + rationale, alternatives you considered, risks/unknowns, implementation checklist. Note your own uncertainties explicitly — the reviewer should attack the real tensions.
+## 2. Draft (host)
+Goal, key decisions with rationale, alternatives, risks, checklist — and your own uncertainties, so the reviewer attacks the real tensions. Shape B: record this draft in the conversation BEFORE contacting the reviewer; that record is what makes independence auditable.
 
-## 2. Reviewer critique (round 1)
-Reviewer selection: `--reviewer` if given; else the configured other-CLI reviewer when enabled+verified (codex on Claude hosts, claude on Codex hosts); else fall back per Recovery rules. If fallback is used, say so in ONE plain sentence (weaker independence); no tier jargon beyond that. Name the reviewer in your updates.
-- **codex** — self-contained brief (plan + context + your tensions; reviewer may not read the repo) to `${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh --mode consult <brief>` in the background; wait for completion once. For `brief.md` the reply is `brief.reply.md` and the log `brief.reply.log` beside it; `-o` overrides the reply path. Effort policy: see the injected rules (override with `CODEX_EFFORT`). Instruct: "rebut with evidence levels FACT/INFERENCE/SPECULATION; do not just agree."
-- **claude** — self-contained brief to `${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh --mode consult <brief>` in the background; wait for completion once. Use the same rebuttal instruction.
-- **fallback** — NOT consensus or independent review, same model: Claude host spawns `haejwo:deep-reasoner` (an isolated critique fallback; the host remains sole authority); Codex host: native same-model subagent. Use the same rebuttal instruction.
+## 3. Get the critique (reviewer)
+Reviewer: `--reviewer` if given; else the configured other-CLI reviewer (`${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh` on Claude, `claude_consult.sh` on Codex), run in the background and waited on once; else the same-model fallback from the Recovery rule, disclosed in one sentence (weaker independence). The brief is SELF-CONTAINED (the reviewer may not read the repo) and asks: "rebut with evidence levels FACT/INFERENCE/SPECULATION; do not just agree." Shape A sends the draft. Shape B sends the same factual packet with NO host draft, asking for a full plan; then one cross-critique round in a NEW session carrying both drafts and the ledger.
 
-## 2b. Shape B — independent drafts (architecture-level forks or when the owner asks)
-Default is shape A above (host drafts, reviewer critiques). Use shape B when the fork is architecture-level or the owner asks for it; it costs roughly double the analysis of shape A (estimate, not measured).
-1. **Host draft first** — WRITE YOUR OWN DRAFT INTO THE CONVERSATION BEFORE the reviewer is contacted. Recording it first is what makes the independence auditable; nothing else does.
-2. **Reviewer draft** — send the reviewer the same factual packet (goal, constraints, evidence, open questions) with NO host draft in it, asking for a full plan of their own.
-3. **One cross-critique round** — critique the reviewer's draft in the ledger (§3), then send a NEW self-contained session brief carrying the packet, BOTH drafts, and the ledger, and ask for rebuttal.
-4. **Merge** — fold both drafts into one plan. **Hard cap: two cross rounds**, then handle it as a deadlock (§4).
-5. **Report** — the §5 decisions block states `(shape B)`. If the harness delivered the reviewer's reply before your draft was recorded, SAY SO: independence was lost for that round.
+## 4. Resolve the ledger (host)
+Every objection becomes a row: `objection | evidence level | host response | accepted / rejected / deferred` — each with a reason; capitulation without rationale is not a status. The host decides with rationale; grounded dissent is recorded, never faked into agreement. A further round only names an unresolved substantive objection or new evidence AND the decision it would change, states the runner-log count so far, and goes to a NEW session (never `--resume`). Hard cap: 3 rounds (shape B: 2 cross rounds). Only unresolved value tradeoffs go to the user, both positions with evidence.
 
-## 3. Disagreement ledger (the anti-fake-convergence core)
-Convert every reviewer objection into a ledger row: `# | objection | evidence level | host response | status`. Status must be one of **accepted** (plan changed — say how), **rejected** (with grounded rationale), **deferred** (explicitly parked, with why). Capitulation without rationale is not a valid status. The ledger is YOUR debate discipline — surface only the material disagreements and their resolutions to the user, not the ceremonial full table.
-- **One critique round by default.** Rounds 2-3 ONLY when you name an unresolved substantive objection or new evidence AND the decision its answer would change. Before any additional round, state in one line the runner-log artifact count so far (runner logs this session — see `/haejwo:status` §6). Send the REVISED plan + ledger back as a NEW self-contained session brief (revised plan + ledger + enough context to reconstruct the decision, not just the latest edits); never `--resume`. **Hard cap: 3 critique rounds** (shape B: 2 cross rounds). Do not re-litigate settled rows unless new evidence changes them.
+## 5. Consolidate and brief (host)
+Before implementing or delegating, state ONE block: decisions made for the user and the material objections rejected or deferred, each with its reason; mark `(shape B)` when used, and say so if the reviewer's draft arrived before yours was recorded. *[origin: a plan round added an unrequested semaphore found after deployment; 12 decisions surfaced only after implementation]* Feature-scale delegate briefs then EMBED `Plan: <summary>` (mirror work: `Plan: mirror <source> + preserve <material forks>`) or `No plan because: <reason>`. Write `docs/plans/<date>-<slug>.md` only on request, with the full ledger. If implementation breaks a plan assumption, say so and fix the plan before continuing.
 
-## 4. Converge or escalate
-- **Consensus** = every ledger row has a status + rationale, and no substantive objection stands unaddressed.
-- **Deadlock** = grounded disagreement survives the rounds — do NOT fake-converge. Measure factual disputes; the host resolves grounded dissent with recorded rationale; only unresolved value tradeoffs go to the user (AskUserQuestion, both positions with evidence).
-
-## 5. Consolidate (ONE block, then briefs)
-After the host resolves the ledger, apply the injected rule on decisions made for the user BEFORE implementing or delegating: state in ONE compact block the material decisions made for the user (added scope, API removals, security defaults, migration choices) and the material reviewer objections rejected or deferred, each with its reason — no second prose summary; add `(shape B)` when §2b ran. Then brief the workers: the host-decided plan and the material ledger rows travel in the delegate briefs (§6), chunked ready-to-send. Unresolved items go into the final report. Write a `docs/plans/<YYYY-MM-DD>-<slug>.md` file ONLY if the user asks for a record (then include the full ledger, rejected alternatives, and a deviation log — do not sanitize; the debate is the value). *[origin: a plan round added a request-level semaphore the owner never asked for and found after deployment; 2026-10-03, after a critique that would not approve the plan unchanged, no summary was emitted and 12 decisions surfaced only after implementation]*
-
-## 6. Linkage & drift control
-- Every subsequent **feature-scale delegate brief must EMBED the host-decided plan summary** (a `Plan:` section) or state `No plan because: <reason>`; bounded read-only exploration needs neither marker. Mirror work qualifies with `Plan: mirror <source> + preserve <material forks>` — a bare mirror name is not a plan. Workers are instructed to question feature-scale briefs missing the marker, or mirror plans that name a source but omit the material forks (what's preserved, what must not generalize from it).
-- If implementation invalidates a plan assumption: say so plainly, adjust the plan before continuing (and update the plan file if one exists). A stale plan silently drifted-from is worse than no plan.
+Report: the decisions block, the reviewer used (or the fallback disclosure), and the briefs ready to send.

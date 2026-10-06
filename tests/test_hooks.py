@@ -968,13 +968,34 @@ def main():
               f"runner={sorted(runner_efforts)} rules={sorted(rules_efforts)}")
 
         # b. Size ratchets on the cold-start read path: a doc nobody finishes
-        # reading is a doc that does not ship its rules.
+        # reading is a doc that does not ship its rules. Each cap pins the
+        # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
         for rel, cap in (("README.md", 750), ("README.ko.md", 700),
-                         ("haejwo/commands/setup.md", 1100),
+                         ("haejwo/README.md", 1500),
+                         ("haejwo/commands/plan.md", 490),
+                         ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 400)):
             words = len(open(os.path.join(repo, rel), encoding="utf-8").read().split())
             check(f"word-count ratchet: {rel} <= {cap}", words <= cap,
                   f"words={words} cap={cap}")
+
+        # b2. Runner-stack line ratchet (2.22): the eight files' total `wc -l`.
+        # The list is explicit so a renamed or added file fails loudly here
+        # instead of silently leaving the count.
+        runner_stack = ("codex_consult.sh", "claude_consult.sh",
+                        "lib/consult_common.sh", "lib/snapshot.py", "lib/detect.py",
+                        "lib/forward.py", "lib/bounded.py", "lib/config.py")
+        stack_missing = [f for f in runner_stack
+                         if not os.path.isfile(os.path.join(SCRIPTS, f))]
+        stack_lines = sum(open(os.path.join(SCRIPTS, f), "rb").read().count(b"\n")
+                          for f in runner_stack if f not in stack_missing)
+        stack_unlisted = sorted(
+            {f for f in os.listdir(os.path.join(SCRIPTS, "lib"))
+             if f.endswith((".sh", ".py"))}
+            - {f[len("lib/"):] for f in runner_stack if f.startswith("lib/")})
+        check("line ratchet: runner stack (8 files) <= 1800 lines",
+              not stack_missing and not stack_unlisted and stack_lines <= 1800,
+              f"lines={stack_lines} missing={stack_missing} unlisted_lib={stack_unlisted}")
 
         # c. Retired surfaces stay retired, across every tracked doc, script and
         # test. The tokens are assembled from FRAGMENTS on purpose: spelled out

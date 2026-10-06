@@ -1,163 +1,25 @@
 #!/usr/bin/env bash
-# codex_consult.sh — hardened headless Codex runner (haejwo's reviewer slot).
-#
-# What: feeds a self-contained brief to `codex exec` via stdin and captures
-#       Codex's final reply to a file. Non-editing (consult) contract only —
-#       project-agnostic — the invoking directory is the work root (run it
-#       from the project root).
-#
-# Shape (2.13): the mechanics both reviewer runners share — parsing, paths,
-#       the wall clock, change detection, config, cleanup — live in
-#       `scripts/lib` (`consult_common.sh` + python helpers). THIS file owns
-#       everything vendor-specific: the REVIEWER CONTRACT text, the
-#       `codex exec` argv, effort/sandbox, the event-stream classifier, the
-#       events artifact, and the non-git policy.
-#       Two entrypoints, one set of mechanics, explicit vendor policy.
-#
-# Core design (production hardening): NEVER trust the exit code alone.
-#   codex can fail silently with rc=0 (measured on sandbox-constrained hosts).
-#   Any of {rc!=0 | empty reply | codex-reported failure EVENT | missing event
-#   stream | codex tracing error | repository changed | change detection
-#   unavailable} exits non-zero. Stated as a guarantee, narrowed to what is
-#   actually checked: rc=0 with no reply, a reported failure event, or a
-#   changed repository is never reported as success; a failure the reviewer
-#   reports only in prose is not detected.
-#
-# Classification provenance (2.11): failures are read from codex's own JSONL
-#   event stream (`codex exec --json`), not from a grep over mixed stdout.
-#   Only TOP-LEVEL {"type":"turn.failed"|"error"} objects count; nested item
-#   text / aggregated command output is NEVER inspected, so a reviewer that
-#   merely QUOTES an error string can no longer fail its own run. The old
-#   unanchored marker grep over the mixed log was removed entirely.
-#   *[origin: reviewer replies discussing sandbox/tool errors self-failed]*
-#
-# Every input the reviewer sees is
-# prefixed with a standing REVIEWER CONTRACT (below) that forbids
-# edits/installs/config changes — enforced by instruction here, and
-# backstopped by the post-run change-detection gate.
-#
-# Usage:
-#   codex_consult.sh [--mode consult] [-o out.md] brief.md
-#   echo "..." | codex_consult.sh --mode consult -   # stdin brief (deleted on exit)
-#
-# Mode (safety gate):
-#   consult   (only mode) non-editing contract with post-run change detection —
-#             FAILS if the repository changed after the run (danger-full-access
-#             cannot block edits — enforce in code). `--mode implement` was
-#             removed in 2.10 (cross-vendor worker routing is a non-goal).
-#   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
-#   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
-#
-# Config (haejwo's OWN config.json — see CODEX_SANDBOX below for the exact
-# ownership rules; the log header discloses the selected path and its status).
-# Keys read here:
-#   codex.consult_sandbox   sandbox for consult runs (read on ANY host)
-#   codex.model             default reviewer model (env CODEX_MODEL wins)
-#   codex.effort            default reviewer effort (env CODEX_EFFORT wins)
-# HOST-RELATIVE reading: the `codex` block describes the reviewer of the HOST
-# that owns the data dir. On a CODEX host (resolved config path under
-# /.codex/) that reviewer is CLAUDE, so this runner IGNORES
-# codex.model/effort there and behaves as "no config" for them.
-# *[origin: a live smoke launched the claude reviewer with the codex host's
-# own model name]*
-# NOT read here: the `models_codex` config key belongs to codex-HOST worker
-# tiers (spawn_agent parameters) — it never selects this reviewer's model or
-# effort.
-#
-# Env (env > config > default; an EMPTY env value counts as UNSET):
-#   CODEX_SANDBOX   read-only|workspace-write|danger-full-access. Explicit
-#                   caller input deserves a loud error, not a silent
-#                   downgrade — an invalid value here EXITS 2 naming the
-#                   three valid values. Priority: CODEX_SANDBOX env > config
-#                   `codex.consult_sandbox` > read-only (mode default). The
-#                   config path is OWNED, never taken from the shell on
-#                   trust: a host's CLAUDE_PLUGIN_DATA names the LAST LOADED
-#                   plugin's data dir, not haejwo's. Exactly one owner path
-#                   is selected — structural (this runner's own installed
-#                   path under <plugins>/cache/haejwo/haejwo/<ver>/scripts/
-#                   -> <plugins>/data/haejwo-haejwo/config.json), else
-#                   CLAUDE_PLUGIN_DATA when its basename IS `haejwo-haejwo`,
-#                   else the derived ~/.codex|.claude/plugins/data/
-#                   haejwo-haejwo/config.json (empty $HOME = no config at
-#                   all) — and a missing or malformed file THERE means NO
-#                   config; it never falls back to another path, which could
-#                   resurrect a stale danger-full-access setting from
-#                   elsewhere. A set-but-foreign CLAUDE_PLUGIN_DATA is
-#                   ignored and disclosed once in $LOG and on stderr. A
-#                   CONFIG value that is missing, unparsable, or not in the
-#                   allowlist silently falls back to read-only — NEVER a
-#                   dangerous value on error (only the ENV path errors
-#                   loudly).
-#   CODEX_EFFORT    low|medium (runner default)|high|xhigh — scale to the
-#                   decision's stakes; xhigh for the hardest calls only, low
-#                   for probes. An invalid ENV value EXITS 2 (caller input);
-#                   an invalid CONFIG value notes and falls back to medium.
-#   CODEX_MODEL     force a specific reviewer model (optional; overrides
-#                   config `codex.model`). Fixed for the whole consult
-#                   session; escalation is always a NEW session. A model
-#                   codex rejects pre-execution fails the run with codex's
-#                   own error plus one hint naming CODEX_MODEL/codex.model —
-#                   never retried (the retry was removed in 2.22).
-#   CODEX_TIMEOUT   seconds; default 600 at EVERY effort (2.14: the old
-#                   effort->timeout table made the effort default silently
-#                   retune the wall clock). 0 = unlimited.
-#
-# Disclosure discipline: every model/effort value is printed with its SOURCE
-#   (env | config | runner-default | cli-default). An unselected model is
-#   `cli-default (identity unverified)` — the runner does not know which
-#   model answered.
-#
-# Change detection (scope, honestly): HEAD, tracked file status AND per-path
-#   working-tree fingerprints, `git diff` / `git diff --cached` digests, and
-#   the CONTENTS of untracked files (sorted, first 2000; presence is covered
-#   for all of them). Runner-owned artifacts are excluded from the status,
-#   untracked and diff-digest inputs alike. NOT covered: global/user config,
-#   ignored files, anything outside the repo. Concurrent writers are not
-#   distinguished — a detected change means "something changed", never "the
-#   reviewer did it". Every helper runs under a python3-enforced wall clock
-#   (no dependency on the `timeout` binary); any git/helper error or timeout
-#   FAILS the run (fail closed), and a BEFORE-snapshot failure — including a
-#   git probe that cannot tell us whether this is a repo — fails BEFORE codex
-#   is invoked, so an unverifiable run is never paid for. Files this gate
-#   cannot read are counted and disclosed, never skipped silently.
-#
-# Artifact guard (2.21): every artifact this runner writes (reply, log,
-# temp brief, effective brief, events stream) must lie OUTSIDE the worktree
-# it is invoked from and outside that worktree's git dirs, judged lexically
-# and through symlinks; an existing artifact must be a regular file with one
-# hard link. A violation exits 2 with one line before the first write and
-# before any paid call — no file is touched. Other worktrees of the same
-# repository are not covered, and the check guards against accidental paths
-# (a typo in `-o`, a brief kept inside the repo with no `-o`), not a hostile
-# concurrent replacement. *[origin: `-o` naming a tracked file was silently overwritten —
-# change detection excludes artifacts by design]*
-# Scope: the guarantee belongs to the INVOKED runner (2.21+) and holds across
-# a forwarding hop, including a hop to an OLDER install with no guard of its
-# own — the argv-known paths are judged before the exec, and a refusal
-# forwards nothing. What a pre-2.21 runner invoked DIRECTLY does is outside
-# it.
-#
-# Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
-# the two the SAME file and the runner's own log would overwrite the reply it
-# just captured. When that collision happens the log takes `$OUT.log` instead.
-# *[origin: ship review Z4]*
-#
-# Verification discipline: this is a READ-ONLY reviewer slot — never trust it
-#   to have made changes; workers implement, this only analyzes and replies.
-# Waiting discipline: run in the background and wait for ONE completion event —
-#   no sleep/pgrep polling loops.
+# codex_consult.sh — headless Codex reviewer runner (haejwo's reviewer slot on a Claude host).
+# Feeds REVIEWER CONTRACT + a self-contained brief to `codex exec` on stdin and captures the final reply.
+# Consult (non-editing) only; the invoking directory is the work root. Options, env, exit codes: --help.
+# Shared mechanics (parsing, paths, wall clock, forwarding, artifact guard, change detection, config)
+# live in lib/consult_common.sh; this file owns the vendor policy: contract text, `codex exec` argv,
+# effort/sandbox, the JSONL event classifier, the events artifact and the non-git policy.
+# NEVER trust the exit code alone: rc=0 with no reply, a reported failure event or a changed repository
+# is never success; a failure the reviewer reports only in prose is not detected.
+# Config is host-relative: codex.model/effort are ignored under /.codex/, where the block describes
+# Claude; `models_codex` (codex-host worker tiers) never selects this reviewer. Every model/effort value
+# is disclosed with its source; an unselected model is `cli-default (identity unverified)`.
+# *[origin: reviewer replies discussing sandbox/tool errors self-failed — only TOP-LEVEL JSONL failure events count]*
+# *[origin: a live smoke launched the claude reviewer with the codex host's own model name]*
+# *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]*
+# *[origin: ship review Z4]* — `-o x.log` would alias the log onto the reply; the log then takes `$OUT.log`.
 set -uo pipefail
 
 # ---- shared internals ----
-# $0 is the only anchor a script has, and it must be resolved to an ABSOLUTE
-# PHYSICAL path here: the runner may be reached through a symlink (resolve it,
-# or `lib/` would be looked up next to the LINK) or relatively.
-# `realpath` is the resolver the minimal-PATH fixture provides (`readlink` is
-# not on that list); when it is absent or fails, python3 — already a hard
-# dependency — resolves it. The lexical $PWD form is a last resort that still
-# yields an absolute path.
-# EVERY required file is checked BEFORE any artifact exists: an incomplete
-# install must fail loudly and cheaply, never half-run a paid review.
+# $0 resolved to an ABSOLUTE PHYSICAL path (symlinked or relative invocation): realpath (the minimal-PATH
+# fixture has no readlink), else python3, else lexical $PWD. Every required file is checked before any
+# artifact exists: an incomplete install fails loudly, never half-runs a paid review.
 HJW_SELF="$(realpath "$0" 2>/dev/null)"
 case "$HJW_SELF" in
   /*) ;;
@@ -178,28 +40,16 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=codex
-# The events stream sits next to the reply. `.events.2.jsonl` and `$OUT.tmp`
-# are no longer written here (the 2.22 retry removal), but an OLDER install
-# reached by a hop still writes them — so all are declared BEFORE forwarding
-# and init, and the artifact guard judges them before the first write.
+# Declared before forwarding and init so the artifact guard judges them; `.events.2.jsonl` and `$OUT.tmp`
+# are written only by an older install a hop may reach (the retry was removed in 2.22).
 HJW_OUT_SIBLINGS=(.events.jsonl .events.2.jsonl)
 HJW_OUT_APPENDS=(.tmp)
 
-# A remembered runner path outlives the version it named: old cache versions
-# stay on disk, and a session that was updated in place keeps the path it was
-# briefed with. This is the FIRST action after sourcing — before parsing,
-# stdin, traps, temp files, config selection or any chdir — so a forwarded run
-# is indistinguishable from having invoked the installed runner directly.
-# Fail open: any doubt at all and this returns, and the run continues HERE.
-# The one thing it refuses is a hop whose argv names an artifact inside the
-# repository: that exits 2 here, before the exec (the target may predate the
-# artifact guard).
+# FIRST action after sourcing (before parsing, stdin, traps, temp files, config, chdir): a stale remembered
+# runner path forwards to the installed version. Fail open; an argv naming an artifact inside the repo exits 2.
 hjw_forward_if_stale "$@"
 
-# REVIEWER CONTRACT: prepended to every brief this script sends to codex, on
-# every input path. Durable owner policy
-# — not brief-specific, do not let callers override it. Entrypoint-owned: the
-# shared library never invents a vendor's standing instructions.
+# REVIEWER CONTRACT: prepended to every brief on every input path; durable owner policy, never caller-overridable.
 REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
@@ -218,25 +68,16 @@ Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.
   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
+  --mode implement: removed in 2.10 (cross-vendor worker routing is a non-goal)
 
---mode implement was removed in 2.10 (cross-vendor worker routing is a
-non-goal).
+Env (env > config > default; empty = unset): CODEX_SANDBOX, CODEX_EFFORT (default medium),
+  CODEX_MODEL, CODEX_TIMEOUT (default 600s at every effort; 0 = unlimited).
+Config keys codex.consult_sandbox, codex.model, codex.effort; env wins. model/effort are
+  ignored under /.codex/ (there the codex block describes Claude).
 
-Env (env > config > default; empty env value = unset): CODEX_SANDBOX,
-  CODEX_EFFORT (runner default medium), CODEX_MODEL, CODEX_TIMEOUT (default
-  600s at every effort).
-
-Config keys (codex.consult_sandbox, codex.model, codex.effort) are read
-  from the plugin data config.json; env wins. model/effort are IGNORED when
-  the config path is a codex host's (under /.codex/) — there the codex block
-  describes Claude, not this reviewer.
-
-Exit code: non-zero on ANY of {codex rc!=0, empty reply, codex failure event,
-  missing event stream, codex tracing error, repository changed, change
-  detection unavailable}. Guarantee, narrowed to what is actually checked:
-  rc=0 with no reply, a reported failure event, or a changed repository is
-  never reported as success; a failure the reviewer reports only in prose is
-  not detected.
+Exit code: non-zero on ANY of {codex rc!=0, empty reply, codex failure event, missing event
+  stream, codex tracing error, repository changed, change detection unavailable}; a failure
+  the reviewer reports only in prose is not detected.
 EOF
 }
 
@@ -271,8 +112,7 @@ else
   esac
 fi
 # ---- model: env CODEX_MODEL > config codex.model > CLI default ----
-# A whitespace-only value counts as UNSET on both paths: an empty env var is
-# an absent setting, not a request for a model named "".
+# Whitespace-only counts as UNSET on both paths: an empty env var is not a model named "".
 ENV_MODEL="$(trim "${CODEX_MODEL:-}")"
 if [ -n "$ENV_MODEL" ]; then
   MODEL="$ENV_MODEL"; MODEL_SRC="env"
@@ -283,10 +123,8 @@ else
 fi
 
 # ---- effort: env CODEX_EFFORT > config codex.effort > runner default medium ----
-# Reviewer effort scales with the DECISION'S stakes, not a fixed pin (uniform
-# max dilutes "spend budget where judgment compounds"). Invalid ENV value =
-# caller input = loud exit 2 (same rule as CODEX_SANDBOX); invalid CONFIG
-# value = one note + runner default, never a hard stop for a stale file.
+# Effort scales with the decision's stakes. Invalid ENV = caller input = exit 2 (as CODEX_SANDBOX);
+# invalid CONFIG = one note + runner default, never a hard stop for a stale file.
 ENV_EFFORT="$(trim "${CODEX_EFFORT:-}")"
 if [ -n "$ENV_EFFORT" ]; then
   case "$ENV_EFFORT" in
@@ -305,19 +143,13 @@ elif [ -n "$CFG_EFFORT" ]; then
       ;;
   esac
 else
-  # Owner policy (2.14): MEDIUM is the default. `high` is for design/plan rounds
-  # and diff reviews, `xhigh` for architecture forks, security-critical calls and
-  # final deadlock rounds — and an unconfigured routine consult is none of those.
-  # A default of `high` charged every routine check at design-round rates.
+  # Owner policy (2.14): medium. `high` is for design/plan rounds and diff reviews, `xhigh` for architecture,
+  # security and deadlock rounds; a `high` default charged every routine check at design-round rates.
   EFFORT="medium"; EFFORT_SRC="runner-default"
 fi
 
-# The wall clock is DECOUPLED from effort (2.14): the old effort->timeout table
-# (150/300/600/1200) made the effort DEFAULT silently retune the timeout, so
-# lowering the default would have shortened every unconfigured run's budget. A
-# reviewer's wall-clock need is set by the BRIEF — how much repository it has to
-# read — not by how hard it thinks. One default for every effort; the
-# CODEX_TIMEOUT env override is unchanged.
+# Wall clock DECOUPLED from effort (2.14): the old effort->timeout table let the effort default silently
+# retune it. The brief (how much repository to read) sets the need, not effort. CODEX_TIMEOUT overrides.
 TIMEOUT="${CODEX_TIMEOUT:-600}"
 
 MODEL_FLAG=(); [ -n "$MODEL" ] && MODEL_FLAG=(-m "$MODEL")
@@ -338,29 +170,22 @@ command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex
   echo "# codex_consult  $HJW_PLUGIN_DISP  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# codex '; bounded 20 codex --version 2>&1 | head -1
 } > "$LOG"
-# The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is
-# appended here — the one place where it survives, and it belongs with the
-# header rather than below the section marker, where it would read as the
-# CLI's own output.
+# After the header write (which truncates $LOG), so the foreign-CLAUDE_PLUGIN_DATA note survives with the header.
 hjw_config_disclose
 echo "# ---- codex exec ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"
-# $LOG cannot collide with the previous reply/events — the aliasing rule
-# above already renamed it.
+# $LOG cannot collide with the previous reply/events — the aliasing rule renamed it.
 rm -f "$OUT" "$EVENTS"
 hjw_git_preflight
 ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
   if [ "$SANDBOX" != read-only ]; then
-    # Not a git repo AND the sandbox cannot block writes: nothing would verify
-    # the no-edit contract for this run. Refuse BEFORE the paid call (exit 2,
-    # before any reviewer call) — this used to be a post-run failure that
-    # still spent a reviewer call on a result it then discarded. A read-only
-    # sandbox outside a repo stays allowed: the sandbox IS the enforcement.
-    # *[origin 2026-09-21 audit item 3]*
+    # Not a git repo AND the sandbox cannot block writes: nothing verifies the no-edit contract, so refuse
+    # before the paid call (was a post-run failure that paid for a discarded result). Read-only outside a
+    # repo stays allowed: the sandbox IS the enforcement. *[origin 2026-09-21 audit item 3]*
     REFUSE_MSG="consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
     printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
     echo "$REFUSE_MSG" >&2
@@ -381,8 +206,7 @@ import json, re, sys
 
 path = sys.argv[1]
 requested = sys.argv[2] if len(sys.argv) > 2 else ""
-# A stream of anonymous objects proves nothing ran: "present" requires at
-# least one event codex actually emits.
+# "present" requires one event codex actually emits: anonymous objects prove nothing ran.
 KNOWN = {"thread.started", "turn.started", "turn.completed", "turn.failed",
          "item.started", "item.updated", "item.completed", "error"}
 MODEL_ERR = re.compile(r"unknown model|model not found|not available|unsupported model", re.I)
@@ -417,9 +241,7 @@ if fh is not None:
                 known += 1
             if etype == "item.started":
                 seen_item_started = True
-            # Only TOP-LEVEL failure objects count. Nested item text and
-            # aggregated command output are never inspected — a reviewer
-            # quoting an error string must not fail its own run.
+            # Only TOP-LEVEL failure objects count: a reviewer quoting an error string must not fail its own run.
             if not fail_type and etype in ("turn.failed", "error"):
                 fail_type = etype
                 err = ev.get("error")
@@ -474,16 +296,13 @@ run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --
 rc=$?
 DUR=$((SECONDS - START))
 
-# A model codex rejects PRE-EXECUTION is no longer retried (2.22): the run
-# fails with codex's own error, and the classifier's model/pre-exec flags only
-# add one hint to the failure block.
+# A pre-execution model rejection is not retried (2.22): it fails with codex's own error plus one hint.
 classify_events "$EVENTS" "$MODEL"
 
 hjw_detect_after
 
 # ---- failure classifier (never trust the exit code alone) ----
-# Classification CONTINUES after an rc/empty failure so the diagnostics
-# (which event, which trace line) survive into the report.
+# Classification CONTINUES after an rc/empty failure so the diagnostics survive into the report.
 
 # (i) exit code
 if [ "$rc" -eq 124 ]; then fail "timed out after ${TIMEOUT}s (tune with CODEX_TIMEOUT)"
@@ -501,26 +320,16 @@ if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
   fail "no event stream (rc=0) — cannot verify the run"
 fi
 
-# (iv) tracing errors on THIS attempt's stderr only, ANCHORED at column 0.
-# Indented lines, prose, and echoed file content cannot match by construction —
-# that is the whole point: the old unanchored grep failed runs whose reply
-# merely discussed an error.
-# The scan ALWAYS runs (2.14): the `CODEX_ALLOW_MARKERS=1` escape hatch was
-# deleted. It was added when the unanchored grep produced false positives, but
-# once the scan became anchored the ONLY thing it ever fired on in the field was
-# a hook block — which is now kept as a note below, not a failure — so the knob
-# bought nothing while offering a one-variable way to switch a real failure
-# detector off. ROLLBACK TRIGGER, stated so it is falsifiable: an anchored-scan
-# failure on a run whose reply was COMPLETE and VALID. Until that is observed,
-# there is nothing to suppress.
+# (iv) tracing errors on THIS attempt's stderr, ANCHORED at column 0: prose and echoed content cannot match
+# (the old unanchored grep failed replies that discussed an error). Always runs (2.14: CODEX_ALLOW_MARKERS
+# removed — anchored, it only ever fired on hook blocks, now a note). ROLLBACK TRIGGER: an anchored-scan
+# failure on a COMPLETE, VALID reply.
 TRACE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z[[:space:]]+ERROR[[:space:]]+codex_core'
 HOOK_BLOCK_RE='Command blocked by PreToolUse hook'
 TRACE_ALL="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -E "$TRACE_RE")"
 if [ -n "$TRACE_ALL" ]; then
-  # A hook denying a command the REVIEWER tried to run is the gate doing
-  # its job on the reviewer's side — not a codex failure, and not grounds
-  # to throw away a complete reply. Record it, note it once, keep going.
-  # Observed live 2026-09-14. Every OTHER anchored tracing error still fails.
+  # A hook denying a REVIEWER command is the gate working, not a codex failure: note it, keep the reply
+  # (observed live 2026-09-14). Every other anchored tracing error still fails.
   HOOK_BLOCKED="$(printf '%s\n' "$TRACE_ALL" | grep -F "$HOOK_BLOCK_RE")"
   TRACE_LINE="$(printf '%s\n' "$TRACE_ALL" | grep -vF "$HOOK_BLOCK_RE" | grep -m1 -E "$TRACE_RE")"
   if [ -n "$HOOK_BLOCKED" ]; then
@@ -536,9 +345,7 @@ fi
 
 # (v) change detection
 hjw_change_verdict
-# No else: outside a git repo only the read-only sandbox reaches this point
-# (every other sandbox exits 2 in the preflight, before the paid call), and
-# there the sandbox itself enforces the contract.
+# No else: outside a git repo only the read-only sandbox gets here, and the sandbox enforces the contract.
 
 # ---- result ----
 if [ "$FAILED" = 1 ]; then

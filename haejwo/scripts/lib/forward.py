@@ -4,34 +4,13 @@
   version <plugin.json>                                   own manifest version
   target  <registry> <cache-root> <own-ver> <self> <name>  where to forward
 
-WHY THIS EXISTS (measured 2026-09-28, khnp-rag session): a session started on
-2.16.1, 2.17.0 was installed while it was open, and `/reload-plugins`
-refreshed hooks and commands but did NOT re-inject the SessionStart brief. The
-host kept invoking the LITERAL 2.16.1 runner path it still had in context —
-old cache versions stay on disk — so three more consults ran with the 2.16.1
-defect (`model=cli-default (identity unverified)`, no `config=` field). The
-runner is the only component that learns the truth at the right moment, so it
-forwards ITSELF to the installed version.
-
-FAIL OPEN, ALWAYS. Every ambiguity, every read/parse error and every failed
-validation prints NOTHING, and the caller then runs locally. Forwarding is a
-convenience over a host's bookkeeping file; it must never be the reason a
-review does not happen.
-
-HOST-SCOPED. The registry path is derived from the INVOKED runner's own
-`<plugins>` prefix, so a runner installed under `~/.codex/plugins/` can only
-ever read `~/.codex/plugins/installed_plugins.json`. A Codex host keeps no
-such registry today, which makes forwarding a documented no-op there — never a
-cross-host lookup into Claude's registry.
-
-NO LEXICAL VERSION ORDERING. The registry names exactly one installed entry;
-that entry is followed when its version STRING differs from the runner's own,
-downgrades included. "Higher" is not a judgment this layer is entitled to
-make: the host installed what it installed.
-
-Transport: values are terminated with the same sentinel the rest of the
-library uses, because command substitution strips trailing newlines and an
-install path may legally end in one.
+*[origin: measured 2026-09-28 (khnp-rag): `/reload-plugins` did not re-inject the SessionStart brief, the
+host kept invoking the literal 2.16.1 runner path, and three consults ran with the 2.16.1 defect]*
+FAIL OPEN: every ambiguity or error prints NOTHING and the caller runs locally. HOST-SCOPED: the registry
+derives from the invoked runner's own <plugins> prefix (a no-op on a Codex host, never cross-host).
+NO VERSION ORDERING: the one registry entry is followed whenever its version string differs, downgrades
+included — the host installed what it installed. Values end with the library's sentinel (command
+substitution strips trailing newlines; an install path may end in one).
 """
 import json
 import os
@@ -39,50 +18,24 @@ import stat
 import sys
 
 SENTINEL = "\x04__HJW_SNAP_END__"
-# A plugin manifest and a plugin registry are small JSON files. The bound is
-# what keeps a wrong/huge path (or a device node reached through a symlink)
-# from being read into memory before a review that has not started yet.
+# Manifests and registries are small; the bound keeps a wrong/huge path or device node out of memory.
 MAX_BYTES = 1 << 20
 
 PLUGIN_KEY = "haejwo@haejwo"
 MANIFEST = os.path.join(".claude-plugin", "plugin.json")
-# Every helper BOTH entrypoints check before they source anything — the
-# identical `for _hjw_f in ...` list in codex_consult.sh and claude_consult.sh.
-# A destination missing any one of them exits 3 AFTER it has already replaced
-# this process, and the local fallback can no longer run: completeness is
-# therefore decided HERE, before the exec.
-#
-# The list cannot be shared as one literal. The entrypoints check these files
-# in order to be allowed to run python at all, so they cannot read the list
-# from a python file that is itself on it. tests/test_hooks.py asserts that
-# the three lists are equal.
-#
-# LEGACY DESTINATIONS. `forward.py` on this list is also what keeps forwarding
-# from ever reaching a pre-2.18 install: those versions ship no lib/forward.py,
-# so they can never be a target. That is not incidental — they also have no
-# hop-marker removal, so forwarding into one would hand HJW_FORWARDED straight
-# to the reviewer CLI. Only forwarding-aware destinations are followed; a
-# downgrade to before 2.18 runs as invoked.
-# snapshot.py left this list in 2.22; the install still ships it as a
-# tombstone because 2.18-2.21 forwarders require it of a destination.
+# Every helper BOTH entrypoints check before sourcing (tests assert the three lists are equal; the
+# entrypoints cannot read it from python they have not verified yet). A destination missing one exits 3
+# after replacing this process, so completeness is decided HERE. forward.py on the list also keeps pre-2.18
+# installs (no hop-marker removal) from ever being a target. snapshot.py left the list in 2.22; the install
+# still ships it as a tombstone because 2.18-2.21 forwarders require it.
 REQUIRED_LIB = ("consult_common.sh", "bounded.py", "detect.py",
                 "config.py", "forward.py")
 
 
 def _contained(path, root_real):
-    """True when `path` RESOLVES inside `root_real`.
-
-    The raw prefix test on the registry string is only a first filter: it
-    accepts `<cache-root>/../../../../outside`, and it accepts a path whose
-    components are symlinks pointing anywhere at all. Both are answered here,
-    by normalization AND symlink resolution.
-
-    NOT AN ATOMIC BOUNDARY. What is validated here and what `exec` runs later
-    are two separate lookups, and anything able to write inside the cache can
-    replace the file in between. These are ordinary path checks against
-    accidental misconfiguration and casual tampering — not a defense against a
-    hostile local user, who already owns the runner being invoked.
-    """
+    """True when `path` RESOLVES inside `root_real` (normalization AND symlinks; the raw prefix test is
+    only a first filter). NOT atomic: check and exec are separate lookups — this guards misconfiguration
+    and casual tampering, not a hostile local user who already owns the runner."""
     if not root_real or root_real == os.sep:
         return False
     try:
@@ -93,10 +46,8 @@ def _contained(path, root_real):
 
 
 def _complete(install):
-    """True when the destination carries the FULL helper set both entrypoints
-    demand, each a regular readable file. A half-deleted cache directory is a
-    real thing on disk, and so is an install from before these helpers
-    existed."""
+    """True when the destination has the FULL helper set, each a regular readable file (half-deleted
+    and pre-helper installs exist on disk)."""
     lib = os.path.join(install, "scripts", "lib")
     for name in REQUIRED_LIB:
         path = os.path.join(lib, name)
@@ -110,9 +61,7 @@ def _complete(install):
 
 
 def _load(path):
-    """Parsed JSON at `path`, or None. Never raises: a missing, oversized,
-    non-regular, unreadable or malformed file is all the same answer here —
-    "no information", which means run locally."""
+    """Parsed JSON at `path`, or None. Never raises: any bad file means "run locally"."""
     try:
         st = os.stat(path)
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_BYTES:
@@ -133,9 +82,8 @@ def _version(manifest_path):
 
 
 def _candidates(registry, cache_root, root_real):
-    """Registry entries for haejwo that live under THIS runner's own cache
-    root. The value may be a list or a single object (both shapes have been
-    seen); anything else, and any entry without usable strings, is dropped."""
+    """haejwo registry entries under THIS runner's own cache root; a list or a single object (both seen),
+    anything unusable dropped."""
     plugins = registry.get("plugins") if isinstance(registry, dict) else None
     if not isinstance(plugins, dict):
         return []
@@ -155,8 +103,7 @@ def _candidates(registry, cache_root, root_real):
             continue
         if not install or not ver:
             continue
-        # UNDER the cache root, never the root itself — as WRITTEN (the cheap
-        # first filter) and as RESOLVED (traversal and symlinks both).
+        # UNDER the cache root, never the root itself — as written (cheap filter) and as resolved.
         if not install.startswith(prefix) or not install[len(prefix):].strip("/"):
             continue
         if not _contained(install, root_real):
@@ -184,38 +131,29 @@ def cmd_target(argv):
         return
     root_real = os.path.realpath(cache_root)
     found = _candidates(registry, cache_root, root_real)
-    # EXACTLY ONE installation, or nothing happens. Two entries disagreeing
-    # about which version is installed is precisely the situation where a
-    # guess would forward a review to the wrong code. Duplicates that say the
-    # SAME thing are not a disagreement.
+    # EXACTLY ONE installation, or nothing: disagreeing entries are where a guess forwards to the wrong
+    # code; identical duplicates are not a disagreement.
     if len({(v, os.path.normpath(p)) for v, p in found}) != 1:
         return
     version, install = found[0]
-    # String inequality, both directions: an intentional downgrade is an
-    # install like any other.
+    # String inequality, both directions: an intentional downgrade is an install like any other.
     if version == own_version:
         return
     target = os.path.join(install, "scripts", name)
-    # The registry is host bookkeeping, not proof. The target must AGREE about
-    # its own version and must be a complete install, or the runner stays
-    # where it is: a half-deleted cache directory is a real thing on disk.
+    # The registry is bookkeeping, not proof: the target must agree on its version and be complete.
     if _version(os.path.join(install, MANIFEST)) != version:
         return
     if not _complete(install):
         return
-    # The executable itself must resolve inside the cache root too: an install
-    # directory that is contained says nothing about a runner inside it that is
-    # a symlink to somewhere else.
+    # The executable must resolve inside the cache root too (a contained dir may hold a symlinked runner).
     if not _contained(target, root_real):
         return
     try:
         st = os.stat(target)
         if not stat.S_ISREG(st.st_mode) or not os.access(target, os.X_OK):
             return
-        # Physical identity, not path equality: a registry whose installPath
-        # is a symlink to the invoked copy would otherwise exec this very
-        # file again, and the hop marker would be the only thing standing
-        # between that and an infinite loop.
+        # Physical identity, not path equality: a symlinked installPath to this copy would re-exec it,
+        # with only the hop marker preventing a loop.
         if os.path.realpath(target) == os.path.realpath(self_path):
             return
     except Exception:
@@ -233,8 +171,7 @@ def main():
     try:
         MODES[sys.argv[1]](sys.argv[2:])
     except Exception:
-        # Silence is the contract: the caller reads stdout, and an empty
-        # stdout means "run locally".
+        # Silence is the contract: an empty stdout means "run locally".
         sys.exit(0)
 
 

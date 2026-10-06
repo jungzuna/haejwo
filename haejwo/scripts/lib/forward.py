@@ -23,13 +23,22 @@ MAX_BYTES = 1 << 20
 
 PLUGIN_KEY = "haejwo@haejwo"
 MANIFEST = os.path.join(".claude-plugin", "plugin.json")
-# Every helper BOTH entrypoints check before sourcing (tests assert the three lists are equal; the
-# entrypoints cannot read it from python they have not verified yet). A destination missing one exits 3
-# after replacing this process, so completeness is decided HERE. forward.py on the list also keeps pre-2.18
-# installs (no hop-marker removal) from ever being a target. snapshot.py left the list in 2.22; the install
-# still ships it as a tombstone because 2.18-2.21 forwarders require it.
+# Every helper BOTH entrypoints check before sourcing (a test keeps the three lists equal; they cannot read
+# it from unverified python). A destination missing one exits 3 after replacing this process, so completeness
+# is decided HERE; forward.py on it keeps pre-2.18 installs (no hop-marker removal) from ever being a target.
 REQUIRED_LIB = ("consult_common.sh", "bounded.py", "detect.py",
                 "config.py", "forward.py")
+# [origin: 2.22 review — 2.18-2.21 runners exit 3 without snapshot.py; 2.22+ ship it only as a tombstone]
+LEGACY_LIB = ("snapshot.py",)
+
+
+def _below_2_22(version):
+    """True unless `version` is a dotted numeric triple >= 2.22.0 (unparsable counts as legacy)."""
+    parts = version.split(".")
+    try:
+        return len(parts) != 3 or tuple(int(p) for p in parts) < (2, 22, 0)
+    except Exception:
+        return True
 
 
 def _contained(path, root_real):
@@ -45,11 +54,10 @@ def _contained(path, root_real):
     return real.startswith(root_real.rstrip(os.sep) + os.sep)
 
 
-def _complete(install):
-    """True when the destination has the FULL helper set, each a regular readable file (half-deleted
-    and pre-helper installs exist on disk)."""
+def _complete(install, version):
+    """True when every helper ITS version requires is a regular readable file (half-deleted installs exist)."""
     lib = os.path.join(install, "scripts", "lib")
-    for name in REQUIRED_LIB:
+    for name in REQUIRED_LIB + (LEGACY_LIB if _below_2_22(version) else ()):
         path = os.path.join(lib, name)
         try:
             st = os.stat(path)
@@ -143,7 +151,7 @@ def cmd_target(argv):
     # The registry is bookkeeping, not proof: the target must agree on its version and be complete.
     if _version(os.path.join(install, MANIFEST)) != version:
         return
-    if not _complete(install):
+    if not _complete(install, version):
         return
     # The executable must resolve inside the cache root too (a contained dir may hold a symlinked runner).
     if not _contained(target, root_real):

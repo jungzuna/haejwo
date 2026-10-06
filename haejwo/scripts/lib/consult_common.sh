@@ -18,15 +18,16 @@
 #                    (codex: its events streams; claude: none), so the
 #                    artifact guard checks them before the first write
 #   HJW_OUT_APPENDS  suffixes of the artifacts it derives from the WHOLE
-#                    $OUT (codex: the `$OUT.tmp` of its fallback rewrite;
-#                    claude: none), checked with the rest
+#                    $OUT (codex: `$OUT.tmp`, written only by an older
+#                    install a hop may reach; claude: none), checked with
+#                    the rest
 # (all five BEFORE `hjw_forward_if_stale`: the pre-forward artifact check
 # derives the same paths the local run will — see the artifact guard below)
 # and OWNS (never inferred here): the REVIEWER CONTRACT text, print_help, the
 # CLI argv and its redirections, both effective-brief writes, the timeout
 # default, the event classifier + stderr scan + effort/sandbox (codex only),
 # the non-git policy, and its own artifact list — `ARTIFACTS` for change
-# detection and `HJW_SNAP_GUARD` for the capture guard. This library NEVER
+# detection. This library NEVER
 # invents a vendor's artifact paths: the claude runner has no events stream,
 # so nothing here may create, delete, exclude or guard one.
 #
@@ -47,21 +48,6 @@ strip_sentinel() {
   META_VAL=""
   case "$1" in
     *"$SNAP_META_END") META_VAL="${1%"$SNAP_META_END"}"; return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-read_meta() {
-  # Command substitution strips trailing newlines, so the capture writes every
-  # value with a sentinel terminator and the SENTINEL — not the shell — marks
-  # the end: a repository path may legally end in a newline and $(cat) alone
-  # would silently corrupt it. The result lands in $META_VAL, never in a
-  # substitution (which would strip it all over again).
-  local raw
-  META_VAL=""
-  raw="$(cat "$1" 2>/dev/null)" || return 1
-  case "$raw" in
-    *"$SNAP_META_END") META_VAL="${raw%"$SNAP_META_END"}"; return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -226,11 +212,10 @@ hjw_forward_if_stale() {
 # which positional is the brief. It has no side effects beyond the variables
 # it sets: no output, no exit, no stdin.
 hjw_scan_args() {
-  # Sets MODE, OUT, SNAPSHOT, HJW_REST and BRIEF. Returns 0 = parsed, 1 =
+  # Sets MODE, OUT, HJW_REST and BRIEF. Returns 0 = parsed, 1 =
   # help requested, 2 = rejected ($HJW_SCAN_ERR holds the one-line reason).
   MODE=""
   OUT=""
-  SNAPSHOT=0
   HJW_REST=()
   BRIEF=""
   HJW_SCAN_ERR=""
@@ -239,10 +224,10 @@ hjw_scan_args() {
       # --resume was removed in 2.13: implicit latest-thread selection
       # misroutes under concurrent sessions (the runner cannot tell which
       # thread is the caller's). Rejected during PARSING — before any CLI
-      # call, snapshot capture or preflight work.
+      # call or preflight work. (--snapshot, removed in 2.22, is now an
+      # unknown option like any other.)
       # *[origin: cross-vendor decision round 2026-09-21]*
       --resume) HJW_SCAN_ERR="--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief"; return 2 ;;
-      --snapshot) SNAPSHOT=1; shift ;;
       --mode)   [ $# -ge 2 ] || { HJW_SCAN_ERR="--mode requires a value (consult)"; return 2; }; MODE="$2"; shift 2 ;;
       --mode=*) MODE="${1#--mode=}"; shift ;;
       -o)       [ $# -ge 2 ] || { HJW_SCAN_ERR="-o requires a value (output file)"; return 2; }; OUT="$2"; shift 2 ;;
@@ -291,81 +276,39 @@ hjw_preforward_guard() {
   # local run uses — read-only: stdin is never touched, nothing is created.
   # A `-` brief without `-o` names no reply path yet (it derives from a
   # mktemp name), so only the $TMPDIR directory is judged for it, exactly as
-  # the local run does before reading stdin — and under --snapshot that
-  # directory's CANONICAL form too (hjw_tmp_dirs), because the reply and log
-  # derived from the temp brief are canonicalized on the other side. With a
-  # named brief or `-o`, nothing canonicalized derives from $TMPDIR.
+  # the local run does before reading stdin.
   # Returns 0 = forward (judged clean, or help: nothing is written on either
-  # side); 1 = do NOT forward (this version rejects the argv or cannot
-  # resolve a --snapshot path — the local run reports it). A refusal exits 2.
-  local rc _c _p _cout="" _clog="" _pf=()
+  # side); 1 = do NOT forward (this version rejects the argv — the local run
+  # reports it). A refusal exits 2.
+  local rc
   hjw_scan_args "$@"
   rc=$?
   [ "$rc" -eq 1 ] && return 0
   [ "$rc" -eq 0 ] || return 1
   hjw_artifact_set "$BRIEF" "$OUT"
-  hjw_tmp_dirs || return 1
+  hjw_tmp_dirs
   hjw_artifact_dir_guard "${HJW_TMP_DIRS[@]}"
-  _pf=(${HJW_KNOWN[@]+"${HJW_KNOWN[@]}"})
-  # Under --snapshot the destination writes to the CANONICALIZED paths
-  # (hjw_canonicalize), which can differ from what the first check judged —
-  # so those are judged too, with the same log-aliasing rule.
-  if [ "$SNAPSHOT" = 1 ]; then
-    for _p in ${HJW_KNOWN[@]+"${HJW_KNOWN[@]}"}; do
-      _c="$(canon_path "$_p")" || return 1
-      strip_sentinel "$_c" && [ -n "$META_VAL" ] || return 1
-      _pf+=("$META_VAL")
-      [ "$_p" = "$HJW_ART_OUT" ] && _cout="$META_VAL"
-      [ "$_p" = "$HJW_ART_LOG" ] && _clog="$META_VAL"
-    done
-    [ -n "$_cout" ] && [ "$_clog" = "$_cout" ] && _pf+=("$_cout.log")
-  fi
-  [ "${#_pf[@]}" -gt 0 ] && hjw_artifact_guard "${_pf[@]}"
+  [ "${#HJW_KNOWN[@]}" -gt 0 ] && hjw_artifact_guard "${HJW_KNOWN[@]}"
   return 0
 }
 
 hjw_tmp_dirs() {
   # Sets HJW_TMP_DIRS: the directory every mktemp artifact lands in
-  # ($HJW_TMP_DIR) — always — plus its CANONICAL form when, and only when, a
-  # canonicalized artifact DERIVES from it: under --snapshot with a `-` brief
-  # and no `-o`, the reply/log/events are named after the temp brief and
-  # hjw_canonicalize (normalize `..` lexically, THEN resolve) moves them. The
-  # two forms can differ: with /x/repolink -> <repo> and <repo>/outlink ->
-  # /safe/deep, TMPDIR=/x/repolink/outlink/.. is outside both lexically and
-  # resolved, yet canonicalizes to <repo>. Every other snapshot run writes its
-  # temp files at the RAW TMPDIR only, so judging the canonical form there
-  # would refuse a safe run. Reads SNAPSHOT/BRIEF/OUT as hjw_scan_args left
-  # them. Returns 1 when the canonical form cannot be computed.
-  # *[origin: 2.21 cross-vendor confirmations G1 and its follow-up]*
-  local _c
+  # ($HJW_TMP_DIR), judged as the RAW path.
   HJW_TMP_DIRS=("$HJW_TMP_DIR")
-  [ "$SNAPSHOT" = 1 ] && [ "$BRIEF" = "-" ] && [ -z "$OUT" ] || return 0
-  _c="$(canon_path "$HJW_TMP_DIR/_")" || return 1
-  strip_sentinel "$_c" && [ -n "$META_VAL" ] || return 1
-  _c="${META_VAL%/*}"
-  HJW_TMP_DIRS+=("${_c:-/}")
   return 0
 }
 
 hjw_tmp_guard() {
   # The local run's judgment of the mktemp directory — the same one
   # hjw_preforward_guard makes before a hop.
-  hjw_tmp_dirs || { echo "snapshot unavailable: cannot resolve TMPDIR to an absolute path: $HJW_TMP_DIR" >&2; exit 2; }
+  hjw_tmp_dirs
   hjw_artifact_dir_guard "${HJW_TMP_DIRS[@]}"
 }
 
 cleanup() {
-  # Snapshot removal runs FIRST: it needs `bounded`, and the temp state the
-  # very next lines delete. Guarded by $SNAP so the early exits above — which
-  # run before the traps are even armed — stay silent. `report_snapshot_cleanup`
-  # is part of that step on purpose: a leftover worktree is a real outcome, so
-  # it has to reach stderr on a FAILURE or REFUSAL exit too, not only after a
-  # successful review (which removes the snapshot itself, before its result line).
-  if [ -n "$SNAP" ]; then snapshot_cleanup; report_snapshot_cleanup; fi
-  # THEN, and only then, the temp inputs the step above still needed.
   [ -n "$TMPBRIEF" ] && rm -f "$TMPBRIEF"
   [ -n "$EFFECTIVE_BRIEF" ] && rm -f "$EFFECTIVE_BRIEF"
-  [ -n "$SNAPMETA" ] && rm -rf "$SNAPMETA"
   [ -n "$SNAPDIR" ] && rm -rf "$SNAPDIR"
 }
 
@@ -390,11 +333,6 @@ hjw_common_init() {
   hjw_plugin_version_load
   hjw_esc_display "${HJW_PLUGIN_VERSION:-unknown}"
   HJW_PLUGIN_DISP="plugin=$HJW_ESC"
-  # --snapshot state. ORIG is the ORIGINAL repository root, SNAP the detached
-  # worktree, SNAPMETA the capture scratch dir (patch + computed disclosure).
-  # Who owns SNAP is never inferred from a marker this script wrote — cleanup
-  # asks git (`worktree list --porcelain`), so an interruption between `mktemp`
-  # and `worktree add` cannot leave the wrong removal strategy behind.
   META_VAL=""
   # Config ownership state (hjw_config_resolve/_load/_disclose fill these in).
   CFG_PATH=""
@@ -403,31 +341,17 @@ hjw_common_init() {
   CFG_DISP=""
   CFG_FOREIGN_NOTE=""
   CFG_FOREIGN_REPORTED=0
-  ORIG=""
-  SNAP=""
-  SNAPMETA=""
-  SNAP_SHA=""
-  SNAP_TAG=""
-  SNAP_NOTE=""
-  SNAP_CLEANUP_DONE=0
-  SNAP_CLEANUP_FAILED=0
-  SNAP_CLEANUP_REPORTED=0
-  START_EXTRA=""
-  RESULT_EXTRA=""
   COVERAGE_NOTE=""
   FAILED=0
   FAIL_MSG=""
   ARTIFACTS=()
-  HJW_SNAP_GUARD=()
-  # Armed HERE — before the capture creates anything — so there is no window in
-  # which a snapshot exists with no trap to remove it.
+  # Armed HERE — before any temp file exists.
   trap cleanup EXIT
-  # A snapshot worktree must not outlive an interrupted run either; bash does not
+  # Temp files must not outlive an interrupted run either; bash does not
   # fire the EXIT trap for an uncaught INT/TERM, so catch both and exit through
   # it with the runner's OWN status — the status the trap sees belongs to
   # whatever was interrupted. The explicit exit re-enters cleanup through the
-  # EXIT trap; every step in there is guarded by a once-flag or is idempotent,
-  # so the removal happens exactly once.
+  # EXIT trap; every step in there is idempotent.
   trap 'cleanup; exit 130' INT
   trap 'cleanup; exit 143' TERM
   if [ "$BRIEF" = "-" ]; then
@@ -502,16 +426,14 @@ hjw_artifact_set() {
 }
 
 # ---- artifact guard (2.21): never write inside the reviewed repository ----
-# GUARANTEE, exactly: every runner artifact (reply, log, codex's events and
-# its fallback `$OUT.tmp`, the temp brief and effective brief) lies outside
+# GUARANTEE, exactly: every runner artifact (reply, log, codex's events, the
+# temp brief and effective brief — plus the legacy `.events.2.jsonl` and
+# `$OUT.tmp` an older install reached by a hop still writes) lies outside
 # the worktree the runner was invoked from and outside that worktree's git
 # dirs, judged both lexically and through symlinks. NOT covered: other
 # worktrees of the same repository outside this top level, and a hostile
 # concurrent replacement after the check — it guards against accidental paths
-# (a typo in `-o`, a brief kept inside the repo with no `-o`). The guarantee
-# is about these ARTIFACTS: --snapshot's own `git worktree add` necessarily
-# writes worktree metadata into the repository's git dir (snapshot.py), and
-# that is not an artifact in this sense.
+# (a typo in `-o`, a brief kept inside the repo with no `-o`).
 # SCOPE IN VERSIONS: the guarantee belongs to the INVOKED runner (2.21+), and
 # it holds across a forwarding hop — including a hop to an OLDER install the
 # registry selected, which may have no guard of its own: hjw_preforward_guard
@@ -519,14 +441,10 @@ hjw_artifact_set() {
 # derivation before the exec. What a pre-2.21 runner invoked DIRECTLY does is
 # outside it.
 # ORDER, exactly: every path known from argv (`-o` and what derives from it)
-# and the $TMPDIR directory (its canonical form too when a --snapshot stdin
-# brief without `-o` derives the reply from it — hjw_tmp_dirs) are
-# judged first; a stdin brief is read only after that. Without `-o` a stdin
-# brief's reply path derives from the temp brief's name, so that temp brief —
-# inside the already-cleared directory — is the one write that precedes the
-# final check. Under --snapshot the canonicalized paths are judged AGAIN
-# (hjw_canonicalize), because resolving can land a path the first check
-# accepted inside the repository.
+# and the $TMPDIR directory are judged first; a stdin brief is read only
+# after that. Without `-o` a stdin brief's reply path derives from the temp
+# brief's name, so that temp brief — inside the already-cleared directory —
+# is the one write that precedes the final check.
 # A refusal exits 2 with ONE line, before any paid call and before any
 # artifact is truncated or removed — $LOG included, since $LOG is one of the
 # paths under judgment. Fail closed: a check that cannot run refuses too.
@@ -554,185 +472,6 @@ hjw_artifact_check() {
   [ "$rc" -eq 0 ] && return 0
   [ "$rc" -ne 2 ] && echo "artifact path check unavailable (rc=$rc) — refusing before any write" >&2
   exit 2
-}
-
-# Under --snapshot the reviewer's working root becomes the snapshot, so every
-# caller path is resolved to an absolute one BEFORE anything chdirs: a relative
-# brief or -o would otherwise be read from / written into a directory that is
-# deleted on exit. Only the final component is left unresolved (the reply/log
-# do not exist yet). Non-snapshot runs are untouched — they never chdir, so
-# their relative paths keep meaning exactly what they always meant.
-# *[origin: B8 snapshot spec 2a]*
-canon_path() {
-  # Terminated with the sentinel so a path ending in a newline survives the
-  # command substitution below. *[origin: ship review Z3]*
-  python3 -c 'import os, sys
-p = os.path.abspath(sys.argv[1])
-d, b = os.path.dirname(p), os.path.basename(p)
-sys.stdout.write(os.path.join(os.path.realpath(d), b) + sys.argv[2])' "$1" "$SNAP_META_END"
-}
-
-hjw_canonicalize() {
-  # $@ = variable NAMES, resolved in place. The entrypoint passes its OWN list
-  # (the claude runner has no events paths to resolve). BRIEF is the one
-  # INPUT among them; every other name is an artifact.
-  local _v _canon _sfx _recheck=()
-  for _v in "$@"; do
-    _canon="$(canon_path "${!_v}")" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
-    strip_sentinel "$_canon" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
-    [ -n "$META_VAL" ] || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
-    printf -v "$_v" '%s' "$META_VAL"
-  done
-  # Canonicalization can make two textually different paths the SAME file
-  # (a symlinked directory); re-apply the log-aliasing rule on the resolved
-  # pair. *[origin: ship review Z4]*
-  [ "$LOG" = "$OUT" ] && LOG="$OUT.log"
-  # Judge the FINAL paths again, before any write. canon_path normalizes `..`
-  # lexically and then resolves the parent, which is not what the first check
-  # judged: with /x/repolink -> <repo> and <repo>/outlink -> /safe/deep,
-  # `/x/repolink/outlink/../r.md` resolves to /safe/r.md for the first check
-  # but canonicalizes to <repo>/r.md. Same refusal line, same exit.
-  # *[origin: 2.21 cross-vendor diff review F2]*
-  for _v in "$@"; do
-    [ "$_v" = BRIEF ] && continue
-    _recheck+=("${!_v}")
-  done
-  for _sfx in ${HJW_OUT_APPENDS[@]+"${HJW_OUT_APPENDS[@]}"}; do
-    _recheck+=("$OUT$_sfx")
-  done
-  [ -n "$TMPBRIEF" ] && _recheck+=("$TMPBRIEF")
-  hjw_artifact_guard "${_recheck[@]}"
-  return 0
-}
-
-# ---- --snapshot: capture the repository into a detached worktree ----
-# Every step's status is checked and EVERY failure refuses before the paid
-# call: a snapshot that is silently incomplete is worse than no snapshot,
-# because the reviewer's conclusions would be about a repository that never
-# existed. Reasons are printed loudly and nothing partial survives (the
-# EXIT/INT/TERM traps are armed in hjw_common_init, BEFORE anything is created).
-# *[origin: B8 snapshot spec 2 — fail closed and loud on capture]*
-snapshot_refuse() {
-  local reason="$1"
-  [ -n "$reason" ] || reason="capture failed (no reason recorded)"
-  # Best effort into the log as well: a caller who keeps only $LOG must still
-  # learn why the snapshot was refused.
-  printf '# ---- snapshot unavailable: %s ----\n' "$reason" >> "$LOG" 2>/dev/null
-  echo "snapshot unavailable: $reason" >&2
-  exit 2
-}
-
-snapshot_read_or_refuse() {
-  # $1 = meta file, $2 = what it holds (for the failure message).
-  read_meta "$1" || snapshot_refuse "capture produced no $2"
-}
-
-snapshot_preflight() {
-  # $1 = starting directory, $2 = meta dir. Writes `orig` and `sha`, or
-  # `refuse`. Runs BEFORE anything is created, so a refusal here costs nothing.
-  bounded 120 python3 "$HJW_LIB/snapshot.py" preflight "$1" "$2"
-}
-
-snapshot_build() {
-  # $1 = ORIG, $2 = SHA, $3 = SNAP, $4 = meta dir, rest = caller paths that
-  # must NOT live inside the snapshot. Writes `tag`, `note` and `log`, or
-  # `refuse`. Every git call and every write is status-checked.
-  bounded 600 python3 "$HJW_LIB/snapshot.py" build "$@"
-}
-
-snapshot_capture() {
-  # Orchestrates the capture and leaves ORIG/SNAP/SNAP_TAG/SNAP_NOTE set.
-  # Refuses (exit 2) on ANY failure — never returns a partial snapshot.
-  # The preflight and the capture keep SEPARATE bounds (120s / 600s) and the
-  # same failure ordering as before the extraction.
-  # The effective brief is written by the ENTRYPOINT once this returns: the
-  # REVIEWER CONTRACT is entrypoint-owned policy, so the write that consumes
-  # it stays there too.
-  SNAPMETA="$(mktemp -d "${TMPDIR:-/tmp}/hjw_snapmeta.XXXXXX")" || \
-    snapshot_refuse "cannot create a temp directory (is ${TMPDIR:-/tmp} writable?)"
-  # "" = use python's own os.getcwd(): $(pwd) would have stripped a trailing
-  # newline from a directory name that legally carries one.
-  # *[origin: ship review Z3]*
-  snapshot_preflight "" "$SNAPMETA"
-  if [ $? -ne 0 ]; then
-    read_meta "$SNAPMETA/refuse" || META_VAL=""
-    snapshot_refuse "$META_VAL"
-  fi
-  snapshot_read_or_refuse "$SNAPMETA/orig" "repository root"; ORIG="$META_VAL"
-  snapshot_read_or_refuse "$SNAPMETA/sha" "HEAD"; SNAP_SHA="$META_VAL"
-  [ -n "$ORIG" ] && [ -n "$SNAP_SHA" ] || snapshot_refuse "capture produced no origin/HEAD"
-  SNAP="$(mktemp -d "${TMPDIR:-/tmp}/hjw_snap.XXXXXX")" || \
-    snapshot_refuse "cannot create a temp directory (is ${TMPDIR:-/tmp} writable?)"
-  snapshot_build "$ORIG" "$SNAP_SHA" "$SNAP" "$SNAPMETA" "${HJW_SNAP_GUARD[@]}"
-  if [ $? -ne 0 ]; then
-    # A failure AFTER `worktree add` still leaves a worktree behind; the EXIT
-    # trap reconciles that against git's own bookkeeping, not a marker file.
-    read_meta "$SNAPMETA/refuse" || META_VAL=""
-    snapshot_refuse "$META_VAL"
-  fi
-  snapshot_read_or_refuse "$SNAPMETA/tag" "disclosure tag"; SNAP_TAG="$META_VAL"
-  snapshot_read_or_refuse "$SNAPMETA/note" "brief note"; SNAP_NOTE="$META_VAL"
-  [ -n "$SNAP_TAG" ] && [ -n "$SNAP_NOTE" ] || snapshot_refuse "capture produced no disclosure"
-  cat "$SNAPMETA/log" >> "$LOG" || \
-    snapshot_refuse "cannot append the snapshot record to the log: $LOG"
-  return 0
-}
-
-snapshot_registered() {
-  # $1 = ORIG, $2 = candidate path. Runs the listing ITSELF: a NUL-delimited
-  # porcelain stream cannot survive command substitution (bash drops NULs),
-  # and the non-z form C-quotes exotic paths. git prints its OWN resolved
-  # path, which may differ textually from the mktemp path this script holds,
-  # so compare realpaths.
-  # Exit 0 = registered, 1 = definitely NOT registered, anything else = could
-  # not tell — and the caller treats "could not tell" as registered.
-  # *[origin: ship review Z1]*
-  bounded 60 python3 "$HJW_LIB/snapshot.py" registered "$1" "$2"
-}
-
-snapshot_cleanup() {
-  # Ownership is reconciled against git's OWN bookkeeping rather than a marker
-  # this script wrote: a registered worktree may be removed only by git, and
-  # anything else is safe to delete only when we asked mktemp to create it
-  # under the system temp root. A repo-wide `worktree prune` is NEVER run — a
-  # concurrent worktree of the same repository is none of this runner's
-  # business.
-  [ "$SNAP_CLEANUP_DONE" = 1 ] && return 0
-  SNAP_CLEANUP_DONE=1
-  [ -n "$SNAP" ] || return 0
-  # Leave the snapshot before removing it: git refuses to remove a worktree
-  # that is the current directory, and this runner may have chdir'd into it.
-  [ -n "$ORIG" ] && cd "$ORIG" 2>/dev/null
-  local rrc out
-  snapshot_registered "$ORIG" "$SNAP"
-  rrc=$?
-  # ONLY a definite "not registered" (rc 1) may take the direct path. A
-  # listing we could not read or parse counts as REGISTERED: attempting the
-  # git removal and reporting its failure beats rm -rf'ing a live worktree.
-  if [ "$rrc" -ne 1 ]; then
-    # Captured into a variable, NEVER redirected into $LOG: an unwritable log
-    # must not be misreported as a cleanup failure.
-    out="$(bounded 60 git -C "$ORIG" worktree remove --force "$SNAP" 2>&1)" || SNAP_CLEANUP_FAILED=1
-    [ -n "$out" ] && printf '# ---- snapshot cleanup ----\n%s\n' "$out" >> "$LOG" 2>/dev/null
-  else
-    case "$SNAP" in
-      # Only a directory this runner asked mktemp to create, and only its
-      # result decides: a failed rm is a leftover like any other.
-      "${TMPDIR:-/tmp}"/*) rm -rf "$SNAP" || SNAP_CLEANUP_FAILED=1 ;;
-      *) SNAP_CLEANUP_FAILED=1 ;;  # not ours to delete — say it is left behind
-    esac
-  fi
-  return 0
-}
-
-report_snapshot_cleanup() {
-  # A leftover worktree is an operator problem (it pins objects and keeps a
-  # stale entry in the repository), so it is never swallowed by a successful
-  # review — but it is announced AFTER the reply, which is still valid.
-  [ "$SNAP_CLEANUP_FAILED" = 1 ] || return 0
-  [ "$SNAP_CLEANUP_REPORTED" = 1 ] && return 0
-  SNAP_CLEANUP_REPORTED=1
-  echo "snapshot cleanup failed: $SNAP" >&2
 }
 
 # ---- config ----
@@ -888,7 +627,7 @@ hjw_config_disclose() {
 }
 
 hjw_config_values() {
-  # Prints `model=`, `effort=`, `fallback_model=` and `ignored=` (keys present
+  # Prints `model=`, `effort=` and `ignored=` (keys present
   # but not strings) — or NOTHING at all when the `codex` block describes the
   # OTHER vendor's reviewer. HOST-RELATIVE: that block belongs to the reviewer
   # of the host that owns the data dir, so on a VENDOR path the codex runner
@@ -932,12 +671,11 @@ hjw_config_load() {
   # display here, never in CFG_PATH itself.
   hjw_esc_display "${CFG_PATH:-none}"
   CFG_DISP="config=$HJW_ESC ($CFG_SOURCE) config_status=$CFG_STATUS"
-  CFG_MODEL=""; CFG_EFFORT=""; CFG_FALLBACK_MODEL=""; CFG_IGNORED=""
+  CFG_MODEL=""; CFG_EFFORT=""; CFG_IGNORED=""
   local values old_ifs k
   values="$(hjw_config_values)"
   CFG_MODEL="$(printf '%s\n' "$values" | sed -n 's/^model=//p')"
   CFG_EFFORT="$(printf '%s\n' "$values" | sed -n 's/^effort=//p')"
-  CFG_FALLBACK_MODEL="$(printf '%s\n' "$values" | sed -n 's/^fallback_model=//p')"
   CFG_IGNORED="$(printf '%s\n' "$values" | sed -n 's/^ignored=//p')"
   if [ "$HJW_RUNNER_KIND" = codex ]; then
     if [ -n "$CFG_IGNORED" ]; then
@@ -1010,7 +748,7 @@ detect_fail_now() {
   # This path fails the run WITHOUT going through fail(): there is no report
   # block to assemble here, only this one message and git's own explanation.
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && { echo "# ---- change detection stderr ----"; cat "$SNAPDIR/detect.err"; } >> "$LOG"
-  echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, 0s${RESULT_EXTRA:-}):${COVERAGE_NOTE:-}" >&2
+  echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, 0s):${COVERAGE_NOTE:-}" >&2
   echo "  - $DETECT_MSG" >&2
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && sed 's/^/  /' "$SNAPDIR/detect.err" >&2
   exit 1
@@ -1076,7 +814,7 @@ hjw_change_verdict() {
 # never guesses which disclosures a vendor has (codex discloses effort and
 # sandbox, claude has neither knob).
 hjw_fail_header() {
-  echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, ${DUR}s${RESULT_EXTRA:-}):${COVERAGE_NOTE:-}" >&2
+  echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, ${DUR}s):${COVERAGE_NOTE:-}" >&2
   printf '%s' "$FAIL_MSG" >&2
 }
 

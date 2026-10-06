@@ -7,11 +7,11 @@
 #       from the project root).
 #
 # Shape (2.13): the mechanics both reviewer runners share — parsing, paths,
-#       the wall clock, --snapshot, change detection, config, cleanup — live
-#       in `scripts/lib` (`consult_common.sh` + five python helpers). THIS
-#       file owns everything vendor-specific: the REVIEWER CONTRACT text, the
+#       the wall clock, change detection, config, cleanup — live in
+#       `scripts/lib` (`consult_common.sh` + python helpers). THIS file owns
+#       everything vendor-specific: the REVIEWER CONTRACT text, the
 #       `codex exec` argv, effort/sandbox, the event-stream classifier, the
-#       model-unavailable retry, the events artifacts, and the non-git policy.
+#       events artifact, and the non-git policy.
 #       Two entrypoints, one set of mechanics, explicit vendor policy.
 #
 # Core design (production hardening): NEVER trust the exit code alone.
@@ -31,13 +31,13 @@
 #   unanchored marker grep over the mixed log was removed entirely.
 #   *[origin: reviewer replies discussing sandbox/tool errors self-failed]*
 #
-# Every input the reviewer sees (initial run, the model fallback retry) is
+# Every input the reviewer sees is
 # prefixed with a standing REVIEWER CONTRACT (below) that forbids
 # edits/installs/config changes — enforced by instruction here, and
 # backstopped by the post-run change-detection gate.
 #
 # Usage:
-#   codex_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
+#   codex_consult.sh [--mode consult] [-o out.md] brief.md
 #   echo "..." | codex_consult.sh --mode consult -   # stdin brief (deleted on exit)
 #
 # Mode (safety gate):
@@ -46,26 +46,7 @@
 #             cannot block edits — enforce in code). `--mode implement` was
 #             removed in 2.10 (cross-vendor worker routing is a non-goal).
 #   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
-#   --snapshot  runs the reviewer in a DETACHED WORKTREE snapshot of this
-#             repository instead of the working copy — see "Snapshot" below.
-#
-# Snapshot (--snapshot, 2.11): HEAD plus the NET uncommitted working-tree
-#   changes (one `git diff --binary <SHA>` patch replayed with `git apply
-#   --index` — staged and unstaged states are NOT reproduced separately) plus
-#   untracked non-ignored files (sorted, first 2000; symlinks copied AS LINKS,
-#   never followed). Ignored files are omitted, so dependencies and
-#   configuration may be missing — the reviewer is told to report a missing
-#   capability rather than install anything. Capture is NOT atomic: it is
-#   bracketed by timestamps and followed by a drift re-check that REFUSES
-#   ("original changed during capture — retry") rather than shipping a torn
-#   snapshot. Any capture failure exits 2 with `snapshot unavailable: <reason>`
-#   BEFORE the paid call, and nothing partial survives. This is isolation from
-#   the working copy, NOT containment: the snapshot shares the repository's
-#   `.git` metadata, and writes to the ORIGINAL working tree or to global
-#   config during the run are invisible to the change-detection gate (which
-#   runs inside the snapshot). Refused up front: unborn HEAD, unresolved merge
-#   conflicts, gitlinks (submodules) and embedded untracked repositories —
-#   none of which a plain worktree snapshot can reproduce honestly.
+#   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
 #
 # Config (haejwo's OWN config.json — see CODEX_SANDBOX below for the exact
 # ownership rules; the log header discloses the selected path and its status).
@@ -73,12 +54,10 @@
 #   codex.consult_sandbox   sandbox for consult runs (read on ANY host)
 #   codex.model             default reviewer model (env CODEX_MODEL wins)
 #   codex.effort            default reviewer effort (env CODEX_EFFORT wins)
-#   codex.fallback_model    model to retry with when codex rejects the
-#                           requested model pre-execution
 # HOST-RELATIVE reading: the `codex` block describes the reviewer of the HOST
 # that owns the data dir. On a CODEX host (resolved config path under
 # /.codex/) that reviewer is CLAUDE, so this runner IGNORES
-# codex.model/effort/fallback_model there and behaves as "no config" for them.
+# codex.model/effort there and behaves as "no config" for them.
 # *[origin: a live smoke launched the claude reviewer with the codex host's
 # own model name]*
 # NOT read here: the `models_codex` config key belongs to codex-HOST worker
@@ -115,11 +94,10 @@
 #                   an invalid CONFIG value notes and falls back to medium.
 #   CODEX_MODEL     force a specific reviewer model (optional; overrides
 #                   config `codex.model`). Fixed for the whole consult
-#                   session; escalation is always a NEW session. If codex
-#                   pre-execution-rejects this model as unknown/unavailable,
-#                   this script retries ONCE (with `codex.fallback_model` if
-#                   configured, else the CLI default) and marks the reply —
-#                   never retried twice, never persisted.
+#                   session; escalation is always a NEW session. A model
+#                   codex rejects pre-execution fails the run with codex's
+#                   own error plus one hint naming CODEX_MODEL/codex.model —
+#                   never retried (the retry was removed in 2.22).
 #   CODEX_TIMEOUT   seconds; default 600 at EVERY effort (2.14: the old
 #                   effort->timeout table made the effort default silently
 #                   retune the wall clock). 0 = unlimited.
@@ -144,7 +122,7 @@
 #   cannot read are counted and disclosed, never skipped silently.
 #
 # Artifact guard (2.21): every artifact this runner writes (reply, log,
-# temp brief, effective brief, events streams) must lie OUTSIDE the worktree
+# temp brief, effective brief, events stream) must lie OUTSIDE the worktree
 # it is invoked from and outside that worktree's git dirs, judged lexically
 # and through symlinks; an existing artifact must be a regular file with one
 # hard link. A violation exits 2 with one line before the first write and
@@ -157,13 +135,11 @@
 # a forwarding hop, including a hop to an OLDER install with no guard of its
 # own — the argv-known paths are judged before the exec, and a refusal
 # forwards nothing. What a pre-2.21 runner invoked DIRECTLY does is outside
-# it. It covers these artifacts, not the git worktree metadata --snapshot's
-# `git worktree add` writes into the repository's git dir.
+# it.
 #
 # Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
 # the two the SAME file and the runner's own log would overwrite the reply it
 # just captured. When that collision happens the log takes `$OUT.log` instead.
-# Applies in every mode — the hazard predates --snapshot.
 # *[origin: ship review Z4]*
 #
 # Verification discipline: this is a READ-ONLY reviewer slot — never trust it
@@ -175,10 +151,7 @@ set -uo pipefail
 # ---- shared internals ----
 # $0 is the only anchor a script has, and it must be resolved to an ABSOLUTE
 # PHYSICAL path here: the runner may be reached through a symlink (resolve it,
-# or `lib/` would be looked up next to the LINK) or relatively, and $HJW_LIB
-# is used again AFTER the process has chdir'd — into the snapshot for the
-# reviewer call, and back to $ORIG during cleanup. A relative $HJW_LIB would
-# then be looked up in whichever directory the runner happened to land in.
+# or `lib/` would be looked up next to the LINK) or relatively.
 # `realpath` is the resolver the minimal-PATH fixture provides (`readlink` is
 # not on that list); when it is absent or fails, python3 — already a hard
 # dependency — resolves it. The lexical $PWD form is a last resort that still
@@ -196,7 +169,7 @@ case "$HJW_SELF" in
   *)  HJW_SELF="$PWD/${HJW_SELF:-$0}" ;;
 esac
 HJW_LIB="${HJW_SELF%/*}/lib"
-for _hjw_f in consult_common.sh bounded.py snapshot.py detect.py config.py forward.py; do
+for _hjw_f in consult_common.sh bounded.py detect.py config.py forward.py; do
   [ -f "$HJW_LIB/$_hjw_f" ] || {
     echo "consult runner library missing: $HJW_LIB/$_hjw_f" >&2; exit 3; }
 done
@@ -205,9 +178,10 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=codex
-# The events streams sit next to the reply, and the fallback rewrite stages
-# through `$OUT.tmp`; declared BEFORE forwarding and init so the artifact
-# guard checks them before the first write — on a hop too.
+# The events stream sits next to the reply. `.events.2.jsonl` and `$OUT.tmp`
+# are no longer written here (the 2.22 retry removal), but an OLDER install
+# reached by a hop still writes them — so all are declared BEFORE forwarding
+# and init, and the artifact guard judges them before the first write.
 HJW_OUT_SIBLINGS=(.events.jsonl .events.2.jsonl)
 HJW_OUT_APPENDS=(.tmp)
 
@@ -223,7 +197,7 @@ HJW_OUT_APPENDS=(.tmp)
 hjw_forward_if_stale "$@"
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to codex, on
-# every input path (initial run, model-fallback retry). Durable owner policy
+# every input path. Durable owner policy
 # — not brief-specific, do not let callers override it. Entrypoint-owned: the
 # shared library never invents a vendor's standing instructions.
 REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
@@ -237,17 +211,13 @@ print_help() {
 codex_consult.sh — feed a self-contained brief to codex exec; capture reply.
 
 Usage:
-  codex_consult.sh [--mode consult] [--snapshot] [-o out.md] brief.md
+  codex_consult.sh [--mode consult] [-o out.md] brief.md
   echo "..." | codex_consult.sh --mode consult -
 
 Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.
   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
-  --snapshot  review a detached worktree snapshot (HEAD + net uncommitted
-            changes + untracked non-ignored files, first 2000) instead of the
-            live working copy. Ignored files are omitted; capture is not
-            atomic (drift REFUSES); shared .git metadata means this is
-            isolation, not containment.
+  --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
 non-goal).
@@ -256,11 +226,10 @@ Env (env > config > default; empty env value = unset): CODEX_SANDBOX,
   CODEX_EFFORT (runner default medium), CODEX_MODEL, CODEX_TIMEOUT (default
   600s at every effort).
 
-Config keys (codex.consult_sandbox, codex.model, codex.effort,
-  codex.fallback_model) are read from the plugin data config.json; env wins.
-  model/effort/fallback_model are IGNORED when the config path is a codex
-  host's (under /.codex/) — there the codex block describes Claude, not this
-  reviewer.
+Config keys (codex.consult_sandbox, codex.model, codex.effort) are read
+  from the plugin data config.json; env wins. model/effort are IGNORED when
+  the config path is a codex host's (under /.codex/) — there the codex block
+  describes Claude, not this reviewer.
 
 Exit code: non-zero on ANY of {codex rc!=0, empty reply, codex failure event,
   missing event stream, codex tracing error, repository changed, change
@@ -275,13 +244,6 @@ EOF
 hjw_parse_args "$@"
 hjw_common_init
 EVENTS="${OUT%.*}${HJW_OUT_SIBLINGS[0]}"
-EVENTS2="${OUT%.*}${HJW_OUT_SIBLINGS[1]}"
-# Under --snapshot the reviewer's working root becomes the snapshot, so the
-# caller paths are resolved before anything chdirs. The events artifacts are
-# this runner's alone — claude_consult.sh has no event stream to resolve.
-if [ "$SNAPSHOT" = 1 ]; then
-  hjw_canonicalize BRIEF OUT LOG EVENTS EVENTS2
-fi
 
 # ---- effective brief: REVIEWER CONTRACT + blank line + original brief ----
 EFFECTIVE_BRIEF="$(mktemp "${TMPDIR:-/tmp}/codex_effective.XXXXXX.md")" || {
@@ -385,41 +347,17 @@ echo "# ---- codex exec ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"
-# --snapshot: capture FIRST, then point everything downstream at the snapshot.
-# Change detection, the reviewer's --cd and the artifact exclusions all read
-# $WORKDIR, so the gate verifies the copy the reviewer actually saw. Writes to
-# the ORIGINAL working tree (or to global config) during the run are invisible
-# to it BY DESIGN — that is the price of isolation, disclosed in the brief.
-if [ "$SNAPSHOT" = 1 ]; then
-  # THIS runner's paths: a caller path inside the snapshot would be deleted
-  # with it. The events artifacts exist only here.
-  HJW_SNAP_GUARD=("$BRIEF" "$OUT" "$LOG" "$EVENTS" "$EVENTS2")
-  snapshot_capture
-  # The reviewer is told WHERE it is running and what the snapshot omits,
-  # between the standing contract and the caller's brief. A brief the reviewer
-  # would read without that note is worse than no run at all.
-  # && between the three writes: a redirection that succeeds while a later
-  # write fails would hand the reviewer a brief with the contract but no
-  # snapshot note — worse than no run at all. *[origin: ship review Z2]*
-  { printf '%s\n\n' "$REVIEWER_CONTRACT" && printf '%s\n\n' "$SNAP_NOTE" && cat "$BRIEF"; } \
-    > "$EFFECTIVE_BRIEF" || \
-    snapshot_refuse "cannot write the effective brief: $EFFECTIVE_BRIEF"
-  WORKDIR="$SNAP"
-  START_EXTRA=", $SNAP_TAG"
-  RESULT_EXTRA=", $SNAP_TAG"
-fi
-# Previous artifacts are cleared only once the snapshot is secured: a capture
-# refusal must not destroy the reply/events of the caller's LAST run. $LOG
-# cannot collide with them — the aliasing rule above already renamed it.
-rm -f "$OUT" "$EVENTS" "$EVENTS2"
+# $LOG cannot collide with the previous reply/events — the aliasing rule
+# above already renamed it.
+rm -f "$OUT" "$EVENTS"
 hjw_git_preflight
-ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$EVENTS2" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
+ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
   if [ "$SANDBOX" != read-only ]; then
     # Not a git repo AND the sandbox cannot block writes: nothing would verify
     # the no-edit contract for this run. Refuse BEFORE the paid call (exit 2,
-    # like an unavailable snapshot) — this used to be a post-run failure that
+    # before any reviewer call) — this used to be a post-run failure that
     # still spent a reviewer call on a result it then discarded. A read-only
     # sandbox outside a repo stays allowed: the sandbox IS the enforcement.
     # *[origin 2026-09-21 audit item 3]*
@@ -431,11 +369,11 @@ if ! hjw_detect_before; then
 fi
 
 # ---- event-stream classifier (provenance: codex's own JSONL events) ----
-CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0; CLS_MALFORMED_BEFORE=0
+CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0
 CLS_FAIL_TYPE=""; CLS_FAIL_MSG=""; CLS_MODEL_UNAVAIL=0; CLS_PRE_EXEC=0
 classify_events() {
   # $1 = events file, $2 = requested model. Sets the CLS_* globals.
-  CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0; CLS_MALFORMED_BEFORE=0
+  CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0
   CLS_FAIL_TYPE=""; CLS_FAIL_MSG=""; CLS_MODEL_UNAVAIL=0; CLS_PRE_EXEC=0
   local raw
   raw="$(bounded 60 python3 - "$1" "$2" <<'PY'
@@ -449,7 +387,7 @@ KNOWN = {"thread.started", "turn.started", "turn.completed", "turn.failed",
          "item.started", "item.updated", "item.completed", "error"}
 MODEL_ERR = re.compile(r"unknown model|model not found|not available|unsupported model", re.I)
 
-parsed = known = malformed = malformed_before = 0
+parsed = known = malformed = 0
 fail_type = fail_msg = ""
 seen_item_started = False
 pre_exec = 0
@@ -469,13 +407,9 @@ if fh is not None:
                 ev = json.loads(line)
             except Exception:
                 malformed += 1
-                if not fail_type:
-                    malformed_before += 1
                 continue
             if not isinstance(ev, dict):
                 malformed += 1
-                if not fail_type:
-                    malformed_before += 1
                 continue
             parsed += 1
             etype = ev.get("type")
@@ -502,22 +436,20 @@ if fh is not None:
                     model_unavail = 1
 
 sys.stdout.write(
-    "parsed=%d\nknown=%d\nmalformed=%d\nmalformed_before=%d\nfail_type=%s\n"
+    "parsed=%d\nknown=%d\nmalformed=%d\nfail_type=%s\n"
     "pre_exec=%d\nmodel_unavail=%d\nfail_msg=%s\n"
-    % (parsed, known, malformed, malformed_before, fail_type, pre_exec,
-       model_unavail, fail_msg))
+    % (parsed, known, malformed, fail_type, pre_exec, model_unavail, fail_msg))
 PY
 )"
   CLS_PARSED="$(printf '%s\n' "$raw" | sed -n 's/^parsed=//p')"
   CLS_KNOWN="$(printf '%s\n' "$raw" | sed -n 's/^known=//p')"
   CLS_MALFORMED="$(printf '%s\n' "$raw" | sed -n 's/^malformed=//p')"
-  CLS_MALFORMED_BEFORE="$(printf '%s\n' "$raw" | sed -n 's/^malformed_before=//p')"
   CLS_FAIL_TYPE="$(printf '%s\n' "$raw" | sed -n 's/^fail_type=//p')"
   CLS_PRE_EXEC="$(printf '%s\n' "$raw" | sed -n 's/^pre_exec=//p')"
   CLS_MODEL_UNAVAIL="$(printf '%s\n' "$raw" | sed -n 's/^model_unavail=//p')"
   CLS_FAIL_MSG="$(printf '%s\n' "$raw" | sed -n 's/^fail_msg=//p')"
   CLS_PARSED="${CLS_PARSED:-0}"; CLS_KNOWN="${CLS_KNOWN:-0}"
-  CLS_MALFORMED="${CLS_MALFORMED:-0}"; CLS_MALFORMED_BEFORE="${CLS_MALFORMED_BEFORE:-0}"
+  CLS_MALFORMED="${CLS_MALFORMED:-0}"
   CLS_PRE_EXEC="${CLS_PRE_EXEC:-0}"; CLS_MODEL_UNAVAIL="${CLS_MODEL_UNAVAIL:-0}"
 }
 
@@ -536,53 +468,16 @@ run_attempt() {
   fi
 }
 
-echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF$START_EXTRA) ..." >&2
+echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF) ..." >&2
 START=$SECONDS
-CUR_EVENTS="$EVENTS"
 run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
 rc=$?
 DUR=$((SECONDS - START))
 
-# ---- model-unavailable fallback ----
-# A PRE-EXECUTION rejection of the requested model retries ONCE, never twice,
-# never persisted. Positive ID requires all four: rc!=0 (not a timeout), a
-# TOP-LEVEL failure event whose message both matches a known unknown-model
-# pattern AND names the requested model, NO item.started before it (proof
-# execution had not begun), and NO malformed line before it (a dropped line
-# could have carried the item.started that proof depends on). Ambiguous
-# errors are left to the classifier — a retry after real work would
-# double-charge and double-review.
-MODEL_FALLBACK=0
-FALLBACK_MODEL=""
-classify_events "$CUR_EVENTS" "$MODEL"
-# The condition is decided ONCE, against attempt 1's OWN evidence: the retry
-# reclassifies against attempt 2, which would otherwise overwrite it.
-DO_FALLBACK=0
-if [ -n "$MODEL" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
-   && [ "$CLS_MODEL_UNAVAIL" = 1 ] && [ "$CLS_PRE_EXEC" = 1 ] && [ "$CLS_MALFORMED_BEFORE" -eq 0 ]; then
-  DO_FALLBACK=1
-fi
-if [ "$DO_FALLBACK" = 1 ]; then
-  FALLBACK_MODEL="$CFG_FALLBACK_MODEL"
-  FB_FLAG=(); [ -n "$FALLBACK_MODEL" ] && FB_FLAG=(-m "$FALLBACK_MODEL")
-  if [ -n "$FALLBACK_MODEL" ]; then
-    MODEL_DISP="$(model_disp "$FALLBACK_MODEL" "config fallback; requested '$MODEL' unavailable")"
-    echo "⚠ model '$MODEL' rejected pre-execution — retrying ONCE with config fallback '$FALLBACK_MODEL' ..." >&2
-  else
-    MODEL_DISP="model=cli-default (identity unverified; requested '$MODEL' unavailable)"
-    echo "⚠ model '$MODEL' rejected pre-execution — retrying ONCE with the CLI default ..." >&2
-  fi
-  rm -f "$OUT"
-  START=$SECONDS
-  run_attempt 2 "$EVENTS2" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${FB_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
-  rc=$?
-  DUR=$((SECONDS - START))
-  MODEL_FALLBACK=1
-  CUR_EVENTS="$EVENTS2"
-  # The first attempt's events/traces must never fail a successful retry:
-  # reclassify against attempt 2 only.
-  classify_events "$CUR_EVENTS" "$FALLBACK_MODEL"
-fi
+# A model codex rejects PRE-EXECUTION is no longer retried (2.22): the run
+# fails with codex's own error, and the classifier's model/pre-exec flags only
+# add one hint to the failure block.
+classify_events "$EVENTS" "$MODEL"
 
 hjw_detect_after
 
@@ -598,7 +493,7 @@ elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
 [ -s "$OUT" ] || fail "empty reply (codex produced no final answer)"
 
 # (iii) codex's own failure events
-echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($CUR_EVENTS) ----" >> "$LOG"
+echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($EVENTS) ----" >> "$LOG"
 if [ -n "$CLS_FAIL_TYPE" ]; then
   fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
 fi
@@ -648,40 +543,14 @@ hjw_change_verdict
 # ---- result ----
 if [ "$FAILED" = 1 ]; then
   hjw_fail_header
-  if [ "$MODEL_FALLBACK" = 1 ]; then
-    if [ -n "$FALLBACK_MODEL" ]; then
-      echo "  (note: requested model '$MODEL' was unavailable; retried with '$FALLBACK_MODEL' (config fallback), still failed)" >&2
-    else
-      echo "  (note: requested model '$MODEL' was unavailable; retried with the CLI default, still failed)" >&2
-    fi
+  if [ -n "$MODEL" ] && [ "$CLS_MODEL_UNAVAIL" = 1 ] && [ "$CLS_PRE_EXEC" = 1 ]; then
+    echo "  hint: model '$MODEL' ($MODEL_SRC) was rejected before execution — set CODEX_MODEL or codex.model to an available model, or unset both for the CLI default" >&2
   fi
   hjw_fail_tail
 fi
 
-# Persist the fallback disclosure into $OUT itself (not just stdout) so a
-# caller reading the reply FILE programmatically also sees WHICH model
-# answered — stdout alone is lost to any redirection/capture of this script.
-FALLBACK_NOTE=""
-if [ "$MODEL_FALLBACK" = 1 ]; then
-  if [ -n "$FALLBACK_MODEL" ]; then
-    FALLBACK_NOTE="note: requested model '$MODEL' unavailable; reviewed by '$FALLBACK_MODEL' (config fallback)"
-  else
-    FALLBACK_NOTE="note: requested model '$MODEL' unavailable; reviewed by CLI default (identity unverified) (assurance downgraded)"
-  fi
-  { printf '%s\n' "$FALLBACK_NOTE"; cat "$OUT"; } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
-fi
-
 hjw_log_coverage_note
-# The snapshot worktree is removed BEFORE the success line: announcing a
-# finished run while the snapshot still exists would be a lie about the run's
-# state. A removal failure is still reported — after the reply, which is valid.
-if [ -n "$SNAP" ]; then snapshot_cleanup; fi
-echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP$RESULT_EXTRA ===$COVERAGE_NOTE"
-[ -n "$FALLBACK_NOTE" ] && echo "$FALLBACK_NOTE"
+echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===$COVERAGE_NOTE"
 [ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"
 cat "$OUT"
-if [ -n "$SNAP" ]; then
-  report_snapshot_cleanup
-  [ "$SNAP_CLEANUP_FAILED" = 1 ] && exit 1
-fi
 exit 0

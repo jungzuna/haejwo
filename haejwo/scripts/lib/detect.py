@@ -1,40 +1,18 @@
 #!/usr/bin/env python3
-"""Post-run change detection for haejwo's two reviewer runners.
+"""Post-run change detection and the artifact guard for haejwo's two reviewer runners.
 
   snapshot  <workdir> <outfile> [artifact...]   file-backed BEFORE/AFTER state
   compare   <before.json> <after.json>          the verdict + coverage flags
-  artifacts [--dir] <cwd> <path>...             refuse artifacts inside the repo
+  artifacts [--dir] <cwd> <path>...             refuse artifacts inside the repo (2.21)
 
-`artifacts` (2.21) runs before a runner's FIRST write: exit 0 when every
-runner artifact lies outside the reviewed repository, exit 2 with one refusal
-line otherwise. Protected: the worktree top level of <cwd> and its git dirs
-(`--git-dir`, `--git-common-dir`). Each path is tested lexically AND resolved
-(symlinks), relative paths against <cwd>; an existing artifact that is not a
-regular file or has more than one hard link is refused too. With `--dir` each
-path is the DIRECTORY that mktemp will create artifacts in, under names not
-known yet: only its containment is judged, never the properties of an existing
-entry in it (mktemp would pick another name). NOT protected:
-other worktrees of the same repository outside this top level. The guarantee
-covers accidental paths (a typo in `-o`), not a hostile concurrent replacement
-after the check. A non-git <cwd> has nothing to protect. "Artifacts" means the
-runner's reply/log/events/temp-brief paths.
-The guarantee belongs to the INVOKED runner (2.21+) and holds across a
-forwarding hop, including one to an OLDER install with no guard of its own:
-the invoked runner calls this on the argv-known paths before the exec. What a
-pre-2.21 runner invoked DIRECTLY does is outside it.
-*[origin: a cold read found that `-o` naming a tracked file was truncated by
-the log header and `rm -f` — and change detection excluded it BY DESIGN, so
-the overwrite was silent]*
-
-Scope, honestly: HEAD, tracked file status AND per-path working-tree
-fingerprints, `git diff` / `git diff --cached` digests, and the CONTENTS of
-untracked files (sorted, first 2000; presence is covered for all of them).
-Runner-owned artifacts — the list the ENTRYPOINT passes in — are excluded from
-the status, untracked and diff-digest inputs alike. NOT covered: global/user
-config, ignored files, anything outside the repo. Concurrent writers are not
-distinguished: a detected change means "something changed", never "the
-reviewer did it". Any error exits non-zero; a read error must NEVER be
-mistaken for "nothing changed".
+Scope: HEAD, tracked status AND per-path fingerprints, `git diff`/`--cached` digests, untracked CONTENTS
+(sorted, first 2000; presence for all); the entrypoint's artifacts are excluded. NOT covered: global/user
+config, ignored files, anything outside the repo; concurrent writers are not distinguished. Any error exits
+non-zero — a read error is NEVER "nothing changed". `artifacts` exits 0 when every path lies outside the
+worktree of <cwd> and its git dirs (lexically and resolved), else 2 with one line; other worktrees and a
+hostile concurrent replacement are not covered.
+*[origin: a cold read found that `-o` naming a tracked file was truncated by the log header and `rm -f` —
+and change detection excluded it BY DESIGN, so the overwrite was silent]*
 """
 import hashlib
 import json
@@ -75,10 +53,8 @@ def cmd_snapshot(argv):
             return "unreadable"
 
     try:
-        # Paths from git are repo-ROOT relative; resolve the root so exclusions
-        # and pathspecs line up even when the runner is invoked from a subdir.
-        # ONLY the trailing newline git appends — a directory name may legally
-        # end in a space, and .strip() would silently point every path elsewhere.
+        # Paths from git are repo-ROOT relative (the runner may run from a subdir). Strip ONLY git's
+        # trailing newline: a directory name may end in a space.
         root = dec(git("rev-parse", "--show-toplevel"))
         if root.endswith("\n"):
             root = root[:-1]
@@ -100,13 +76,9 @@ def cmd_snapshot(argv):
         except RuntimeError:
             head = "unborn"  # a repo with no commits is not a git error
 
-        # --untracked-files=all: a collapsed `newdir/` entry would hide which
-        # files appeared, and runner artifacts written into a fresh directory
-        # could not be excluded.
+        # --untracked-files=all: a collapsed `newdir/` would hide which files appeared and defeat exclusion.
         status_raw = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-        # Runner-owned artifacts are excluded from the diff digests by pathspec —
-        # a reply file written over a TRACKED path would otherwise self-trip the
-        # gate.
+        # Artifacts excluded by pathspec: a reply written over a TRACKED path would otherwise self-trip the gate.
         pathspec = []
         if rel_excludes:
             pathspec = ["--", "."] + [":(exclude,literal)%s" % r for r in rel_excludes]
@@ -143,8 +115,7 @@ def cmd_snapshot(argv):
             others = others[:2000]
         untracked = dict((p, fingerprint(os.path.join(root_real, p))) for p in others)
 
-        # Counted across tracked AND untracked entries: "some files are opaque to
-        # this gate" is a different limitation from "the untracked list was cut".
+        # Across tracked AND untracked: "opaque files" is a different limitation from "the list was cut".
         coverage = {"truncated": truncated, "unreadable": state["unreadable"]}
 
         snap = {"head": head, "paths": paths, "untracked": untracked,
@@ -180,8 +151,7 @@ def cmd_compare(argv):
         sys.exit(2)
 
     def esc(path):
-        # Keep the failure message to ONE line: repr only when the path carries
-        # characters that would break it.
+        # Keep the failure message ONE line: repr only paths carrying line-breaking characters.
         if any(ch in path for ch in "\n\r\t") or any(ord(ch) < 32 for ch in path):
             return repr(path)
         return path
@@ -199,8 +169,7 @@ def cmd_compare(argv):
             if b.get(p) != a.get(p):
                 items.append(esc(p))
 
-    # Aggregate digests only name the fact that SOMETHING tracked changed; emit
-    # them only when no path-level item was found (they add nothing otherwise).
+    # Aggregate digests only when no path-level item was found (they add nothing otherwise).
     if not items:
         if before["diff"] != after["diff"]:
             items.append("tracked contents (git diff)")
@@ -236,14 +205,8 @@ ARTIFACT_DIR_HINT = "set TMPDIR to a directory outside it"
 
 
 def cmd_artifacts(argv):
-    # detect.py artifacts [--dir] <cwd> <path>...
-    # Default: each <path> is a FILE the runner will write — refused when it is
-    # inside the reviewed repository (lexically or resolved) or when it exists
-    # as anything but a single-link regular file.
-    # --dir: each <path> is a DIRECTORY the runner will create files in under
-    # names it does not know yet (mktemp). Only containment is judged: the
-    # properties of any one existing name in it say nothing about the name
-    # mktemp will pick.
+    # Default: each <path> is a FILE (refused inside the repo, or existing as anything but a single-link
+    # regular file). --dir: each is a mktemp DIRECTORY — only containment (mktemp picks an unknown name).
     def esc(path):
         # One refusal LINE, whatever the path holds.
         if any(ord(ch) < 32 for ch in path):
@@ -319,8 +282,7 @@ def cmd_artifacts(argv):
             continue
         if any(inside_any(c) for c in candidates):
             refuse("artifact path is inside the reviewed repository", path)
-        # Followed through symlinks: a link to an outside file is the file. A
-        # dangling link is judged by its resolved target above.
+        # Followed through symlinks: a link to an outside file is the file; a dangling one was judged above.
         try:
             if os.path.exists(joined):
                 st = os.stat(joined)

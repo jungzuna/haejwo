@@ -8,8 +8,8 @@ Two things are denied, and only these two:
     exact leak the tiered subagents exist to avoid.
  2. delegating to a haejwo TIER worker with no model override while the
     user's config pins a model for that tier that DIFFERS from the agent
-    file's own default — omission would silently run the cheaper agent-file
-    default instead of the configured pin (tier pin check, below).
+    file's own default — omission would silently run the agent-file default
+    instead of the configured pin (tier pin check, below).
 Everything else (unknown subagent_type, missing fields, parse errors,
 subagent calls) is allowed — this is a delegation gate, not a security
 boundary; fail open on any ambiguity.
@@ -150,10 +150,9 @@ def _next_action(cfg, on_codex):
     'haiku'/'sonnet', which their config never mentions). _normalize_model
     keeps "explicit" meaning the same thing here as everywhere else.
 
-    Claude host: name whichever tiers are explicit (with the default config
-    sonnet/haiku this stays byte-identical to the long-tested wording); when
-    neither is, recommend the tiers only. Codex host: name both only when
-    BOTH are explicit — naming a non-explicit one would recommend
+    Claude host: name whichever tiers are explicit (the default config pins
+    both to opus); when neither is, recommend the tiers only. Codex host:
+    name both only when BOTH are explicit — naming a non-explicit one would recommend
     model:'inherit', which this very gate would re-deny.
     Raises on a malformed models/models_codex value; the caller catches that
     and falls back to the host-appropriate tier-only wording."""

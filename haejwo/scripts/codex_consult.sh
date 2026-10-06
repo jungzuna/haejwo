@@ -44,8 +44,7 @@
 #   consult   (only mode) non-editing contract with post-run change detection —
 #             FAILS if the repository changed after the run (danger-full-access
 #             cannot block edits — enforce in code). `--mode implement` was
-#             removed in 2.10 (cross-vendor worker routing is a non-goal) —
-#             use the standalone collab tool for manual implement runs.
+#             removed in 2.10 (cross-vendor worker routing is a non-goal).
 #   --resume: removed in 2.13 — escalation and follow-up rounds use a NEW session
 #   --snapshot  runs the reviewer in a DETACHED WORKTREE snapshot of this
 #             repository instead of the working copy — see "Snapshot" below.
@@ -82,9 +81,9 @@
 # codex.model/effort/fallback_model there and behaves as "no config" for them.
 # *[origin: a live smoke launched the claude reviewer with the codex host's
 # own model name]*
-# NOT read here: the `efforts_codex` / `models_codex` config keys belong to
-# codex-HOST worker tiers (spawn_agent parameters) — they never select this
-# reviewer's model or effort.
+# NOT read here: the `models_codex` config key belongs to codex-HOST worker
+# tiers (spawn_agent parameters) — it never selects this reviewer's model or
+# effort.
 #
 # Env (env > config > default; an EMPTY env value counts as UNSET):
 #   CODEX_SANDBOX   read-only|workspace-write|danger-full-access. Explicit
@@ -144,6 +143,23 @@
 #   is invoked, so an unverifiable run is never paid for. Files this gate
 #   cannot read are counted and disclosed, never skipped silently.
 #
+# Artifact guard (2.21): every artifact this runner writes (reply, log,
+# temp brief, effective brief, events streams) must lie OUTSIDE the worktree
+# it is invoked from and outside that worktree's git dirs, judged lexically
+# and through symlinks; an existing artifact must be a regular file with one
+# hard link. A violation exits 2 with one line before the first write and
+# before any paid call — no file is touched. Other worktrees of the same
+# repository are not covered, and the check guards against accidental paths
+# (a typo in `-o`, a brief kept inside the repo with no `-o`), not a hostile
+# concurrent replacement. *[origin: `-o` naming a tracked file was silently overwritten —
+# change detection excludes artifacts by design]*
+# Scope: the guarantee belongs to the INVOKED runner (2.21+) and holds across
+# a forwarding hop, including a hop to an OLDER install with no guard of its
+# own — the argv-known paths are judged before the exec, and a refusal
+# forwards nothing. What a pre-2.21 runner invoked DIRECTLY does is outside
+# it. It covers these artifacts, not the git worktree metadata --snapshot's
+# `git worktree add` writes into the repository's git dir.
+#
 # Artifact naming rule: $LOG is derived from $OUT, so `-o x.log` would make
 # the two the SAME file and the runner's own log would overwrite the reply it
 # just captured. When that collision happens the log takes `$OUT.log` instead.
@@ -189,6 +205,11 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=codex
+# The events streams sit next to the reply, and the fallback rewrite stages
+# through `$OUT.tmp`; declared BEFORE forwarding and init so the artifact
+# guard checks them before the first write — on a hop too.
+HJW_OUT_SIBLINGS=(.events.jsonl .events.2.jsonl)
+HJW_OUT_APPENDS=(.tmp)
 
 # A remembered runner path outlives the version it named: old cache versions
 # stay on disk, and a session that was updated in place keeps the path it was
@@ -196,6 +217,9 @@ HJW_RUNNER_KIND=codex
 # stdin, traps, temp files, config selection or any chdir — so a forwarded run
 # is indistinguishable from having invoked the installed runner directly.
 # Fail open: any doubt at all and this returns, and the run continues HERE.
+# The one thing it refuses is a hop whose argv names an artifact inside the
+# repository: that exits 2 here, before the exec (the target may predate the
+# artifact guard).
 hjw_forward_if_stale "$@"
 
 # REVIEWER CONTRACT: prepended to every brief this script sends to codex, on
@@ -226,7 +250,7 @@ Mode:
             isolation, not containment.
 
 --mode implement was removed in 2.10 (cross-vendor worker routing is a
-non-goal); use the standalone collab tool for manual implement runs.
+non-goal).
 
 Env (env > config > default; empty env value = unset): CODEX_SANDBOX,
   CODEX_EFFORT (runner default medium), CODEX_MODEL, CODEX_TIMEOUT (default
@@ -250,8 +274,8 @@ EOF
 # ---- argument parsing, shared state, traps, $OUT/$LOG ----
 hjw_parse_args "$@"
 hjw_common_init
-EVENTS="${OUT%.*}.events.jsonl"
-EVENTS2="${OUT%.*}.events.2.jsonl"
+EVENTS="${OUT%.*}${HJW_OUT_SIBLINGS[0]}"
+EVENTS2="${OUT%.*}${HJW_OUT_SIBLINGS[1]}"
 # Under --snapshot the reviewer's working root becomes the snapshot, so the
 # caller paths are resolved before anything chdirs. The events artifacts are
 # this runner's alone — claude_consult.sh has no event stream to resolve.
@@ -349,7 +373,7 @@ SANDBOX_DISP="sandbox=$SANDBOX"
 command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex --version)" >&2; exit 3; }
 
 {
-  echo "# codex_consult v0.4  $HJW_PLUGIN_DISP  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# codex_consult  $HJW_PLUGIN_DISP  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# codex '; bounded 20 codex --version 2>&1 | head -1
 } > "$LOG"
 # The header write TRUNCATES $LOG, so the foreign-CLAUDE_PLUGIN_DATA note is

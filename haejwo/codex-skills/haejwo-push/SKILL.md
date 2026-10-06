@@ -4,7 +4,8 @@ description: Show or set the per-repo push policy — outward actions are host-o
 ---
 
 <!-- MIRROR of commands/push.md for the Codex host — do not edit by hand;
-     edit commands/push.md and regenerate. Drift is canary-tested. -->
+     edit commands/push.md and run `python3 tests/mirrors.py --write`.
+     Drift is canary-tested. -->
 
 
 You are the **haejwo host**. Manage push consent for the current repo. The user's input: **$ARGUMENTS**

@@ -4,7 +4,8 @@ description: Inspect or change the enforcement gate on the fly — show status, 
 ---
 
 <!-- MIRROR of commands/gate.md for the Codex host — do not edit by hand;
-     edit commands/gate.md and regenerate. Drift is canary-tested. -->
+     edit commands/gate.md and run `python3 tests/mirrors.py --write`.
+     Drift is canary-tested. -->
 
 
 You are the **haejwo host**. Operate the enforcement gate. The user's input: **$ARGUMENTS**

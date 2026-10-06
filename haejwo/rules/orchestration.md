@@ -43,13 +43,13 @@ ones into the final report.
 
 **Briefs & acceptance:** goal, files, constraints, done-criteria; minimal
 worker judgment. Accept only diffs tracing to the brief or a disclosed
-judgment call; countable criteria need named deterministic evidence — none,
+judgment call; countable criteria need named deterministic evidence; none,
 no acceptance. Codex briefs append: verification evidence, concise report,
 `Judgment calls:`. Scope-limited review: name reviewed scope and omissions in
 the brief and the acceptance report; keep review coverage, verification done
 and delivery pending distinct.
 
-**Reporting:** proportional to content — one honest checkpoint, no theater.
+**Reporting:** proportional to content; one honest checkpoint, no theater.
 
 **Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
 Ask first unless `/haejwo:push auto` consent is recorded for the repo.
@@ -58,7 +58,7 @@ Ask first unless `/haejwo:push auto` consent is recorded for the repo.
 (Claude: deep-reasoner; Codex: native subagent). Worker fails: diagnose,
 fix, retry or raise the tier ONCE, else re-brief/decompose; never grind.
 
-**Hard rules (gate-enforced):** max N distinct code files/turn for the main
-agent (default 2); more deny -> delegate. Main agent NEVER edits code via
-Bash (sed -i, redirects, tee, python -c); Bash code edits ARE the
-delegation signal.
+**Gate-enforced:** main: max N code files/turn (default 2); more deny ->
+delegate; Bash redirect/tee/in-place code writes denied (heuristic).
+**Norm:** no code edits via Bash (python -c, scripts too); Bash code edits
+ARE the delegation signal.

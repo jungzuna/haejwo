@@ -1,8 +1,31 @@
 #!/usr/bin/env python3
 """Post-run change detection for haejwo's two reviewer runners.
 
-  snapshot <workdir> <outfile> [artifact...]   file-backed BEFORE/AFTER state
-  compare  <before.json> <after.json>          the verdict + coverage flags
+  snapshot  <workdir> <outfile> [artifact...]   file-backed BEFORE/AFTER state
+  compare   <before.json> <after.json>          the verdict + coverage flags
+  artifacts [--dir] <cwd> <path>...             refuse artifacts inside the repo
+
+`artifacts` (2.21) runs before a runner's FIRST write: exit 0 when every
+runner artifact lies outside the reviewed repository, exit 2 with one refusal
+line otherwise. Protected: the worktree top level of <cwd> and its git dirs
+(`--git-dir`, `--git-common-dir`). Each path is tested lexically AND resolved
+(symlinks), relative paths against <cwd>; an existing artifact that is not a
+regular file or has more than one hard link is refused too. With `--dir` each
+path is the DIRECTORY that mktemp will create artifacts in, under names not
+known yet: only its containment is judged, never the properties of an existing
+entry in it (mktemp would pick another name). NOT protected:
+other worktrees of the same repository outside this top level. The guarantee
+covers accidental paths (a typo in `-o`), not a hostile concurrent replacement
+after the check. A non-git <cwd> has nothing to protect. "Artifacts" means the
+runner's reply/log/events/temp-brief paths — not the git worktree metadata
+that --snapshot's `git worktree add` writes into the repository's git dir.
+The guarantee belongs to the INVOKED runner (2.21+) and holds across a
+forwarding hop, including one to an OLDER install with no guard of its own:
+the invoked runner calls this on the argv-known paths before the exec. What a
+pre-2.21 runner invoked DIRECTLY does is outside it.
+*[origin: a cold read found that `-o` naming a tracked file was truncated by
+the log header and `rm -f` — and change detection excluded it BY DESIGN, so
+the overwrite was silent]*
 
 Scope, honestly: HEAD, tracked file status AND per-path working-tree
 fingerprints, `git diff` / `git diff --cached` digests, and the CONTENTS of
@@ -17,6 +40,7 @@ mistaken for "nothing changed".
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -208,12 +232,116 @@ def cmd_compare(argv):
                      % (truncated, unreadable, ", ".join(uniq)))
 
 
-MODES = {"snapshot": cmd_snapshot, "compare": cmd_compare}
+ARTIFACT_HINT = "pass -o with a path outside it (the session scratchpad, for example)"
+ARTIFACT_DIR_HINT = "set TMPDIR to a directory outside it"
+
+
+def cmd_artifacts(argv):
+    # detect.py artifacts [--dir] <cwd> <path>...
+    # Default: each <path> is a FILE the runner will write — refused when it is
+    # inside the reviewed repository (lexically or resolved) or when it exists
+    # as anything but a single-link regular file.
+    # --dir: each <path> is a DIRECTORY the runner will create files in under
+    # names it does not know yet (mktemp). Only containment is judged: the
+    # properties of any one existing name in it say nothing about the name
+    # mktemp will pick.
+    def esc(path):
+        # One refusal LINE, whatever the path holds.
+        if any(ord(ch) < 32 for ch in path):
+            return repr(path)
+        return path
+
+    def refuse(reason, path, hint=ARTIFACT_HINT):
+        sys.stderr.write("%s: %s — %s\n" % (reason, esc(path), hint))
+        sys.exit(2)
+
+    dir_mode = bool(argv) and argv[0] == "--dir"
+    if dir_mode:
+        argv = argv[1:]
+    if not argv:
+        sys.stderr.write("detect.py: usage: detect.py artifacts [--dir] <cwd> <path>...\n")
+        sys.exit(2)
+    try:
+        cwd = os.path.abspath(argv[0] or os.getcwd())
+    except Exception as exc:
+        sys.stderr.write("cannot resolve the invoking directory: %s\n" % exc)
+        sys.exit(2)
+    paths = [p for p in argv[1:] if p]
+
+    def git(*args):
+        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True)
+        out = r.stdout.decode("utf-8", "surrogateescape")
+        # ONLY the newline git appends: a directory name may end in whitespace.
+        if out.endswith("\n"):
+            out = out[:-1]
+        return r.returncode, out, r.stderr.decode("utf-8", "replace").strip()
+
+    rc, inside, err = git("rev-parse", "--is-inside-work-tree")
+    if rc != 0:
+        if rc == 128 and "not a git repository" in err:
+            sys.exit(0)  # nothing to protect
+        sys.stderr.write("cannot determine the reviewed repository (git rev-parse rc=%d): %s\n"
+                         % (rc, err or "no detail"))
+        sys.exit(2)
+    queries = [("--absolute-git-dir",), ("--git-common-dir",)]
+    if inside == "true":
+        queries.insert(0, ("--show-toplevel",))
+    roots = []
+    for q in queries:
+        rc, out, err = git("rev-parse", *q)
+        if rc != 0 or not out:
+            sys.stderr.write("cannot determine the reviewed repository (git rev-parse %s rc=%d): %s\n"
+                             % (q[0], rc, err or "no output"))
+            sys.exit(2)
+        # --git-common-dir may be relative to <cwd>.
+        root = os.path.normpath(os.path.join(cwd, out))
+        roots.extend([root, os.path.realpath(root)])
+    roots = sorted(set(roots))
+
+    def inside_any(p):
+        for root in roots:
+            try:
+                if os.path.commonpath([p, root]) == root:
+                    return True
+            except ValueError:
+                continue  # different drives: never inside
+        return False
+
+    for path in paths:
+        try:
+            joined = os.path.join(cwd, path)
+            candidates = (os.path.normpath(os.path.abspath(joined)), os.path.realpath(joined))
+        except Exception as exc:
+            refuse("cannot resolve artifact path (%s)" % exc, path)
+        if dir_mode:
+            if any(inside_any(c) for c in candidates):
+                refuse("artifact directory is inside the reviewed repository", path,
+                       ARTIFACT_DIR_HINT)
+            continue
+        if any(inside_any(c) for c in candidates):
+            refuse("artifact path is inside the reviewed repository", path)
+        # Followed through symlinks: a link to an outside file is the file. A
+        # dangling link is judged by its resolved target above.
+        try:
+            if os.path.exists(joined):
+                st = os.stat(joined)
+                if not stat.S_ISREG(st.st_mode):
+                    refuse("artifact path exists and is not a regular file", path)
+                if st.st_nlink > 1:
+                    refuse("artifact path has more than one hard link", path)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            refuse("cannot inspect artifact path (%s)" % exc, path)
+    sys.exit(0)
+
+
+MODES = {"snapshot": cmd_snapshot, "compare": cmd_compare, "artifacts": cmd_artifacts}
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in MODES:
-        sys.stderr.write("detect.py: usage: detect.py snapshot|compare ...\n")
+        sys.stderr.write("detect.py: usage: detect.py snapshot|compare|artifacts ...\n")
         sys.exit(2)
     MODES[sys.argv[1]](sys.argv[2:])
 

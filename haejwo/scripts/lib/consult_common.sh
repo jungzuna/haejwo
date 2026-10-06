@@ -14,6 +14,14 @@
 #                    reading, usage text and failure labels
 #   HJW_SELF         the runner's OWN absolute physical path — $HJW_LIB is
 #                    derived from it, never from the environment alone
+#   HJW_OUT_SIBLINGS suffixes of the artifacts it derives from ${OUT%.*}
+#                    (codex: its events streams; claude: none), so the
+#                    artifact guard checks them before the first write
+#   HJW_OUT_APPENDS  suffixes of the artifacts it derives from the WHOLE
+#                    $OUT (codex: the `$OUT.tmp` of its fallback rewrite;
+#                    claude: none), checked with the rest
+# (all five BEFORE `hjw_forward_if_stale`: the pre-forward artifact check
+# derives the same paths the local run will — see the artifact guard below)
 # and OWNS (never inferred here): the REVIEWER CONTRACT text, print_help, the
 # CLI argv and its redirections, both effective-brief writes, the timeout
 # default, the event classifier + stderr scan + effort/sandbox (codex only),
@@ -124,7 +132,8 @@ hjw_plugin_version_load() {
 
 hjw_forward_if_stale() {
   # $@ = the entrypoint's OWN argv, forwarded byte for byte. Called as the
-  # first action after sourcing — before argument parsing, stdin consumption,
+  # first action after sourcing — before argument parsing (a hop reads argv
+  # only, never stdin: hjw_preforward_guard), stdin consumption,
   # traps, temp files, config selection or any chdir — so that a forwarded run
   # is indistinguishable from having invoked the installed runner directly:
   # same cwd, same stdin, same descriptors, same argv, same environment bar
@@ -175,6 +184,14 @@ hjw_forward_if_stale() {
   target="${raw#*"$SNAP_META_END"}"
   [ -n "$version" ] && [ -n "$target" ] || return 0
 
+  # (5b) The artifact guard holds ACROSS the hop. The registry may name an
+  # OLDER install (an intentional downgrade is followed), and a pre-2.21
+  # runner has no artifact guard at all — so THIS version judges the argv
+  # before it hands the run over. Refused: exit 2, nothing forwarded, nothing
+  # written, no paid call. An argv this version would reject is not
+  # forwarded either: the run stays here and is rejected by its own parser.
+  hjw_preforward_guard "$@" || return 0
+
   # (6) Forward exactly once. The diagnostic is the whole audit trail for a
   # hop the caller never asked for, so it is never suppressed — and it is
   # escaped to ONE line, because a control character in a path must not be
@@ -204,11 +221,19 @@ hjw_forward_if_stale() {
 # ---- argument parsing ----
 # The CURRENT option set, unchanged: no new options and no extension hook —
 # an unused mechanism is a future divergence with no caller to justify it.
-hjw_parse_args() {
+# ONE scanner serves both readers of argv — the pre-forward guard and the
+# parse proper — so the two can never disagree about which path is `-o` or
+# which positional is the brief. It has no side effects beyond the variables
+# it sets: no output, no exit, no stdin.
+hjw_scan_args() {
+  # Sets MODE, OUT, SNAPSHOT, HJW_REST and BRIEF. Returns 0 = parsed, 1 =
+  # help requested, 2 = rejected ($HJW_SCAN_ERR holds the one-line reason).
   MODE=""
   OUT=""
   SNAPSHOT=0
   HJW_REST=()
+  BRIEF=""
+  HJW_SCAN_ERR=""
   while [ $# -gt 0 ]; do
     case "$1" in
       # --resume was removed in 2.13: implicit latest-thread selection
@@ -216,16 +241,16 @@ hjw_parse_args() {
       # thread is the caller's). Rejected during PARSING — before any CLI
       # call, snapshot capture or preflight work.
       # *[origin: cross-vendor decision round 2026-09-21]*
-      --resume) echo "--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief" >&2; exit 2 ;;
+      --resume) HJW_SCAN_ERR="--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief"; return 2 ;;
       --snapshot) SNAPSHOT=1; shift ;;
-      --mode)   [ $# -ge 2 ] || { echo "--mode requires a value (consult)" >&2; exit 2; }; MODE="$2"; shift 2 ;;
+      --mode)   [ $# -ge 2 ] || { HJW_SCAN_ERR="--mode requires a value (consult)"; return 2; }; MODE="$2"; shift 2 ;;
       --mode=*) MODE="${1#--mode=}"; shift ;;
-      -o)       [ $# -ge 2 ] || { echo "-o requires a value (output file)" >&2; exit 2; }; OUT="$2"; shift 2 ;;
+      -o)       [ $# -ge 2 ] || { HJW_SCAN_ERR="-o requires a value (output file)"; return 2; }; OUT="$2"; shift 2 ;;
       -o*)      OUT="${1#-o}"; shift ;;
-      -h|--help) print_help; exit 0 ;;
+      -h|--help) return 1 ;;
       --)       shift; break ;;
       -)        break ;;  # bare '-' = stdin brief (positional) — must match before '-*'
-      -*)       echo "unknown option: $1" >&2; exit 2 ;;
+      -*)       HJW_SCAN_ERR="unknown option: $1"; return 2 ;;
       *)        break ;;
     esac
   done
@@ -235,18 +260,98 @@ hjw_parse_args() {
   case "$MODE" in
     consult) ;;
     implement)
-      echo "--mode implement was removed in 2.10 (cross-vendor worker routing is a non-goal); use the standalone collab tool for manual implement runs." >&2
-      exit 2
+      HJW_SCAN_ERR="--mode implement was removed in 2.10 (cross-vendor worker routing is a non-goal)."
+      return 2
       ;;
     *)
-      echo "invalid --mode: $MODE (consult)" >&2
-      exit 2
+      HJW_SCAN_ERR="invalid --mode: $MODE (consult)"
+      return 2
       ;;
   esac
 
   BRIEF="${HJW_REST[0]:-}"
-  [ -z "$BRIEF" ] && { echo "brief file required. usage: ${HJW_RUNNER_KIND}_consult.sh [--mode consult] [-o out] brief.md|-" >&2; exit 2; }
+  [ -z "$BRIEF" ] && { HJW_SCAN_ERR="brief file required. usage: ${HJW_RUNNER_KIND}_consult.sh [--mode consult] [-o out] brief.md|-"; return 2; }
   return 0
+}
+
+hjw_parse_args() {
+  local rc
+  hjw_scan_args "$@"
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) print_help; exit 0 ;;
+    *) printf '%s\n' "$HJW_SCAN_ERR" >&2; exit 2 ;;
+  esac
+}
+
+hjw_preforward_guard() {
+  # $@ = the entrypoint's argv. Judges every artifact path the argv makes
+  # KNOWN before a hop, with the same scanner and the same derivation the
+  # local run uses — read-only: stdin is never touched, nothing is created.
+  # A `-` brief without `-o` names no reply path yet (it derives from a
+  # mktemp name), so only the $TMPDIR directory is judged for it, exactly as
+  # the local run does before reading stdin — and under --snapshot that
+  # directory's CANONICAL form too (hjw_tmp_dirs), because the reply and log
+  # derived from the temp brief are canonicalized on the other side. With a
+  # named brief or `-o`, nothing canonicalized derives from $TMPDIR.
+  # Returns 0 = forward (judged clean, or help: nothing is written on either
+  # side); 1 = do NOT forward (this version rejects the argv or cannot
+  # resolve a --snapshot path — the local run reports it). A refusal exits 2.
+  local rc _c _p _cout="" _clog="" _pf=()
+  hjw_scan_args "$@"
+  rc=$?
+  [ "$rc" -eq 1 ] && return 0
+  [ "$rc" -eq 0 ] || return 1
+  hjw_artifact_set "$BRIEF" "$OUT"
+  hjw_tmp_dirs || return 1
+  hjw_artifact_dir_guard "${HJW_TMP_DIRS[@]}"
+  _pf=(${HJW_KNOWN[@]+"${HJW_KNOWN[@]}"})
+  # Under --snapshot the destination writes to the CANONICALIZED paths
+  # (hjw_canonicalize), which can differ from what the first check judged —
+  # so those are judged too, with the same log-aliasing rule.
+  if [ "$SNAPSHOT" = 1 ]; then
+    for _p in ${HJW_KNOWN[@]+"${HJW_KNOWN[@]}"}; do
+      _c="$(canon_path "$_p")" || return 1
+      strip_sentinel "$_c" && [ -n "$META_VAL" ] || return 1
+      _pf+=("$META_VAL")
+      [ "$_p" = "$HJW_ART_OUT" ] && _cout="$META_VAL"
+      [ "$_p" = "$HJW_ART_LOG" ] && _clog="$META_VAL"
+    done
+    [ -n "$_cout" ] && [ "$_clog" = "$_cout" ] && _pf+=("$_cout.log")
+  fi
+  [ "${#_pf[@]}" -gt 0 ] && hjw_artifact_guard "${_pf[@]}"
+  return 0
+}
+
+hjw_tmp_dirs() {
+  # Sets HJW_TMP_DIRS: the directory every mktemp artifact lands in
+  # ($HJW_TMP_DIR) — always — plus its CANONICAL form when, and only when, a
+  # canonicalized artifact DERIVES from it: under --snapshot with a `-` brief
+  # and no `-o`, the reply/log/events are named after the temp brief and
+  # hjw_canonicalize (normalize `..` lexically, THEN resolve) moves them. The
+  # two forms can differ: with /x/repolink -> <repo> and <repo>/outlink ->
+  # /safe/deep, TMPDIR=/x/repolink/outlink/.. is outside both lexically and
+  # resolved, yet canonicalizes to <repo>. Every other snapshot run writes its
+  # temp files at the RAW TMPDIR only, so judging the canonical form there
+  # would refuse a safe run. Reads SNAPSHOT/BRIEF/OUT as hjw_scan_args left
+  # them. Returns 1 when the canonical form cannot be computed.
+  # *[origin: 2.21 cross-vendor confirmations G1 and its follow-up]*
+  local _c
+  HJW_TMP_DIRS=("$HJW_TMP_DIR")
+  [ "$SNAPSHOT" = 1 ] && [ "$BRIEF" = "-" ] && [ -z "$OUT" ] || return 0
+  _c="$(canon_path "$HJW_TMP_DIR/_")" || return 1
+  strip_sentinel "$_c" && [ -n "$META_VAL" ] || return 1
+  _c="${META_VAL%/*}"
+  HJW_TMP_DIRS+=("${_c:-/}")
+  return 0
+}
+
+hjw_tmp_guard() {
+  # The local run's judgment of the mktemp directory — the same one
+  # hjw_preforward_guard makes before a hop.
+  hjw_tmp_dirs || { echo "snapshot unavailable: cannot resolve TMPDIR to an absolute path: $HJW_TMP_DIR" >&2; exit 2; }
+  hjw_artifact_dir_guard "${HJW_TMP_DIRS[@]}"
 }
 
 cleanup() {
@@ -266,7 +371,8 @@ cleanup() {
 
 hjw_common_init() {
   # Called ONCE per run, right after parsing. Initializes the shared state,
-  # arms the traps, materializes a stdin brief and derives $OUT/$LOG.
+  # arms the traps, materializes a stdin brief, derives $OUT/$LOG and refuses
+  # any artifact path inside the reviewed repository (hjw_artifact_guard).
   #
   # TMPBRIEF: stdin brief -> temp file, deleted on exit (keeps sensitive
   # content out of /tmp). EFFECTIVE_BRIEF (contract + blank line + brief) is
@@ -325,6 +431,14 @@ hjw_common_init() {
   trap 'cleanup; exit 130' INT
   trap 'cleanup; exit 143' TERM
   if [ "$BRIEF" = "-" ]; then
+    # Every path already KNOWN is judged BEFORE stdin is read and before the
+    # temp brief exists: the $TMPDIR directory always, and with `-o` the reply
+    # and everything derived from it. Without `-o` the reply path derives
+    # from the temp brief's own name, so it is judged below — after that one
+    # write, into the directory already cleared.
+    hjw_artifact_set - "$OUT"
+    hjw_tmp_guard
+    [ "${#HJW_KNOWN[@]}" -gt 0 ] && hjw_artifact_guard "${HJW_KNOWN[@]}"
     BRIEF="$(mktemp "${TMPDIR:-/tmp}/${HJW_RUNNER_KIND}_brief.XXXXXX.md")" || {
       echo "cannot create a temp file (is ${TMPDIR:-/tmp} writable?)" >&2; exit 4; }
     TMPBRIEF="$BRIEF"
@@ -332,13 +446,114 @@ hjw_common_init() {
   fi
   [ -f "$BRIEF" ] || { echo "brief file not found: $BRIEF" >&2; exit 2; }
 
-  [ -z "$OUT" ] && OUT="${BRIEF%.md}.reply.md"
-  LOG="${OUT%.*}.log"
+  # Every artifact is checked HERE, before anything truncates or removes one:
+  # the log header truncates $LOG, the entrypoint `rm -f`s $OUT (and codex's
+  # events), and change detection excludes all of them from its verdict BY
+  # DESIGN — so an artifact path naming a project file would be overwritten
+  # silently. A stdin brief's temp file is judged again by its real name.
+  hjw_artifact_set "$BRIEF" "$OUT"
+  OUT="$HJW_ART_OUT"
+  LOG="$HJW_ART_LOG"
+  local _guard=("${HJW_KNOWN[@]}")
+  # A stdin run judged the $TMPDIR directory above, before the temp brief.
+  if [ -n "$TMPBRIEF" ]; then _guard+=("$TMPBRIEF"); else hjw_tmp_guard; fi
+  hjw_artifact_guard "${_guard[@]}"
+  return 0
+}
+
+hjw_artifact_set() {
+  # THE derivation of a run's artifact paths — the one the local run and the
+  # pre-forward guard (hjw_preforward_guard) both use, so they cannot drift.
+  # $1 = brief (`-` = stdin), $2 = the `-o` value or "". Pure: sets
+  # HJW_ART_OUT, HJW_ART_LOG, HJW_TMP_DIR and HJW_KNOWN (every path known
+  # from these two alone: the reply, the log, the entrypoint's ${OUT%.*}
+  # siblings ($HJW_OUT_SIBLINGS) and its whole-$OUT appends
+  # ($HJW_OUT_APPENDS)). A `-` brief without `-o` knows none of them yet —
+  # its reply derives from the temp brief's name — so HJW_KNOWN is empty.
+  # HJW_TMP_DIR is where every mktemp artifact (TMPBRIEF, EFFECTIVE_BRIEF)
+  # lands: their names are unknown until created, their directory is not —
+  # so the DIRECTORY is judged (`detect.py artifacts --dir`), never a
+  # hypothetical file name mktemp would not use. Relative paths stay
+  # relative: they are judged against the invoking cwd.
+  local _sfx _out="$2" _log
+  HJW_TMP_DIR="${TMPDIR:-/tmp}"
+  HJW_ART_OUT=""
+  HJW_ART_LOG=""
+  HJW_KNOWN=()
+  if [ -z "$_out" ]; then
+    [ "$1" = "-" ] && return 0
+    _out="${1%.md}.reply.md"
+  fi
+  _log="${_out%.*}.log"
   # -o x.log would derive the SAME path for the log and the reply; give the log
   # its own name so the runner never overwrites the answer it captured.
   # *[origin: ship review Z4]*
-  [ "$LOG" = "$OUT" ] && LOG="$OUT.log"
+  [ "$_log" = "$_out" ] && _log="$_out.log"
+  HJW_ART_OUT="$_out"
+  HJW_ART_LOG="$_log"
+  HJW_KNOWN=("$_out" "$_log")
+  for _sfx in ${HJW_OUT_SIBLINGS[@]+"${HJW_OUT_SIBLINGS[@]}"}; do
+    HJW_KNOWN+=("${_out%.*}$_sfx")
+  done
+  for _sfx in ${HJW_OUT_APPENDS[@]+"${HJW_OUT_APPENDS[@]}"}; do
+    HJW_KNOWN+=("$_out$_sfx")
+  done
   return 0
+}
+
+# ---- artifact guard (2.21): never write inside the reviewed repository ----
+# GUARANTEE, exactly: every runner artifact (reply, log, codex's events and
+# its fallback `$OUT.tmp`, the temp brief and effective brief) lies outside
+# the worktree the runner was invoked from and outside that worktree's git
+# dirs, judged both lexically and through symlinks. NOT covered: other
+# worktrees of the same repository outside this top level, and a hostile
+# concurrent replacement after the check — it guards against accidental paths
+# (a typo in `-o`, a brief kept inside the repo with no `-o`). The guarantee
+# is about these ARTIFACTS: --snapshot's own `git worktree add` necessarily
+# writes worktree metadata into the repository's git dir (snapshot.py), and
+# that is not an artifact in this sense.
+# SCOPE IN VERSIONS: the guarantee belongs to the INVOKED runner (2.21+), and
+# it holds across a forwarding hop — including a hop to an OLDER install the
+# registry selected, which may have no guard of its own: hjw_preforward_guard
+# judges the argv-known paths (and the $TMPDIR directory) with this version's
+# derivation before the exec. What a pre-2.21 runner invoked DIRECTLY does is
+# outside it.
+# ORDER, exactly: every path known from argv (`-o` and what derives from it)
+# and the $TMPDIR directory (its canonical form too when a --snapshot stdin
+# brief without `-o` derives the reply from it — hjw_tmp_dirs) are
+# judged first; a stdin brief is read only after that. Without `-o` a stdin
+# brief's reply path derives from the temp brief's name, so that temp brief —
+# inside the already-cleared directory — is the one write that precedes the
+# final check. Under --snapshot the canonicalized paths are judged AGAIN
+# (hjw_canonicalize), because resolving can land a path the first check
+# accepted inside the repository.
+# A refusal exits 2 with ONE line, before any paid call and before any
+# artifact is truncated or removed — $LOG included, since $LOG is one of the
+# paths under judgment. Fail closed: a check that cannot run refuses too.
+# Relative paths resolve against the ORIGINAL cwd, which is why this runs
+# before any chdir.
+hjw_artifact_guard() {
+  # $@ = artifact FILE paths.
+  hjw_artifact_check "" "$@"
+}
+
+hjw_artifact_dir_guard() {
+  # $@ = the DIRECTORIES mktemp creates artifacts in (containment only). A
+  # separate entry point, not a leading flag: an `-o` value may be any string.
+  hjw_artifact_check --dir "$@"
+}
+
+hjw_artifact_check() {
+  # $1 = "" (files) or --dir; the rest = paths. detect.py's <cwd> is always
+  # "" here (the invoking cwd), so its own argv is never ambiguous.
+  local rc _mode=()
+  [ -n "$1" ] && _mode=("$1")
+  shift
+  bounded 60 python3 "$HJW_LIB/detect.py" artifacts ${_mode[@]+"${_mode[@]}"} "" "$@"
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -ne 2 ] && echo "artifact path check unavailable (rc=$rc) — refusing before any write" >&2
+  exit 2
 }
 
 # Under --snapshot the reviewer's working root becomes the snapshot, so every
@@ -359,8 +574,9 @@ sys.stdout.write(os.path.join(os.path.realpath(d), b) + sys.argv[2])' "$1" "$SNA
 
 hjw_canonicalize() {
   # $@ = variable NAMES, resolved in place. The entrypoint passes its OWN list
-  # (the claude runner has no events paths to resolve).
-  local _v _canon
+  # (the claude runner has no events paths to resolve). BRIEF is the one
+  # INPUT among them; every other name is an artifact.
+  local _v _canon _sfx _recheck=()
   for _v in "$@"; do
     _canon="$(canon_path "${!_v}")" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
     strip_sentinel "$_canon" || { echo "snapshot unavailable: cannot resolve $_v to an absolute path: ${!_v}" >&2; exit 2; }
@@ -371,6 +587,21 @@ hjw_canonicalize() {
   # (a symlinked directory); re-apply the log-aliasing rule on the resolved
   # pair. *[origin: ship review Z4]*
   [ "$LOG" = "$OUT" ] && LOG="$OUT.log"
+  # Judge the FINAL paths again, before any write. canon_path normalizes `..`
+  # lexically and then resolves the parent, which is not what the first check
+  # judged: with /x/repolink -> <repo> and <repo>/outlink -> /safe/deep,
+  # `/x/repolink/outlink/../r.md` resolves to /safe/r.md for the first check
+  # but canonicalizes to <repo>/r.md. Same refusal line, same exit.
+  # *[origin: 2.21 cross-vendor diff review F2]*
+  for _v in "$@"; do
+    [ "$_v" = BRIEF ] && continue
+    _recheck+=("${!_v}")
+  done
+  for _sfx in ${HJW_OUT_APPENDS[@]+"${HJW_OUT_APPENDS[@]}"}; do
+    _recheck+=("$OUT$_sfx")
+  done
+  [ -n "$TMPBRIEF" ] && _recheck+=("$TMPBRIEF")
+  hjw_artifact_guard "${_recheck[@]}"
   return 0
 }
 

@@ -32,8 +32,8 @@ tolerant); an empty ENV value counts as unset, but that trimming belongs to
 the caller.
 
 Any parse failure is "no config" — a reviewer runner never guesses. NOT read
-here: `efforts_codex` / `models_codex` belong to codex-HOST worker tiers
-(spawn_agent parameters) and never select this reviewer.
+here: `models_codex` belongs to codex-HOST worker tiers (spawn_agent
+parameters) and never selects this reviewer.
 """
 import json
 import os

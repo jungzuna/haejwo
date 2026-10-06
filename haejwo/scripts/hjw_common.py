@@ -93,7 +93,7 @@ def paths(argv):
     root = argv[1] if len(argv) > 1 and argv[1] else os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     data = argv[2] if len(argv) > 2 and argv[2] else os.environ.get("CLAUDE_PLUGIN_DATA", "")
     if not data or "${" in data:  # unsubstituted placeholder safety
-        data = os.path.expanduser("~/.claude/plugins/data/haejwo")
+        data = os.path.expanduser("~/.claude/plugins/data/haejwo-haejwo")
     return root, data
 
 

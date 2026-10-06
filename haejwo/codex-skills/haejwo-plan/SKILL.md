@@ -4,7 +4,8 @@ description: Run pre-implementation consensus with an independent reviewer (read
 ---
 
 <!-- MIRROR of commands/plan.md for the Codex host — do not edit by hand;
-     edit commands/plan.md and regenerate. Drift is canary-tested. -->
+     edit commands/plan.md and run `python3 tests/mirrors.py --write`.
+     Drift is canary-tested. -->
 
 
 You are the **haejwo host**. Drive pre-implementation consensus — planning outweighs implementation, and different models see different failure modes, so the plan gets debated BEFORE any code. The user's input: **$ARGUMENTS**

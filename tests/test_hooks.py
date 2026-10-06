@@ -4800,6 +4800,48 @@ exit "$rc"
                       "plugin=2.21.0" in fw_log_for(t14n_brief),
                       fw_log_for(t14n_brief)[:200])
 
+            # ---- (t15, 2.22) NEW FORWARDER -> LEGACY DESTINATION. A 2.18-2.21
+            # destination's OWN runners require lib/snapshot.py and exit 3
+            # without it — after the exec, with no local fallback left. So a
+            # destination below 2.22.0 must carry it to count as complete.
+            # The destination runner is a stand-in leaving a marker. ----
+            for t15_case, t15_keep in (("t15-nosnap", False), ("t15-snap", True)):
+                t15_plugins = fw_install(t15_case, ["9.9.0", "2.21.0"])
+                t15_marker = os.path.join(fw_root, f"{t15_case}-target-ran")
+                t15_target = fw_script(t15_plugins, "2.21.0", "codex")
+                with open(t15_target, "w") as f:
+                    f.write("#!/usr/bin/env bash\n"
+                            f"echo ran > '{t15_marker}'\n"
+                            "echo LEGACY-TARGET-RAN\n")
+                os.chmod(t15_target, 0o755)
+                if not t15_keep:
+                    os.remove(os.path.join(fw_dir(t15_plugins, "2.21.0"), "scripts",
+                                           "lib", "snapshot.py"))
+                fw_reg_entries(t15_plugins, [fw_entry(t15_plugins, "2.21.0")])
+                t15_self = fw_script(t15_plugins, "9.9.0", "codex")
+                if not t15_keep:
+                    rc, out, err, cap, t15_brief = fw_no_forward(
+                        "t15", "a 2.21.0 destination WITHOUT lib/snapshot.py",
+                        t15_case, t15_self, "codex")
+                    check("t15 legacy completeness: without snapshot.py the invoked "
+                          "9.9.0 ran and the destination never did",
+                          "plugin=9.9.0" in fw_log_for(t15_brief)
+                          and not os.path.exists(t15_marker)
+                          and "LEGACY-TARGET-RAN" not in out,
+                          f"marker={os.path.exists(t15_marker)} "
+                          f"log={fw_log_for(t15_brief)[:200]}")
+                else:
+                    rc, out, err, cap = fw_run(t15_case, t15_self, "codex")
+                    hops = fw_hops(err)
+                    check("t15 legacy completeness: WITH snapshot.py the 2.21.0 "
+                          "destination is forwarded into (marker written)",
+                          len(hops) == 1
+                          and "runner 9.9.0 is stale — forwarding to 2.21.0" in hops[0]
+                          and os.path.exists(t15_marker)
+                          and "LEGACY-TARGET-RAN" in out,
+                          f"rc={rc} hops={hops} marker={os.path.exists(t15_marker)} "
+                          f"err={err}")
+
             # ---- (t13, 2.21) the artifact guard HOLDS ACROSS A HOP. The
             # registry may select an OLDER install (t2: downgrades are
             # followed), and a pre-2.21 runner has no artifact guard — so the

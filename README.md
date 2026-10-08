@@ -14,19 +14,19 @@
 
 <p align="center"><sub><a href="README.ko.md">한국어</a></sub></p>
 
-haejwo is a hooks-and-rules plugin for [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex): it injects orchestration rules at session start, denies the main agent's code edits past a per-turn budget so implementation goes to worker subagents, and, once enabled, sends plans to the other vendor's model for review. It is for people already on one of those harnesses who want the session model kept on judgment.
+haejwo is a hooks-and-rules plugin for [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex): it injects orchestration rules at session start, denies the main agent's code edits past a per-turn budget so implementation goes to worker subagents, and, once enabled, sends plans to the other vendor's model for review. It is for users of those harnesses who want the session model kept on judgment.
 
-You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on — no workflow commands; setup is optional and nudged until configured.
+You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on; setup is optional and nudged until configured.
 
 ## Install
 
-Requires `python3` (CI tests 3.10); the reviewer runners also use Bash and git.
+Requires `python3` (CI tests 3.10); reviewer runners need Bash and git.
 
 **Claude Code:**
 ```
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
-/reload-plugins   # only if a session is open (reloads hooks and commands; rules need a restart)
+/reload-plugins   # only if a session is open
 /haejwo:setup     # optional — defaults already work
 ```
 
@@ -37,11 +37,11 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills.
 
-Hooks load at session start; restart after install. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
+`/reload-plugins` (Claude Code) refreshes hooks, commands and agents in an open session; the injected rules re-load only at session start — restart after install or update. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
 
 ## What you get
 
-**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm: plan markers are observed, not enforced; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2) — known edit tools; any listed code extension, in the project or not, except metadata dirs and temp-dir paths outside the project — and heuristically blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
+**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; known edit tools, any listed code extension in or out of the project; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
 
 **Execution runs at configured tiers.** Implementation and chores go to worker tiers — on Claude Code `default-worker` (Opus, high effort), `task-worker` (Opus, low), `Budget` (sonnet/haiku) opt-in; on Codex a `spawn_agent` mapping that inherits the host model by default. Cost gains come only from cheaper pins set after measuring.
 
@@ -64,7 +64,7 @@ Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status`
 
 ## Non-goals
 
-Boundaries that keep haejwo a lubricant layer, not a harness:
+A lubricant layer, not a harness:
 
 - Scheduler, durable task queue, or persistent agent roster
 - General DAG or recursive multi-agent runtime
@@ -75,7 +75,7 @@ Boundaries that keep haejwo a lubricant layer, not a harness:
 - Autonomous push/deploy/publish
 - Workflow DSL or ontology framework
 - A second operating architecture (advisor-style cheap-main mode)
-- Hard gates on judgment calls (plan markers, report length) — norms and nudges only
+- Hard gates on judgment calls (plan markers, report length) — never hook-gated; a worker without a plan marker asks once and reports blocked if no actionable plan or reason follows
 
 ## Verification
 

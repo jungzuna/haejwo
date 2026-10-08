@@ -3,7 +3,8 @@
 Philosophy: this is a DELEGATION gate, not a security boundary.
 On any ambiguity or internal error the hooks FAIL OPEN (allow) so a broken
 gate can never brick a session. All state lives under CLAUDE_PLUGIN_DATA,
-keyed by session_id, so concurrent sessions never collide.
+keyed by session_id — normalised and truncated to 80 chars, so a collision
+between concurrent sessions is improbable, not impossible.
 """
 import errno
 import json
@@ -93,19 +94,23 @@ def read_payload():
 
 
 def paths(argv):
-    """Resolve (plugin_root, plugin_data) from argv with env/home fallbacks."""
+    """Resolve (plugin_root, plugin_data) from argv with env/home fallbacks.
+    The home fallback is host-aware (cycle 4 F6): a Codex root falls back to
+    ~/.codex/plugins/data/haejwo-haejwo, the path the Codex commands name."""
     root = argv[1] if len(argv) > 1 and argv[1] else os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     data = argv[2] if len(argv) > 2 and argv[2] else os.environ.get("CLAUDE_PLUGIN_DATA", "")
     if not data or "${" in data:  # unsubstituted placeholder safety
-        data = os.path.expanduser("~/.claude/plugins/data/haejwo-haejwo")
+        host = ".codex" if on_codex_host(root, "") else ".claude"
+        data = os.path.expanduser(f"~/{host}/plugins/data/haejwo-haejwo")
     return root, data
 
 
 def load_config_with_status(data_dir):
     """ONE read, two answers: (effective config, readability status).
 
-    Callers that only ENFORCE want the config and nothing else — defaults on
-    any problem, fail open. A check that DENIES because the config says so
+    Callers that only ENFORCE want the config and nothing else — fail open:
+    an unreadable file reads as the defaults, and an invalid enforcement value
+    disables the enforcement it controls (_validate_types). A check that DENIES because the config says so
     also needs to know the config was actually readable: denying on a file we
     could not parse would enforce a pin the user never set (origin 2026-09-14,
     tier-pin check). Reading once means the two answers can never describe

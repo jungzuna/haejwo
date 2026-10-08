@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Wall-clock bound for every helper and CLI call a reviewer runner makes.
+"""Wall-clock bound for a reviewer runner's python helpers and the reviewer CLI;
+not coreutils, bootstrap python, or stdin reads.
 
 `bounded.py <seconds> <cmd> [args...]` runs the command in its OWN session (killing only the direct child
 would leak the expensive descendants) and exits 124 when the bound expires, matching timeout(1), which the

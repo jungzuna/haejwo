@@ -2,7 +2,7 @@
 
 > **"just handle it."** — you talk; the models work it out among themselves.
 
-haejwo makes **multiple models run well on top of Claude Code and Codex, automatically**. You say what you want (however roughly — that's the 해줘); the host plans, delegates across tiers, reviews, and verifies. The main model stays on **judgment** (plan, delegate, decide, synthesize), **execution** goes to worker tiers, and a PreToolUse hook **denies** the main agent's code edits past a per-turn budget. By default the reviewer is OFF until setup verifies it, every Claude Code worker tier is Opus, and Codex workers inherit the host model; cost gains come from cheaper pins you set after measuring.
+haejwo makes **multiple models run well on top of Claude Code and Codex**. You say what you want (however roughly — that's the 해줘); the host plans, delegates, reviews and verifies. The main model stays on **judgment**, **execution** goes to worker tiers, and a PreToolUse hook **denies** the main agent's code edits past a per-turn budget. By default the reviewer is OFF until setup verifies it, every Claude Code worker tier is Opus, and Codex workers inherit the host model; cost gains come from cheaper pins you set after measuring.
 
 ## The 4 layers
 
@@ -16,12 +16,12 @@ haejwo makes **multiple models run well on top of Claude Code and Codex, automat
 ## Gate semantics
 - Counts **distinct code files** (config extension list) per user turn; re-editing is free. **Subagents are exempt** (`agent_id`/`agent_type` in the payload).
 - The deny reason states the budget and exactly whom to delegate to; the last allowed edit warns that the budget is full.
-- **Fail-open**: any hook error or ambiguity ⇒ allow. A delegation aid, not a security boundary: code written dynamically is invisible to the guard and forbidden by instruction only.
+- **Fail-open**: any hook error or ambiguity ⇒ no objection. haejwo never approves a tool call, only denies or adds a note, so your permission settings still apply. A delegation aid, not a security boundary: dynamically written code is invisible to the guard; only instruction forbids it.
 - Temp-dir paths (`/tmp`, `/var/tmp`, `tempfile.gettempdir()`) outside the active project (git toplevel, else cwd) are not code, so the scratchpad spends no budget; a temp-dir repository that IS the project is gated unless its root is a temp dir or an ancestor of one (`/tmp`, `/`). In-place editors fanned out through `find`/`xargs` are denied whatever their paths.
-- By design the bash guard tries redirects, `tee` and in-place editors only — not `cp`, `mv`, `git apply` or `patch`: each added pattern costs false positives (2.20). The extension list IS the plugin's definition of code; json, yaml, html, css and tf are not on it.
+- By design the bash guard tries redirects, `tee` and in-place editors only — not `cp`, `mv`, `git apply` or `patch`: each added pattern costs false positives (2.20). The extension list defines code; json, yaml, html, css and tf are not on it.
 
 ## First run
-**`/haejwo:setup`** is optional; a nudge repeats each session until configured. It sets model tiers, edit budget, bash-guard and the reviewer (CLI probed, slot smoke-tested); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives updates). Before setup the safe defaults apply unless a `/haejwo:gate` value was stored: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (default) / `Budget` (Sonnet/Haiku) / `Custom`.
+**`/haejwo:setup`** is optional; a nudge repeats each session until configured. It sets model tiers, edit budget, bash-guard and the reviewer (CLI probed, slot smoke-tested); persists to `${CLAUDE_PLUGIN_DATA}/config.json`. Before setup the defaults apply unless a `/haejwo:gate` value was stored: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (default) / `Budget` (Sonnet/Haiku) / `Custom`.
 
 On Claude Code the workers run at their agent file's model unless one is passed explicitly; the delegation gate steers an omitted override that would miss a configured pin, but does not verify which model ran.
 
@@ -59,7 +59,7 @@ Shared internals live in `scripts/lib`; implementation detail lives in the scrip
 
 **Usage:** `<runner> [--mode consult] [-o out.md] brief.md`, or `echo … | <runner> --mode consult -` (stdin brief, deleted on exit), from the project root. Without `-o` the reply is `<brief>.reply.md`, the log beside it. `consult` is the only mode; for a stable tree, pause writes or review a prepared worktree.
 
-**Exit codes:** `0` reply accepted · `1` a failed check (empty reply, failure event, tracing error, repository changed, detection unavailable) · `2` usage error, missing brief, invalid env value, refused artifact path, or an unverifiable non-git directory · `3` CLI or runner library missing · `4` no writable temp dir · `124` timeout; any other non-zero CLI status passes through.
+**Exit codes:** `0` reply accepted · `1` a failed check (empty reply, failure event, tracing error, repository changed, detection unavailable) · `2` usage error, missing brief, invalid env value, refused artifact path, or an unverifiable non-git directory · `3` CLI or runner library missing · `4` no writable temp dir · `124` timeout; other CLI statuses pass through.
 
 **Guarantees**
 - A standing non-editing REVIEWER CONTRACT is prepended to every brief; `claude_consult.sh` also disallows Edit/Write/NotebookEdit.

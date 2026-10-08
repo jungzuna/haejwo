@@ -40,7 +40,7 @@ regardless). Extending it requires stating why existing fields don't fit.
                      the same normalization the decision uses.
   plan_marker_kind — "plan" | "no_plan" | "none" (telemetry, see
                      _plan_marker_kind; "plan" wins when both appear).
-  decision         — "allow" | "deny", as emitted.
+  decision         — "allow" (not denied; no decision is emitted) | "deny".
   tier_pin_check   — "deny" | "pass:explicit-model" | "pass:pin-inherit" |
                      "pass:pin-matches-default" | "pass:not-a-tier" (not a
                      tier, gate/guard off, subagent call, or Codex host) |

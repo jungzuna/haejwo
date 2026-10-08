@@ -52,6 +52,13 @@ def decision(out):
     return (out.get("hookSpecificOutput") or {}).get("permissionDecision")
 
 
+def no_decision_key(out):
+    """A non-deny outcome must carry NO permissionDecision key at all — an
+    "allow" auto-approves the tool call past the operator's permission
+    settings (measured 2026-10-08)."""
+    return "permissionDecision" not in (out.get("hookSpecificOutput") or {})
+
+
 def check(name, cond, detail=""):
     global PASS
     if cond:
@@ -404,10 +411,10 @@ def config_host_summary_tests():
                 "integer >= 1 — the default applies until config.json is fixed")
         rc, out = run("gate.py", edit_payload("/repo/b2/a.py", sid="sess-B2"), b2)
         check("B2 string budget: 1st code file allowed WITH the note (was: silent fail-open)",
-              decision(out) == "allow" and ctx_of(out) == note, str(out))
+              no_decision_key(out) and ctx_of(out) == note, str(out))
         rc, out = run("gate.py", edit_payload("/repo/b2/b.py", sid="sess-B2"), b2)
         check("B2 string budget: the default 2 is used (2nd file fills the budget), note not repeated",
-              decision(out) == "allow" and "Edit budget now full (2/2" in ctx_of(out)
+              no_decision_key(out) and "Edit budget now full (2/2" in ctx_of(out)
               and "config value ignored" not in ctx_of(out), ctx_of(out))
         rc, out = run("gate.py", edit_payload("/repo/b2/c.py", sid="sess-B2"), b2)
         check("B2 string budget: the 3rd file is DENIED, no note in the reason",
@@ -642,7 +649,7 @@ def main():
         rc, out = run("gate.py", edit_payload("/repo/src/b.py"), data)
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("2nd distinct -> allow + budget-full warning",
-              rc == 0 and decision(out) == "allow" and "budget" in ctx.lower())
+              rc == 0 and no_decision_key(out) and "budget" in ctx.lower())
 
         rc, out = run("gate.py", edit_payload("/repo/src/c.py"), data)
         reason = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
@@ -685,6 +692,19 @@ def main():
         obs_recs = [json.loads(l) for l in open(obs_file)]
         check("observations record file path (audit)",
               any(str(r.get("path", "")).endswith("/repo/src/a.py") for r in obs_recs))
+
+        print("== hooks never approve a tool call (cold-loop cycle 3) ==")
+        # An emitted "allow" auto-approves the call past the operator's
+        # permission settings (measured 2026-10-08): haejwo only denies or notes.
+        allow_re = re.compile(r"""["']permissionDecision["']\s*:\s*["']allow["']""")
+        offenders = []
+        for fn in sorted(os.listdir(SCRIPTS)):
+            if fn.endswith(".py"):
+                with open(os.path.join(SCRIPTS, fn), encoding="utf-8") as fh:
+                    if allow_re.search(fh.read()):
+                        offenders.append(fn)
+        check("canary: no hook source emits permissionDecision allow",
+              not offenders, str(offenders))
 
         print("== rule canary (load-bearing phrases) ==")
         # Whitespace-normalized so a line wrap inside a phrase can't false-negative.
@@ -1431,7 +1451,7 @@ def main():
         rc, out = run("gate.py", patch_payload([("Add", "/repo/cx/b.py")], sid="CX1"), data)
         ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("apply_patch 2nd distinct -> allow + budget warning",
-              rc == 0 and decision(out) == "allow" and "budget" in ctx.lower())
+              rc == 0 and no_decision_key(out) and "budget" in ctx.lower())
 
         rc, out = run("gate.py", patch_payload([("Add", "/repo/cx/c.py")], sid="CX1"), data)
         check("apply_patch 3rd distinct -> DENY", decision(out) == "deny", str(out))

@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      # Hermetic: stdlib-only subprocess contract tests (gate, bash-guard,
-      # session brief, codex apply_patch fixtures, manifest/mirror canaries).
+      # Subprocess contract tests (gate, bash-guard, session brief, codex
+      # apply_patch fixtures, manifest/mirror canaries): stdlib-only Python;
+      # needs bash, git, a Unix host and the full history fetched above.
       - run: python3 tests/test_hooks.py

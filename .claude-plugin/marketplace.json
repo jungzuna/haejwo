@@ -9,7 +9,7 @@
     {
       "name": "haejwo",
       "source": "./haejwo",
-      "description": "Keeps the expensive main model on judgment work: role-tiered subagents, delegation rules, and a PreToolUse gate that physically blocks the main agent from over-editing code."
+      "description": "Keeps the expensive main model on judgment work: role-tiered subagents, delegation rules, and a PreToolUse hook that denies the main agent's code edits past a per-turn file budget (subagents exempt, hook errors fail open, Bash writes caught heuristically)."
     }
   ]
 }

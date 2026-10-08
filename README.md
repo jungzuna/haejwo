@@ -27,7 +27,7 @@ Requires `python3` (CI tests 3.10); the reviewer runners also use Bash and git.
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
 /reload-plugins   # only if a session is open (reloads hooks and commands; rules need a restart)
-/haejwo:setup     # optional — defaults (gate ON, 2 files/turn, bash-guard ON) already work
+/haejwo:setup     # optional — defaults already work; a nudge repeats each session until configured
 ```
 
 **Codex CLI** (same hooks; compatibility measured live, not yet field-tested):
@@ -41,9 +41,9 @@ Hooks load at session start; restart the session after install. Local install: c
 
 ## What you get
 
-**Judgment stays expensive.** The host is always your session's model — haejwo never re-points it — and keeps planning, deciding and review. Feature-scale work starts from a debated plan, and a `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2) — known edit tools, listed code extensions, paths inside the project (temp files outside it are exempt) — and heuristically blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
+**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm: plan markers are observed, not enforced; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2) — known edit tools; any listed code extension, in the project or not, except metadata dirs and temp-dir paths outside the project — and heuristically blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
 
-**Execution runs at configured tiers.** Implementation and chores go to worker tiers — on Claude Code, `default-worker` on Opus at high effort, `task-worker` on Opus at low, `Budget` (sonnet/haiku) opt-in; `spawn_agent` mapping on Codex. Defaults are all-Opus with the reviewer off, so cost gains come from cheaper pins you set after measuring.
+**Execution runs at configured tiers.** Implementation and chores go to worker tiers — on Claude Code `default-worker` (Opus, high effort), `task-worker` (Opus, low), `Budget` (sonnet/haiku) opt-in; on Codex a `spawn_agent` mapping that inherits the host model by default. Cost gains come only from cheaper pins set after measuring.
 
 **Review comes from another vendor.** Once `/haejwo:setup` enables and verifies it (OFF by default), the reviewer is the other company's model: codex on Claude Code, claude on Codex. Without that CLI or verification, review falls back to the same-family `deep-reasoner` (weaker independence). Enabling it sends briefs and the repository content the reviewer reads to that vendor ([disclosure](haejwo/commands/setup.md)).
 
@@ -60,7 +60,7 @@ Deep dive: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PH
 
 ## Commands (settings & inspection)
 
-Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only status) · `/haejwo:gate` (budget `N`, `on`/`off`) · `/haejwo:plan` (manual trigger; the host runs it by default). On Codex they are `@haejwo-*` skills.
+Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only status) · `/haejwo:gate` (budget `N`, `on`/`off`) · `/haejwo:plan` (manual trigger; the host runs it by default).
 
 ## Non-goals
 

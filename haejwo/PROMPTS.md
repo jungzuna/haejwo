@@ -22,7 +22,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
-- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Keep the rules ≤4600 chars so the summary always fits.
+- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Two limits, two roles: **3,300 bytes** is the diet ratchet `tests/test_hooks.py` pins on the rules file (the working budget); **4,300 chars** is the hard ceiling past which the config summary (itself bounded at 600 chars) stops fitting the 5,000 cap.
 
 ## Hook-emitted text (the model reads these verbatim)
 - Prefixes: `[haejwo gate]` for gate/bash-guard decisions; `[haejwo]` / `[haejwo config]` for session context.

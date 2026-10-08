@@ -7,12 +7,12 @@
 
 Scope: HEAD, tracked status AND per-path fingerprints, `git diff`/`--cached` digests, untracked CONTENTS
 (sorted, first 2000; presence for all); the entrypoint's artifacts are excluded. NOT covered: global/user
-config, ignored files, anything outside the repo; concurrent writers are not distinguished. Any error exits
-non-zero — a read error is NEVER "nothing changed". `artifacts` exits 0 when every path lies outside the
-worktree of <cwd> and its git dirs (lexically and resolved), else 2 with one line; other worktrees and a
+config, ignored files, anything outside the repo; concurrent writers are not distinguished. A git, HEAD or
+structural error exits non-zero (never "nothing changed"); an unreadable FILE is recorded, counted and
+disclosed, and one unreadable before and after compares equal. `artifacts` exits 0 when every path lies outside
+the worktree of <cwd> and its git dirs (lexically and resolved), else 2 with one line; other worktrees and a
 hostile concurrent replacement are not covered.
-*[origin: a cold read found that `-o` naming a tracked file was truncated by the log header and `rm -f` —
-and change detection excluded it BY DESIGN, so the overwrite was silent]*
+*[origin: `-o` naming a tracked file was truncated silently — change detection excludes artifacts BY DESIGN]*
 """
 import hashlib
 import json
@@ -21,7 +21,9 @@ import stat
 import subprocess
 import sys
 
-GIT_ENV = dict(os.environ, LC_ALL="C", LANG="C")  # stable git diagnostics: the unborn check matches them
+# LC_ALL=C: the unborn check matches git's diagnostics. *[origin: cold-loop 2 B1 — an inherited GIT_DIR aimed detection elsewhere]*
+GIT_ENV = dict((k, v) for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"))
+GIT_ENV.update(LC_ALL="C", LANG="C")
 
 
 def cmd_snapshot(argv):

@@ -625,11 +625,11 @@ class state_lock:
 
 
 def allow(additional_context=None):
+    # Never emit a permission decision here: the host's own permission flow must still run. *[origin: cold-loop cycle 3 — allow-with-note auto-approved edits in default permission mode; measured 2026-10-08]*
     if additional_context:
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
                 "additionalContext": additional_context,
             }
         }))

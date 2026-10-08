@@ -84,6 +84,93 @@ def read_rules(root):
         return None
 
 
+def _default_tier(v, on_codex):
+    """A not-configured tier value: 'inherit' spelled as what it inherits."""
+    if v == "inherit":
+        return "host model" if on_codex else "session model"
+    return v
+
+
+def render_summary(g, models, on_codex, configured, reviewer_on, label=""):
+    """The ONE `[haejwo config]` line — gate, tiers, reviewer — for both the
+    configured summary and the not-configured defaults summary (cold-loop B6:
+    the two used to be rendered twice). `label` prefixes the gate fields
+    (the not-configured "defaults — not configured: " wording).
+
+    Tier values: configured -> the stored pins, verbatim on Codex ('inherit'
+    = omit model, explained in the prefix), and on Claude each rendered
+    honestly: "inherit" means the SESSION model for the deep-reasoner (Agent-
+    tool default) but the agent file's own `model:` default for a worker, and
+    a pin outside the MEASURED passable aliases (hjw_common.
+    PASSABLE_MODEL_ALIASES) is flagged — delegation_gate does not enforce it
+    (skip:pin-not-passable). Not configured -> the shipped defaults, with
+    "inherit" spelled as the host/session model.
+
+    Efforts: on Claude they are the agent files' `effort:` pins (2.20) — the
+    only per-role effort control there; a canary test keeps these words equal
+    to agents/*.md. On Codex the deep-reasoner carries NO effort of its own
+    (2.14): spawn_agent omits reasoning_effort and the host's level applies.
+    """
+    fork = ("effort overrides need a fresh or partial context fork "
+            "(fork_turns), never a full-history fork")
+    if on_codex:
+        if configured:
+            # Missing keys fall back to the SHIPPED defaults, never to a
+            # hard-coded model name that a release bump would silently strand.
+            def tier(k, worker=False):
+                return models.get(k, DEFAULT_CONFIG["models_codex"][k])
+            head = (f"codex tiers (pass model + reasoning_effort on spawn_agent; "
+                    f"'inherit' = omit model; {fork}): ")
+            tail = ""
+        else:
+            def tier(k, worker=False):
+                return _default_tier(models[k], True)
+            head = "codex tiers: "
+            tail = (f" (pass reasoning_effort on spawn_agent; omit model to "
+                    f"inherit; {fork})")
+        tiers = (
+            f"{head}deep-reasoner={tier('deep_reasoner')}"
+            f"/host effort (omit reasoning_effort), "
+            f"default-worker={tier('default_worker')}/medium, "
+            f"task-worker={tier('task_worker')}/low{tail}"
+        )
+        reviewer_label = "claude reviewer"
+        fallback = "disabled (fallback: native subagent, same-model)"
+    else:
+        if configured:
+            def tier(k, worker=False):
+                v = models[k]
+                if v == "inherit":
+                    return "agent-file default" if worker else "inherit(session)"
+                if isinstance(v, str) and v.strip() not in PASSABLE_MODEL_ALIASES:
+                    return f"{v} (not passable via the Agent tool — set an alias)"
+                return v
+        else:
+            def tier(k, worker=False):
+                return _default_tier(models[k], False)
+        tiers = (
+            f"models: deep-reasoner={tier('deep_reasoner')}, "
+            f"default-worker={tier('default_worker', True)} (effort high), "
+            f"task-worker={tier('task_worker', True)} (effort low)"
+        )
+        if configured:
+            tiers += (" — pass as Agent-tool model override if it differs "
+                      "from the agent default")
+            if models['deep_reasoner'] == "inherit":
+                tiers += " (inherit = omit the model override)"
+            if "inherit" in (models['default_worker'], models['task_worker']):
+                tiers += (" On Claude, omitting the model override uses each agent "
+                          "file's default; pass an explicit model to override it.")
+        reviewer_label = "codex reviewer"
+        fallback = "disabled (fallback: deep-reasoner)"
+    return (
+        f"[haejwo config] {label}gate={'ON' if g['enabled'] else 'OFF'} "
+        f"budget={g['max_files_per_turn']} files/turn "
+        f"bash_guard={'ON' if g['bash_guard'] else 'OFF'} | {tiers} | "
+        f"{reviewer_label}: {'enabled' if reviewer_on else fallback}"
+    )
+
+
 def main():
     read_payload()  # consume stdin; content unused
     root, data = paths(sys.argv)
@@ -98,63 +185,49 @@ def main():
 
     if not cfg.get("configured"):
         defaults = DEFAULT_CONFIG["models_codex" if on_codex else "models"]
-        inherited = "host model" if on_codex else "session model"
 
-        def _default_tier(v):
-            return inherited if v == "inherit" else v
-
+        # cold-loop B3: `/haejwo:gate off` (or a budget change) before setup
+        # writes gate values without `configured`; report what is STORED,
+        # never the defaults over it. Absent keys keep the defaults (the
+        # config merge), and a malformed file reads as the defaults here.
+        dg = cfg.get("gate")
+        if not isinstance(dg, dict):
+            dg = DEFAULT_CONFIG["gate"]
+        stored = any(dg.get(k) != DEFAULT_CONFIG["gate"][k]
+                     for k in ("enabled", "max_files_per_turn", "bash_guard"))
+        if stored:
+            active = (
+                f"Until then the STORED gate settings are ACTIVE: "
+                f"gate {'ON' if dg['enabled'] else 'OFF'}, max "
+                f"{dg['max_files_per_turn']} distinct code files per turn for the "
+                f"main agent, bash-guard {'ON' if dg['bash_guard'] else 'OFF'}, "
+                f"subagents exempt. "
+            )
+        else:
+            active = (
+                "Until then safe defaults are "
+                "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
+                "bash-guard ON, subagents exempt. "
+            )
         targets = (
-            f"haejwo:deep-reasoner ({_default_tier(defaults['deep_reasoner'])}), "
-            f"haejwo:default-worker ({_default_tier(defaults['default_worker'])}), "
-            f"haejwo:task-worker ({_default_tier(defaults['task_worker'])})."
+            f"haejwo:deep-reasoner ({_default_tier(defaults['deep_reasoner'], on_codex)}), "
+            f"haejwo:default-worker ({_default_tier(defaults['default_worker'], on_codex)}), "
+            f"haejwo:task-worker ({_default_tier(defaults['task_worker'], on_codex)})."
         )
         nudge = (
             "[haejwo] Installed but NOT configured yet (first use). Offer ONCE to "
             "configure right now, and if the user agrees RUN THE SETUP FLOW YOURSELF "
             "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
             "skill in Codex; the user only answers 4 quick choices and never needs "
-            "to type a command). Until then safe defaults are "
-            "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
-            "bash-guard ON, subagents exempt. Delegation targets: " + targets
+            "to type a command). " + active + "Delegation targets: " + targets
         )
-        # Defaults summary: the same gate/tiers/reviewer fields the configured
-        # summary carries, computed from DEFAULT_CONFIG — what is ACTUALLY
-        # enforced right now, labelled as defaults rather than as a choice.
-        if on_codex:
-            tiers = (
-                # deep-reasoner carries NO effort of its own (2.14): it runs at
-                # the HOST's effort, so spawn_agent omits reasoning_effort for it
-                # and the host's own level is what applies.
-                f"codex tiers: deep-reasoner={_default_tier(defaults['deep_reasoner'])}"
-                f"/host effort (omit reasoning_effort), "
-                f"default-worker={_default_tier(defaults['default_worker'])}/medium, "
-                f"task-worker={_default_tier(defaults['task_worker'])}/low "
-                f"(pass reasoning_effort on spawn_agent; omit model to inherit"
-                f"; effort overrides need a fresh or partial context fork "
-                f"(fork_turns), never a full-history fork)"
-            )
-            reviewer_label = "claude reviewer"
-            fallback = "disabled (fallback: native subagent, same-model)"
-        else:
-            # The efforts are the agent files' `effort:` pins (2.20) — the only
-            # per-role effort control on Claude Code; a canary test keeps
-            # these words equal to agents/*.md.
-            tiers = (
-                f"models: deep-reasoner={_default_tier(defaults['deep_reasoner'])}, "
-                f"default-worker={_default_tier(defaults['default_worker'])} (effort high), "
-                f"task-worker={_default_tier(defaults['task_worker'])} (effort low)"
-            )
-            reviewer_label = "codex reviewer"
-            fallback = "disabled (fallback: deep-reasoner)"
-        dg = DEFAULT_CONFIG["gate"]
-        summary = (
-            f"[haejwo config] defaults — not configured: "
-            f"gate={'ON' if dg['enabled'] else 'OFF'} "
-            f"budget={dg['max_files_per_turn']} files/turn "
-            f"bash_guard={'ON' if dg['bash_guard'] else 'OFF'} | {tiers} | "
-            f"{reviewer_label}: "
-            f"{'enabled' if DEFAULT_CONFIG['codex'].get('enabled') else fallback}"
-        )
+        # Defaults summary: the same fields the configured summary carries,
+        # from DEFAULT_CONFIG — what is ACTUALLY enforced right now, labelled
+        # as defaults (or the stored gate values) rather than as a choice.
+        summary = render_summary(
+            dg, defaults, on_codex, False,
+            DEFAULT_CONFIG["codex"].get("enabled"),
+            f"{'stored gate settings' if stored else 'defaults'} — not configured: ")
         malformed = cfg_status == "malformed"
         if malformed:
             # A config file that exists but cannot be parsed is NOT a fresh
@@ -181,62 +254,9 @@ def main():
         if rules is None:
             rules = EMERGENCY_CORE
         g = cfg["gate"]
-        if on_codex:
-            mc = cfg.get("models_codex", {})
-            # Missing keys fall back to the SHIPPED defaults, never to a
-            # hard-coded model name that a release bump would silently strand.
-            _mcx = DEFAULT_CONFIG["models_codex"]
-            tiers = (
-                f"codex tiers (pass model + reasoning_effort on spawn_agent; "
-                f"'inherit' = omit model; effort overrides need a fresh or "
-                f"partial context fork (fork_turns), never a full-history "
-                f"fork): "
-                f"deep-reasoner={mc.get('deep_reasoner', _mcx['deep_reasoner'])}"
-                f"/host effort (omit reasoning_effort), "
-                f"default-worker={mc.get('default_worker', _mcx['default_worker'])}/medium, "
-                f"task-worker={mc.get('task_worker', _mcx['task_worker'])}/low"
-            )
-            reviewer_label = "claude reviewer"
-            fallback = "disabled (fallback: native subagent, same-model)"
-        else:
-            m = cfg["models"]
-
-            def _tier(v, worker=False):
-                # "inherit" means two DIFFERENT things on Claude: the
-                # deep-reasoner inherits the SESSION model (Agent-tool
-                # default), while a worker tier falls back to its own agent
-                # file's `model:` default. Render each honestly.
-                if v != "inherit":
-                    # Only the MEASURED alias set is passable through the
-                    # Agent tool (hjw_common.PASSABLE_MODEL_ALIASES); any
-                    # other pin is not enforced (delegation_gate:
-                    # skip:pin-not-passable).
-                    if isinstance(v, str) and v.strip() not in PASSABLE_MODEL_ALIASES:
-                        return f"{v} (not passable via the Agent tool — set an alias)"
-                    return v
-                return "agent-file default" if worker else "inherit(session)"
-
-            # efforts: the agent-file pins, as in the defaults summary above
-            tiers = (
-                f"models: deep-reasoner={_tier(m['deep_reasoner'])}, "
-                f"default-worker={_tier(m['default_worker'], True)} (effort high), "
-                f"task-worker={_tier(m['task_worker'], True)} (effort low) — "
-                f"pass as Agent-tool model override if it differs from the agent default"
-            )
-            if m['deep_reasoner'] == "inherit":
-                tiers += " (inherit = omit the model override)"
-            if "inherit" in (m['default_worker'], m['task_worker']):
-                tiers += (" On Claude, omitting the model override uses each agent "
-                          "file's default; pass an explicit model to override it.")
-            reviewer_label = "codex reviewer"
-            fallback = "disabled (fallback: deep-reasoner)"
-        summary = (
-            f"[haejwo config] gate={'ON' if g['enabled'] else 'OFF'} "
-            f"budget={g['max_files_per_turn']} files/turn "
-            f"bash_guard={'ON' if g['bash_guard'] else 'OFF'} | {tiers} | "
-            f"{reviewer_label}: "
-            f"{'enabled' if cfg['codex'].get('enabled') else fallback}"
-        )
+        models = cfg.get("models_codex", {}) if on_codex else cfg["models"]
+        summary = render_summary(g, models, on_codex, True,
+                                 cfg["codex"].get("enabled"))
         context = (rules + "\n\n" + summary).strip()
         if len(context) > MAX_LEN:
             # Explicit degrade, never a mid-text cut: the full rules text

@@ -107,6 +107,272 @@ def task_payload(subagent_type, model=None, sid="sess-T", agent=None, tool="Task
     return d
 
 
+def ctx_of(out):
+    return (out.get("hookSpecificOutput") or {}).get("additionalContext", "") or ""
+
+
+def reason_of(out):
+    return (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "") or ""
+
+
+def classification_state_tests():
+    """2.25.0 (cold-loop cycle 1): temp exemption scoped to OUTSIDE the
+    project (D1), bounded state lock (D10), persistence failure said every
+    call (D15), apply_patch Move-to (B1), stored gate values before setup
+    (B3), Codex-host denial wording (D7)."""
+    print("== temp exemption is scoped to outside the project (D1) ==")
+    base = tempfile.mkdtemp(prefix="hjw-test-d1-")
+    d1_data = tempfile.mkdtemp(prefix="hjw-test-d1data-")
+    try:
+        base = os.path.realpath(base)
+        proj = os.path.join(base, "repo")
+        nogit = os.path.join(base, "plain")
+        scratch = os.path.join(base, "scratchpad")  # stands in for the session scratchpad
+        for d_ in (os.path.join(proj, "sub"), nogit, scratch):
+            os.makedirs(d_, exist_ok=True)
+        tmp_root = os.path.realpath(tempfile.gettempdir()).rstrip("/") + "/"
+        has_git = shutil.which("git") is not None and subprocess.run(
+            ["git", "init", "-q", proj], capture_output=True).returncode == 0
+        nogit_is_bare = subprocess.run(
+            ["git", "-C", nogit, "rev-parse", "--show-toplevel"],
+            capture_output=True).returncode != 0 if has_git else True
+        check("D1 fixture: the temp project lives under the system temp dir",
+              (base + "/").startswith(tmp_root), base)
+
+        def ep(path, sid, cwd):
+            d_ = edit_payload(path, sid=sid)
+            d_["cwd"] = cwd
+            return d_
+
+        if not has_git:
+            print("  skipped (no git) D1 git-toplevel fixtures")
+        else:
+            outs = [run("gate.py", ep(os.path.join(proj, n), "sess-D1G", proj), d1_data)[1]
+                    for n in ("a.py", "b.py")]
+            check("D1 git repo under temp: files 1-2 allowed (counted)",
+                  all(decision(o) != "deny" for o in outs)
+                  and "budget" in ctx_of(outs[1]).lower(), str(outs))
+            rc, out = run("gate.py", ep(os.path.join(scratch, "x.py"), "sess-D1G", proj),
+                          d1_data)
+            check("D1 scratchpad OUTSIDE the project stays exempt (allowed at a full "
+                  "budget)", rc == 0 and decision(out) != "deny", str(out))
+            rc, out = run("gate.py", ep(os.path.join(proj, "c.py"), "sess-D1G", proj),
+                          d1_data)
+            check("D1 git repo under temp: 3rd code file DENIED", decision(out) == "deny",
+                  str(out))
+            rc, out = run("gate.py", ep("rel.py", "sess-D1G", proj), d1_data)
+            check("D1 git repo under temp: a RELATIVE path resolves into the project "
+                  "and is gated", decision(out) == "deny", str(out))
+            # cwd is a subdirectory: the git TOPLEVEL bounds the project, so a
+            # file above cwd but inside the repo is still gated.
+            sub = os.path.join(proj, "sub")
+            for n in ("s1.py", "s2.py"):
+                run("gate.py", ep(os.path.join(sub, n), "sess-D1S", sub), d1_data)
+            rc, out = run("gate.py", ep(os.path.join(proj, "top.py"), "sess-D1S", sub),
+                          d1_data)
+            check("D1 cwd in a repo subdir: a file above cwd inside the git toplevel "
+                  "is gated", decision(out) == "deny", str(out))
+            # The shared Edit/Bash classification: bash_guard sees the same line.
+            bp = bash_payload(f"echo x > {os.path.join(proj, 'z.py')}", sid="sess-D1B")
+            bp["cwd"] = proj
+            rc, out = run("bash_guard.py", bp, d1_data)
+            check("D1 bash_guard: redirect into a code file of a temp-dir repo DENIED",
+                  decision(out) == "deny", str(out))
+            bp = bash_payload(f"echo x > {os.path.join(scratch, 'z.py')}", sid="sess-D1B")
+            bp["cwd"] = proj
+            rc, out = run("bash_guard.py", bp, d1_data)
+            check("D1 bash_guard: redirect into the scratchpad stays allowed",
+                  rc == 0 and decision(out) != "deny", str(out))
+
+        if not nogit_is_bare:
+            print("  skipped (temp dir is inside a git repo) D1 no-git fixtures")
+        else:
+            for n in ("a.py", "b.py"):
+                run("gate.py", ep(os.path.join(nogit, n), "sess-D1N", nogit), d1_data)
+            rc, out = run("gate.py", ep(os.path.join(scratch, "y.py"), "sess-D1N", nogit),
+                          d1_data)
+            check("D1 cwd under temp without git: a file OUTSIDE cwd stays exempt",
+                  rc == 0 and decision(out) != "deny", str(out))
+            rc, out = run("gate.py", ep(os.path.join(nogit, "c.py"), "sess-D1N", nogit),
+                          d1_data)
+            check("D1 cwd under temp without git: the 3rd file UNDER cwd is DENIED",
+                  decision(out) == "deny", str(out))
+
+        # Uncertainty keeps today's exemption (P4): no cwd at all.
+        nocwd = edit_payload(os.path.join(scratch, "n.py"), sid="sess-D1X")
+        nocwd.pop("cwd", None)
+        for n in ("n1.py", "n2.py", "n3.py"):
+            nocwd["tool_input"] = {"file_path": os.path.join(proj, n)}
+            rc, out = run("gate.py", nocwd, d1_data)
+        check("D1 no cwd in the payload: temp paths keep the exemption (fail open)",
+              rc == 0 and decision(out) != "deny", str(out))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(d1_data, ignore_errors=True)
+
+    print("== bounded state lock: allow WITHOUT mutation (D10) ==")
+    lk_data = tempfile.mkdtemp(prefix="hjw-test-d10-")
+    try:
+        sdir = os.path.join(lk_data, "state")
+        os.makedirs(sdir, exist_ok=True)
+        lk_state = os.path.join(sdir, "sess-LK.json")
+        with open(lk_state, "w") as f:
+            json.dump({"prompt_id": "p1", "files": ["/repo/lk/a.py", "/repo/lk/b.py"],
+                       "updated_at": time.time()}, f)
+        before = open(lk_state, "rb").read()
+        holder = open(lk_state + ".lock", "w")
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            t0 = time.time()
+            rc, out = run("gate.py", edit_payload("/repo/lk/c.py", sid="sess-LK"), lk_data)
+            elapsed = time.time() - t0
+            check("D10 held lock: an over-budget edit is ALLOWED (no unlocked check)",
+                  rc == 0 and decision(out) != "deny", str(out))
+            check("D10 held lock: the hook waits about 2 s, not until released",
+                  1.5 <= elapsed < 5, f"elapsed={elapsed:.2f}s")
+            check("D10 held lock: the state file is byte-identical",
+                  open(lk_state, "rb").read() == before)
+            check("D10 held lock: the output says the budget did not count",
+                  ctx_of(out) == ("[haejwo gate] state not persisted (lock busy); "
+                                  "the edit budget is not being counted"), ctx_of(out))
+            obs = [json.loads(l) for l in open(os.path.join(sdir, "observations.jsonl"))
+                   if l.strip()]
+            check("D10 held lock: observed via 'lock-unavailable'",
+                  any(r.get("sid") == "sess-LK" and r.get("via") == "lock-unavailable"
+                      for r in obs), str(obs[-1:]))
+            # 2.25 fix: a lock MISS skips the prune too (no bookkeeping write).
+            lk_stale = os.path.join(sdir, "sess-STALE.json")
+            with open(lk_stale, "w") as f:
+                f.write("{}")
+            old_t = time.time() - 30 * 86400
+            os.utime(lk_stale, (old_t, old_t))
+            t0 = time.time()
+            rc, _ = run("turn_reset.py", {"session_id": "sess-LK", "prompt_id": "p2",
+                                          "hook_event_name": "UserPromptSubmit"}, lk_data)
+            elapsed = time.time() - t0
+            check("D10 held lock: turn_reset exits 0 within the bound, state untouched",
+                  rc == 0 and elapsed < 5 and open(lk_state, "rb").read() == before,
+                  f"rc={rc} elapsed={elapsed:.2f}s")
+            check("D10 held lock: turn_reset does not prune stale session state after the miss",
+                  os.path.isfile(lk_stale), sorted(os.listdir(sdir)))
+        finally:
+            try:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            holder.close()
+    finally:
+        shutil.rmtree(lk_data, ignore_errors=True)
+
+    print("== persistence failure is said on EVERY call (D15) ==")
+    pf_base = tempfile.mkdtemp(prefix="hjw-test-d15-")
+    try:
+        # (a) the data dir path cannot exist (a regular file sits where its
+        # parent should be) — unwritable even for root.
+        blocker = os.path.join(pf_base, "blocker")
+        open(blocker, "w").close()
+        dead_data = os.path.join(blocker, "data")
+        msgs = []
+        for n in ("a", "b", "c"):
+            rc, out = run("gate.py", edit_payload(f"/repo/pf/{n}.py", sid="sess-PF"),
+                          dead_data)
+            msgs.append((rc, decision(out), ctx_of(out)))
+        check("D15 unwritable data dir: every call allowed and says state is not "
+              "persisted",
+              all(rc_ == 0 and d_ != "deny"
+                  and "[haejwo gate] state not persisted (ENOTDIR); the edit budget is "
+                      "not being counted" in c_ for rc_, d_, c_ in msgs), str(msgs))
+        # (b) the lock works but the state file cannot be replaced: the save
+        # itself fails, so nothing is counted and every call says so.
+        pf_data = os.path.join(pf_base, "data")
+        os.makedirs(os.path.join(pf_data, "state", "sess-PF2.json"), exist_ok=True)
+        ctxs = []
+        for n in ("a", "b"):
+            rc, out = run("gate.py", edit_payload(f"/repo/pf2/{n}.py", sid="sess-PF2"),
+                          pf_data)
+            ctxs.append(ctx_of(out))
+        note = ("[haejwo gate] state not persisted (EISDIR); the edit budget is not "
+                "being counted")
+        check("D15 failed save: the note on EVERY call (not a once-note)",
+              ctxs == [note, note], str(ctxs))
+        check("D15 writable state: no note on a normal save",
+              "not persisted" not in ctx_of(run("gate.py", edit_payload(
+                  "/repo/pf3/a.py", sid="sess-PF3"), pf_data)[1]))
+    finally:
+        shutil.rmtree(pf_base, ignore_errors=True)
+
+    print("== apply_patch Move to: + Codex-host denial wording (B1, D7) ==")
+    mv_data = tempfile.mkdtemp(prefix="hjw-test-b1-")
+    try:
+        cmd = ("*** Begin Patch\n*** Update File: /repo/mv/a.py\n"
+               "*** Move to: /repo/mv/b.py\n@@\n-x\n+y\n*** End Patch")
+        mv = {"session_id": "sess-MV", "turn_id": "t1", "hook_event_name": "PreToolUse",
+              "tool_name": "apply_patch", "cwd": "/repo", "tool_input": {"command": cmd}}
+        rc, out = run("gate.py", mv, mv_data)
+        st = json.load(open(os.path.join(mv_data, "state", "sess-MV.json")))
+        check("B1 Update+Move: source AND destination counted (budget full)",
+              decision(out) != "deny" and "budget now full" in ctx_of(out)
+              and st.get("files") == ["/repo/mv/a.py", "/repo/mv/b.py"], str(st))
+        rc, out = run("gate.py", patch_payload([("Add", "/repo/mv/c.py")], sid="sess-MV"),
+                      mv_data)
+        r = reason_of(out)
+        check("B1 a further file after a Move fills the budget -> DENY",
+              decision(out) == "deny", str(out))
+        check("D7 Codex (apply_patch) denial names spawn_agent, never the Agent tool",
+              "delegate via spawn_agent: 'haejwo:default-worker'" in r
+              and "Agent tool" not in r, r)
+
+        for n in ("a", "b"):
+            run("gate.py", edit_payload(f"/repo/d7/{n}.py", sid="sess-D7C"), mv_data)
+        rc, out = run("gate.py", edit_payload("/repo/d7/c.py", sid="sess-D7C"), mv_data)
+        check("D7 Claude denial text is unchanged (pinned in full)",
+              reason_of(out) == (
+                  "[haejwo gate] Per-turn code-edit budget exceeded: this change adds "
+                  "1 new file(s) (/repo/d7/c.py) on top of 2/2 already touched "
+                  "(/repo/d7/a.py, /repo/d7/b.py). Do NOT edit more code files directly "
+                  "— split the change or delegate via the Agent tool: "
+                  "'haejwo:default-worker' (implementation), 'haejwo:task-worker' "
+                  "(mechanical chores), 'haejwo:deep-reasoner' (hard design/analysis). "
+                  "Re-editing the files already touched this turn is still allowed. "
+                  "If this is unplanned feature-scale work, run /haejwo:plan first "
+                  "(backup nudge — plan-first is the norm for delegate-tier work). "
+                  "Emergency override: /haejwo:gate off."), reason_of(out))
+        cx_root = "/home/u/.codex/plugins/cache/haejwo/haejwo"
+        for n in ("a", "b"):
+            run("gate.py", edit_payload(f"/repo/d7x/{n}.py", sid="sess-D7X"), mv_data,
+                root=cx_root)
+        rc, out = run("gate.py", edit_payload("/repo/d7x/c.py", sid="sess-D7X"), mv_data,
+                      root=cx_root)
+        check("D7 Codex install (plugin root under /.codex/) also names spawn_agent",
+              decision(out) == "deny" and "via spawn_agent:" in reason_of(out),
+              reason_of(out))
+    finally:
+        shutil.rmtree(mv_data, ignore_errors=True)
+
+    print("== stored gate values before setup (B3) ==")
+    b3_data = tempfile.mkdtemp(prefix="hjw-test-b3-")
+    try:
+        with open(os.path.join(b3_data, "config.json"), "w") as f:
+            json.dump({"gate": {"enabled": False, "max_files_per_turn": 5}}, f)
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, b3_data)
+        c_ = ctx_of(out)
+        check("B3 gate off before setup: the summary reports the STORED values",
+              "[haejwo config] stored gate settings — not configured: "
+              "gate=OFF budget=5 files/turn bash_guard=ON" in c_, c_[-400:])
+        check("B3 gate off before setup: the nudge does not claim the gate is ON",
+              "NOT configured" in c_ and "gate OFF, max 5 distinct code files" in c_
+              and "safe defaults are ACTIVE" not in c_ and "gate=ON" not in c_, c_[-900:])
+        with open(os.path.join(b3_data, "config.json"), "w") as f:
+            json.dump({"gate": {"enabled": True}}, f)
+        rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, b3_data)
+        c_ = ctx_of(out)
+        check("B3 stored values equal to the defaults: wording unchanged",
+              "[haejwo config] defaults — not configured: gate=ON budget=2" in c_
+              and "safe defaults are ACTIVE" in c_, c_[-400:])
+    finally:
+        shutil.rmtree(b3_data, ignore_errors=True)
+
+
 def main():
     data = tempfile.mkdtemp(prefix="hjw-test-")
     try:
@@ -961,7 +1227,9 @@ def main():
         runner_efforts = set(re.findall(r'EFFORT="(\w+)";\s*EFFORT_SRC="runner-default"', runner_src))
         rules_src = open(os.path.join(PLUGIN, "rules", "orchestration.md"),
                          encoding="utf-8-sig").read()
-        rules_efforts = set(re.findall(r"runner default (\w+)", rules_src))
+        # The rules name the codex runner's default inline (2.25.0 wording:
+        # "medium (routine; codex default, claude: CLI default)").
+        rules_efforts = set(re.findall(r"(\w+) \(routine; codex default", rules_src))
         check("reviewer effort default single-sourced (codex_consult.sh runner-default "
               "== rules/orchestration.md)",
               len(runner_efforts) == 1 and runner_efforts == rules_efforts,
@@ -1382,6 +1650,53 @@ def main():
         finally:
             shutil.rmtree(a6_claude, ignore_errors=True)
             shutil.rmtree(a6_codex_base, ignore_errors=True)
+
+        print("== session_brief.render_summary: one renderer, both states (B6) ==")
+        # cold-loop B6: the configured and not-configured summaries used to be
+        # rendered by two copies of the tier code; one function now renders
+        # both, byte-identical to what the two copies produced.
+        from session_brief import render_summary  # noqa: E402
+        _g = DEFAULT_CONFIG["gate"]
+        check("B6 not-configured Claude defaults summary, exact",
+              render_summary(_g, DEFAULT_CONFIG["models"], False, False, False,
+                             "defaults — not configured: ")
+              == "[haejwo config] defaults — not configured: gate=ON budget=2 "
+                 "files/turn bash_guard=ON | models: deep-reasoner=session model, "
+                 "default-worker=opus (effort high), task-worker=opus (effort low) "
+                 "| codex reviewer: disabled (fallback: deep-reasoner)")
+        check("B6 configured Codex: missing keys fall back to the shipped defaults, exact",
+              render_summary({"enabled": False, "max_files_per_turn": 4,
+                              "bash_guard": False}, {}, True, True, True)
+              == "[haejwo config] gate=OFF budget=4 files/turn bash_guard=OFF | "
+                 "codex tiers (pass model + reasoning_effort on spawn_agent; "
+                 "'inherit' = omit model; effort overrides need a fresh or partial "
+                 "context fork (fork_turns), never a full-history fork): "
+                 "deep-reasoner=inherit/host effort (omit reasoning_effort), "
+                 "default-worker=inherit/medium, task-worker=inherit/low | "
+                 "claude reviewer: enabled")
+        check("B6 configured Claude: inherit + non-passable pin rendering, exact",
+              render_summary(_g, {"deep_reasoner": "inherit",
+                                  "default_worker": "claude-opus-5-5",
+                                  "task_worker": "inherit"}, False, True, False)
+              == "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON | "
+                 "models: deep-reasoner=inherit(session), default-worker="
+                 "claude-opus-5-5 (not passable via the Agent tool — set an alias) "
+                 "(effort high), task-worker=agent-file default (effort low) — pass "
+                 "as Agent-tool model override if it differs from the agent default "
+                 "(inherit = omit the model override) On Claude, omitting the model "
+                 "override uses each agent file's default; pass an explicit model to "
+                 "override it. | codex reviewer: disabled (fallback: deep-reasoner)")
+
+        print("== delegation_gate docstring names every tier_pin_check value (D2) ==")
+        # The envelope docstring was shrunk to one line per field (cold-loop
+        # D2); this canary keeps every value the code can record documented.
+        import delegation_gate as _dg  # noqa: E402
+        with open(os.path.join(SCRIPTS, "delegation_gate.py"), encoding="utf-8") as f:
+            _dg_src = f.read()
+        _emitted = set(re.findall(r'"((?:pass|skip):[a-z-]+)"', _dg_src)) | {"deny"}
+        _undoc = sorted(v for v in _emitted if f'"{v}"' not in _dg.__doc__)
+        check("D2 every recorded tier_pin_check value is in the module docstring",
+              len(_emitted) >= 9 and not _undoc, f"emitted={sorted(_emitted)} undoc={_undoc}")
 
         print("== hjw_common.DEFAULT_CONFIG ==")
         # Owner policy (2.12.0): public defaults are Opus for execution and
@@ -2276,6 +2591,8 @@ def main():
                   str(pin_rec("sess-PINY")))
         finally:
             shutil.rmtree(pin_data, ignore_errors=True)
+
+        classification_state_tests()
 
         print("== hooks.json hook-target existence ==")
         hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")
@@ -5094,6 +5411,167 @@ exit "$rc"
                       and "runner 9.9.0 is stale — forwarding to 9.8.0" in hops[0]
                       and os.path.exists(t13_marker) and "GUARDLESS-TARGET-RAN" in out,
                       f"rc={rc} hops={hops} out={out} err={err}")
+
+
+            # ==== (2.25, W33) runner lifecycle & detection: B2 a parent
+            # signal reaps bounded.py's child group, B4 umask 077 on every
+            # runner artifact, B5 only a genuinely unborn HEAD is "unborn". ====
+            print("== runner lifecycle & detection (2.25: B2 signals, B4 umask, B5 unborn) ==")
+            bounded_py = os.path.join(SCRIPTS, "lib", "bounded.py")
+            for sig, want in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+                b2_pid = os.path.join(runner_tmp, f"b2-{sig.name}.pid")
+                b2 = subprocess.Popen(
+                    ["python3", bounded_py, "30", "python3", "-c",
+                     "import subprocess, sys, time\n"
+                     "p = subprocess.Popen(['sleep', '60'])\n"
+                     "open(sys.argv[1], 'w').write(str(p.pid))\n"
+                     "time.sleep(60)\n", b2_pid])
+                b2_deadline = time.time() + 10
+                while time.time() < b2_deadline and not (
+                        os.path.isfile(b2_pid) and open(b2_pid).read().strip()):
+                    time.sleep(0.05)
+                b2_gc = int(open(b2_pid).read().strip()) if os.path.isfile(b2_pid) else 0
+                b2_pgid = os.getpgid(b2_gc) if b2_gc > 0 else 0
+                b2.send_signal(sig)
+                try:
+                    b2_rc = b2.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    b2.kill()
+                    b2_rc = None
+                def b2_live_members(pgid):
+                    # Live (non-zombie) processes in the group: an orphaned
+                    # zombie awaiting a subreaper still answers killpg(0).
+                    live = []
+                    for d in os.listdir("/proc"):
+                        if not d.isdigit():
+                            continue
+                        try:
+                            f = open(f"/proc/{d}/stat").read().rsplit(")", 1)[1].split()
+                        except Exception:
+                            continue
+                        if int(f[2]) == pgid and f[0] != "Z":
+                            live.append(int(d))
+                    return live
+                b2_gone = False
+                b2_deadline = time.time() + 3
+                while b2_pgid > 0 and time.time() < b2_deadline:
+                    if not b2_live_members(b2_pgid):
+                        b2_gone = True
+                        break
+                    time.sleep(0.1)
+                check(f"B2 bounded.py: {sig.name} to the parent kills the child's WHOLE "
+                      "process group (grandchild included)",
+                      b2_pgid > 0 and b2_pgid != os.getpgid(0) and b2_gone,
+                      f"pgid={b2_pgid} gone={b2_gone}")
+                check(f"B2 bounded.py: {sig.name} is re-raised, so a shell sees {want}",
+                      b2_rc == -sig, f"rc={b2_rc}")
+                if not b2_gone and b2_pgid > 0:
+                    try:
+                        os.killpg(b2_pgid, signal.SIGKILL)
+                    except Exception:
+                        pass
+            b2_sh = subprocess.run(
+                ["bash", "-c", 'python3 "$1" 30 sleep 30 & b=$!; sleep 0.5; kill -TERM "$b"; '
+                 'wait "$b"; echo "rc=$?"', "_", bounded_py],
+                capture_output=True, text=True, timeout=20)
+            check("B2 bounded.py: the exit status a shell reads after SIGTERM is 143",
+                  b2_sh.stdout.strip() == "rc=143", b2_sh.stdout + b2_sh.stderr)
+
+            for who, script, cli in (("codex", codex_script, "codex"),
+                                     ("claude", claude_script, "claude")):
+                # B4: a stdin brief run under a permissive caller umask leaves
+                # ONLY owner-private artifacts in $TMPDIR.
+                um_tmp = os.path.join(runner_tmp, f"b4-tmp-{who}")
+                os.makedirs(um_tmp, exist_ok=True)
+                um_bin = os.path.join(runner_tmp, f"bin-b4-{who}")
+                um_cap = os.path.join(runner_tmp, f"cap-b4-{who}")
+                make_stub(um_bin, cli, um_cap)
+                um_repo = make_repo_committed(f"repo-b4-{who}")
+                um_old = os.umask(0o022)
+                try:
+                    rc, out, err = run_script(
+                        script, ["-"],
+                        {"PATH": um_bin + os.pathsep + os.environ.get("PATH", ""),
+                         "TMPDIR": um_tmp}, stdin_data="Umask brief.\n", cwd=um_repo)
+                finally:
+                    os.umask(um_old)
+                um_modes = {n: oct(os.stat(os.path.join(um_tmp, n)).st_mode & 0o777)
+                            for n in sorted(os.listdir(um_tmp))}
+                check(f"B4 {who}: a stdin-brief run under umask 022 leaves its artifacts "
+                      "0600 (reply, log" + (", events" if who == "codex" else "") + ")",
+                      rc == 0 and len(um_modes) == (3 if who == "codex" else 2)
+                      and set(um_modes.values()) == {"0o600"},
+                      f"rc={rc} modes={um_modes} err={err}")
+
+                # B5: an UNBORN repository (no commits) is not a git error.
+                ub_bin = os.path.join(runner_tmp, f"bin-b5-unborn-{who}")
+                ub_cap = os.path.join(runner_tmp, f"cap-b5-unborn-{who}")
+                make_stub(ub_bin, cli, ub_cap)
+                ub_repo = make_repo(f"repo-b5-unborn-{who}")
+                rc, out, err = run_script(
+                    script, ["-o", os.path.join(runner_tmp, f"b5-unborn-{who}.md"),
+                             brief_file(f"b5-unborn-{who}-brief.md")],
+                    {"PATH": ub_bin + os.pathsep + os.environ.get("PATH", "")}, cwd=ub_repo)
+                check(f"B5 {who}: a repository with NO commits -> the run proceeds",
+                      rc == 0 and "STUB-REPLY-OK-1" in out and len(read_calls(ub_cap)) == 1,
+                      f"rc={rc} err={err}")
+
+                # B5: a BROKEN branch ref prints the same "Needed a single
+                # revision" as an unborn one — it must fail closed, unpaid.
+                br_bin = os.path.join(runner_tmp, f"bin-b5-broken-{who}")
+                br_cap = os.path.join(runner_tmp, f"cap-b5-broken-{who}")
+                make_stub(br_bin, cli, br_cap)
+                br_repo = make_repo_committed(f"repo-b5-broken-{who}")
+                br_ref = subprocess.run(["git", "-C", br_repo, "symbolic-ref", "HEAD"],
+                                        capture_output=True, text=True).stdout.strip()
+                write_file(os.path.join(br_repo, ".git", *br_ref.split("/")), "garbage\n")
+                rc, out, err = run_script(
+                    script, ["-o", os.path.join(runner_tmp, f"b5-broken-{who}.md"),
+                             brief_file(f"b5-broken-{who}-brief.md")],
+                    {"PATH": br_bin + os.pathsep + os.environ.get("PATH", "")}, cwd=br_repo)
+                check(f"B5 {who}: a corrupted .git (garbage branch ref) -> 'change detection "
+                      "unavailable', the run fails and the CLI is never invoked",
+                      rc == 1 and "change detection unavailable" in err
+                      and read_calls(br_cap) == [],
+                      f"rc={rc} calls={len(read_calls(br_cap))} err={err}")
+
+            b5_snap = os.path.join(runner_tmp, "b5-unborn-direct.json")
+            b5 = subprocess.run(["python3", os.path.join(SCRIPTS, "lib", "detect.py"), "snapshot",
+                                 make_repo("repo-b5-direct"), b5_snap],
+                                capture_output=True, text=True, timeout=30)
+            check("B5 detect.py snapshot: an unborn repository records head='unborn'",
+                  b5.returncode == 0 and json.load(open(b5_snap))["head"] == "unborn",
+                  f"rc={b5.returncode} err={b5.stderr}")
+
+            # 2.25 fix: the unborn match must not depend on the caller's locale.
+            # This host ships no git translations, so a PATH shim localizes
+            # git's stderr unless LC_ALL=C — as a translated git would.
+            loc_bin = os.path.join(runner_tmp, "bin-b5-locale")
+            write_file(os.path.join(loc_bin, "git"), (
+                "#!/usr/bin/env python3\nimport os, subprocess, sys\n"
+                "r = subprocess.run([%r] + sys.argv[1:], capture_output=True)\n"
+                "sys.stdout.buffer.write(r.stdout)\nerr = r.stderr\n"
+                "if os.environ.get('LC_ALL') != 'C':\n"
+                "    for en, de in ((b'Needed a single revision', b'Brauche eine einzelne Revision'),\n"
+                "                   (b'unknown revision', b'unbekannte Revision'),\n"
+                "                   (b\"ambiguous argument 'HEAD'\", b\"mehrdeutiges Argument 'HEAD'\")):\n"
+                "        err = err.replace(en, de)\n"
+                "sys.stderr.buffer.write(err)\nsys.exit(r.returncode)\n") % shutil.which("git"))
+            os.chmod(os.path.join(loc_bin, "git"), 0o755)
+            loc_env = dict(os.environ, LANG="de_DE.UTF-8", LC_ALL="de_DE.UTF-8",
+                           PATH=loc_bin + os.pathsep + os.environ.get("PATH", ""))
+            loc_repo = make_repo("repo-b5-locale")
+            loc_ctl = subprocess.run(["git", "-C", loc_repo, "rev-parse", "--verify", "HEAD"],
+                                     capture_output=True, text=True, env=loc_env, timeout=30)
+            loc_snap = os.path.join(runner_tmp, "b5-unborn-locale.json")
+            loc = subprocess.run(["python3", os.path.join(SCRIPTS, "lib", "detect.py"), "snapshot",
+                                  loc_repo, loc_snap],
+                                 capture_output=True, text=True, env=loc_env, timeout=30)
+            check("B5 detect.py snapshot: unborn under a German-locale git is still 'unborn' "
+                  "(git runs under LC_ALL=C)",
+                  "Brauche eine einzelne Revision" in loc_ctl.stderr and loc.returncode == 0
+                  and json.load(open(loc_snap))["head"] == "unborn",
+                  f"ctl={loc_ctl.stderr!r} rc={loc.returncode} err={loc.stderr}")
 
 
         finally:

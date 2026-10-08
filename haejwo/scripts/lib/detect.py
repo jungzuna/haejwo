@@ -21,6 +21,8 @@ import stat
 import subprocess
 import sys
 
+GIT_ENV = dict(os.environ, LC_ALL="C", LANG="C")  # stable git diagnostics: the unborn check matches them
+
 
 def cmd_snapshot(argv):
     workdir, outfile = argv[0], argv[1]
@@ -28,7 +30,7 @@ def cmd_snapshot(argv):
 
     def git(*args):
         # *[origin: `git status` may refresh the reviewed repo's .git/index — an indirect write and lock contention]*
-        r = subprocess.run(["git", "--no-optional-locks", "-C", workdir] + list(args), capture_output=True)
+        r = subprocess.run(["git", "--no-optional-locks", "-C", workdir] + list(args), capture_output=True, env=GIT_ENV)
         if r.returncode != 0:
             detail = r.stderr.decode("utf-8", "replace").strip() or ("rc=%d" % r.returncode)
             raise RuntimeError("git %s: %s" % (" ".join(args), detail))
@@ -54,8 +56,7 @@ def cmd_snapshot(argv):
             return "unreadable"
 
     try:
-        # Paths from git are repo-ROOT relative (the runner may run from a subdir). Strip ONLY git's
-        # trailing newline: a directory name may end in a space.
+        # Paths are repo-ROOT relative (the runner may run from a subdir); strip ONLY git's trailing newline.
         root = dec(git("rev-parse", "--show-toplevel"))
         if root.endswith("\n"):
             root = root[:-1]
@@ -74,8 +75,13 @@ def cmd_snapshot(argv):
 
         try:
             head = dec(git("rev-parse", "--verify", "HEAD")).strip()
-        except RuntimeError:
-            head = "unborn"  # a repo with no commits is not a git error
+        except RuntimeError as exc:
+            # Unborn only when git says so AND HEAD is a symref (a broken ref prints the same message).
+            if not any(m in str(exc) for m in
+                       ("unknown revision", "ambiguous argument 'HEAD'", "Needed a single revision")):
+                raise
+            git("symbolic-ref", "-q", "HEAD")
+            head = "unborn"
 
         # --untracked-files=all: a collapsed `newdir/` would hide which files appeared and defeat exclusion.
         status_raw = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
@@ -232,7 +238,7 @@ def cmd_artifacts(argv):
     paths = [p for p in argv[1:] if p]
 
     def git(*args):
-        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True)
+        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, env=GIT_ENV)
         out = r.stdout.decode("utf-8", "surrogateescape")
         # ONLY the newline git appends: a directory name may end in whitespace.
         if out.endswith("\n"):
@@ -256,8 +262,7 @@ def cmd_artifacts(argv):
             sys.stderr.write("cannot determine the reviewed repository (git rev-parse %s rc=%d): %s\n"
                              % (q[0], rc, err or "no output"))
             sys.exit(2)
-        # --git-common-dir may be relative to <cwd>.
-        root = os.path.normpath(os.path.join(cwd, out))
+        root = os.path.normpath(os.path.join(cwd, out))  # --git-common-dir may be relative to <cwd>
         roots.extend([root, os.path.realpath(root)])
     roots = sorted(set(roots))
 

@@ -19,14 +19,14 @@ applies while on.
   (fresh context, NOT independent authority).
 - Independent review -> the OTHER vendor's
   `${CLAUDE_PLUGIN_ROOT}/scripts/{codex,claude}_consult.sh`;
-  runner default medium (routine), high (plans/diffs), xhigh ONLY
-  (architecture forks/security-critical/deadlock). Model fixed; escalate in
-  a NEW session, never --resume.
+  medium (routine; codex default, claude: CLI default), high (plans/diffs),
+  xhigh ONLY (architecture forks/security/deadlock); escalate in a NEW
+  session, never --resume.
 - Risk classes (security/concurrency/data integrity/crypto/migrations/public
   API): escalate only with a brief-named risk + independent review BEFORE
   deploy, commit, merge, or acceptance; docs/config/boilerplate never
   escalates.
-- Generic agents (general-purpose/Explore): omitting model inherits;
+- Generic agents (general-purpose/Explore): no model = host default;
   explicit model required (gate-enforced). Prefer haejwo tiers.
 
 **Plan-first:** judgment-bearing feature/risk work starts from a

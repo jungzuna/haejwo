@@ -1,6 +1,6 @@
 # haejwo prompt & style policy
 
-Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `session_brief.py`), script comments/errors (`scripts/`), and README language that defines identity or behavior.
+Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `delegation_gate.py`, `session_brief.py`), script comments/errors (`scripts/`), and README language that defines identity or behavior.
 
 ## Language
 - **English everywhere by default** — prompts, comments, error messages, docs.
@@ -22,7 +22,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
-- Total injected size (rules + config summary) must stay under session_brief's 5000-char hard cap; keep ≤4600 so there's headroom for config lines.
+- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Keep the rules ≤4600 chars so the summary always fits.
 
 ## Hook-emitted text (the model reads these verbatim)
 - Prefixes: `[haejwo gate]` for gate/bash-guard decisions; `[haejwo]` / `[haejwo config]` for session context.

@@ -2,24 +2,22 @@
 # codex_consult.sh — headless Codex reviewer runner (haejwo's reviewer slot on a Claude host).
 # Feeds REVIEWER CONTRACT + a self-contained brief to `codex exec` on stdin and captures the final reply.
 # Consult (non-editing) only; the invoking directory is the work root. Options, env, exit codes: --help.
-# Shared mechanics (parsing, paths, wall clock, forwarding, artifact guard, change detection, config)
-# live in lib/consult_common.sh; this file owns the vendor policy: contract text, `codex exec` argv,
-# effort/sandbox, the JSONL event classifier, the events artifact and the non-git policy.
+# Shared mechanics live in lib/consult_common.sh; this file owns the vendor policy: contract text, `codex exec`
+# argv, effort/sandbox, the JSONL event classifier, the events artifact and the non-git policy.
 # NEVER trust the exit code alone: rc=0 with no reply, a reported failure event or a changed repository
 # is never success; a failure the reviewer reports only in prose is not detected.
-# Config is host-relative: codex.model/effort are ignored under /.codex/, where the block describes
-# Claude; `models_codex` (codex-host worker tiers) never selects this reviewer. Every model/effort value
-# is disclosed with its source; an unselected model is `cli-default (identity unverified)`.
+# Config is host-relative: codex.model/effort are ignored under /.codex/ (the block describes Claude); `models_codex`
+# never selects this reviewer. Each value is disclosed with its source; unselected = `cli-default (identity unverified)`.
 # *[origin: reviewer replies discussing sandbox/tool errors self-failed — only TOP-LEVEL JSONL failure events count]*
 # *[origin: a live smoke launched the claude reviewer with the codex host's own model name]*
 # *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]*
 # *[origin: ship review Z4]* — `-o x.log` would alias the log onto the reply; the log then takes `$OUT.log`.
 set -uo pipefail
+umask 077  # every artifact (reply, log, events, temp files) is private to the invoking user
 
 # ---- shared internals ----
-# $0 resolved to an ABSOLUTE PHYSICAL path (symlinked or relative invocation): realpath (the minimal-PATH
-# fixture has no readlink), else python3, else lexical $PWD. Every required file is checked before any
-# artifact exists: an incomplete install fails loudly, never half-runs a paid review.
+# $0 -> ABSOLUTE PHYSICAL path: realpath (the minimal-PATH fixture has no readlink), else python3, else $PWD.
+# Every required file is checked before any artifact exists: an incomplete install never half-runs a paid review.
 HJW_SELF="$(realpath "$0" 2>/dev/null)"
 case "$HJW_SELF" in
   /*) ;;
@@ -123,8 +121,7 @@ else
 fi
 
 # ---- effort: env CODEX_EFFORT > config codex.effort > runner default medium ----
-# Effort scales with the decision's stakes. Invalid ENV = caller input = exit 2 (as CODEX_SANDBOX);
-# invalid CONFIG = one note + runner default, never a hard stop for a stale file.
+# Invalid ENV = caller input = exit 2 (as CODEX_SANDBOX); invalid CONFIG = one note + runner default.
 ENV_EFFORT="$(trim "${CODEX_EFFORT:-}")"
 if [ -n "$ENV_EFFORT" ]; then
   case "$ENV_EFFORT" in
@@ -143,13 +140,11 @@ elif [ -n "$CFG_EFFORT" ]; then
       ;;
   esac
 else
-  # Owner policy (2.14): medium. `high` is for design/plan rounds and diff reviews, `xhigh` for architecture,
-  # security and deadlock rounds; a `high` default charged every routine check at design-round rates.
+  # Owner policy (2.14): medium; `high` for design/plan/diff rounds, `xhigh` for architecture/security/deadlock.
   EFFORT="medium"; EFFORT_SRC="runner-default"
 fi
 
-# Wall clock DECOUPLED from effort (2.14): the old effort->timeout table let the effort default silently
-# retune it. The brief (how much repository to read) sets the need, not effort. CODEX_TIMEOUT overrides.
+# Wall clock DECOUPLED from effort (2.14): the brief (how much to read) sets the need. CODEX_TIMEOUT overrides.
 TIMEOUT="${CODEX_TIMEOUT:-600}"
 
 MODEL_FLAG=(); [ -n "$MODEL" ] && MODEL_FLAG=(-m "$MODEL")
@@ -183,8 +178,7 @@ ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
   if [ "$SANDBOX" != read-only ]; then
-    # Not a git repo AND the sandbox cannot block writes: nothing verifies the no-edit contract, so refuse
-    # before the paid call (was a post-run failure that paid for a discarded result). Read-only outside a
+    # Not a git repo AND the sandbox cannot block writes: refuse before the paid call. Read-only outside a
     # repo stays allowed: the sandbox IS the enforcement. *[origin 2026-09-21 audit item 3]*
     REFUSE_MSG="consult outside a git repo with sandbox=$SANDBOX (not read-only) — cannot verify the no-edit contract. Use read-only or run inside a git repo."
     printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
@@ -320,16 +314,13 @@ if [ "$rc" -eq 0 ] && [ "$CLS_KNOWN" -eq 0 ]; then
   fail "no event stream (rc=0) — cannot verify the run"
 fi
 
-# (iv) tracing errors on THIS attempt's stderr, ANCHORED at column 0: prose and echoed content cannot match
-# (the old unanchored grep failed replies that discussed an error). Always runs (2.14: CODEX_ALLOW_MARKERS
-# removed — anchored, it only ever fired on hook blocks, now a note). ROLLBACK TRIGGER: an anchored-scan
-# failure on a COMPLETE, VALID reply.
+# (iv) tracing errors on THIS attempt's stderr, ANCHORED at column 0: prose and echoed content cannot match.
+# Always runs. ROLLBACK TRIGGER: an anchored-scan failure on a COMPLETE, VALID reply.
 TRACE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z[[:space:]]+ERROR[[:space:]]+codex_core'
 HOOK_BLOCK_RE='Command blocked by PreToolUse hook'
 TRACE_ALL="$(awk '/^# ---- attempt [0-9]+ stderr ----$/ { buf=""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$LOG" 2>/dev/null | grep -E "$TRACE_RE")"
 if [ -n "$TRACE_ALL" ]; then
-  # A hook denying a REVIEWER command is the gate working, not a codex failure: note it, keep the reply
-  # (observed live 2026-09-14). Every other anchored tracing error still fails.
+  # A hook denying a REVIEWER command is the gate working: note it, keep the reply (observed live 2026-09-14).
   HOOK_BLOCKED="$(printf '%s\n' "$TRACE_ALL" | grep -F "$HOOK_BLOCK_RE")"
   TRACE_LINE="$(printf '%s\n' "$TRACE_ALL" | grep -vF "$HOOK_BLOCK_RE" | grep -m1 -E "$TRACE_RE")"
   if [ -n "$HOOK_BLOCKED" ]; then

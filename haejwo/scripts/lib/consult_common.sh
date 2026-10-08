@@ -4,8 +4,7 @@
 # The entrypoint sets, all BEFORE hjw_forward_if_stale (the pre-forward guard derives the same paths):
 #   HJW_LIB this directory;  HJW_SELF its own absolute physical path ($HJW_LIB derives from it)
 #   HJW_RUNNER_KIND   codex|claude — temp prefixes, host-relative config, usage and failure labels
-#   HJW_OUT_SIBLINGS  suffixes derived from ${OUT%.*} (codex: its events streams; claude: none)
-#   HJW_OUT_APPENDS   suffixes appended to the whole $OUT (codex: `.tmp`, from an older install; claude: none)
+#   HJW_OUT_SIBLINGS  suffixes derived from ${OUT%.*} (codex: its events stream; claude: none)
 # and OWNS: the REVIEWER CONTRACT, print_help, the CLI argv and redirections, the effective brief, the
 # timeout default, codex's classifier/stderr scan/effort/sandbox, the non-git policy, and ARTIFACTS.
 # This library never invents a vendor's artifact paths (claude has no events stream).
@@ -66,6 +65,8 @@ hjw_forward_if_stale() {
   # $@ = the entrypoint's argv, forwarded byte for byte. Runs before parsing, stdin, traps, temp files,
   # config and chdir, so a forwarded run is indistinguishable from invoking the installed runner directly.
   local root plugins dir name raw version target esc_own esc_ver esc_target
+  # (0) Clean git env for this run AND any hop. *[origin: 2.26 review (a) — a 2.22–2.25 target inherits GIT_DIR]*
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
   # (1) Hop marker: a forwarded run never forwards again; unset so no reviewer process can see it.
   if [ -n "${HJW_FORWARDED:-}" ]; then
@@ -102,6 +103,10 @@ hjw_forward_if_stale() {
   version="${raw%%"$SNAP_META_END"*}"
   target="${raw#*"$SNAP_META_END"}"
   [ -n "$version" ] && [ -n "$target" ] || return 0
+  # (4b) Below the support floor (target field `floor <floor>`; real targets are absolute): stay, say so.
+  case "$target" in "floor "*) hjw_esc_display "$version"
+    printf '# installed runner %s is below the supported floor %s; running locally\n' "$HJW_ESC" "${target#floor }" >&2
+    return 0 ;; esac
 
   # (5b) The artifact guard holds ACROSS the hop: the registry may name an OLDER install with no guard, so
   # this version judges the argv first (refusal = exit 2, nothing forwarded); an argv it rejects stays here.
@@ -253,8 +258,7 @@ hjw_common_init() {
   fi
   [ -f "$BRIEF" ] || { echo "brief file not found: $BRIEF" >&2; exit 2; }
 
-  # Every artifact is judged HERE, before anything truncates or removes one: change detection excludes
-  # artifacts BY DESIGN, so an artifact naming a project file would be overwritten silently.
+  # Every artifact is judged HERE, before anything truncates or removes one (detection excludes artifacts).
   hjw_artifact_set "$BRIEF" "$OUT"
   OUT="$HJW_ART_OUT"
   LOG="$HJW_ART_LOG"
@@ -262,13 +266,19 @@ hjw_common_init() {
   # A stdin run judged the $TMPDIR directory above, before the temp brief.
   if [ -n "$TMPBRIEF" ]; then _guard+=("$TMPBRIEF"); else hjw_tmp_guard; fi
   hjw_artifact_guard "${_guard[@]}"
+  # umask 077 does not repair a REUSED artifact: tighten each existing one, after the guard, before any write.
+  local _a
+  for _a in "${HJW_KNOWN[@]}"; do
+    [ ! -e "$_a" ] || chmod 600 "$_a" 2>/dev/null || { hjw_esc_display "$_a"
+      echo "cannot make an existing artifact private (chmod 600): $HJW_ESC — pass -o with a path you own" >&2; exit 2; }
+  done
   return 0
 }
 
 hjw_artifact_set() {
   # THE derivation of a run's artifact paths, shared by the local run and hjw_preforward_guard so they
   # cannot drift. $1 = brief (`-` = stdin), $2 = `-o` value or "". Pure: sets HJW_ART_OUT, HJW_ART_LOG,
-  # HJW_TMP_DIR and HJW_KNOWN (reply, log, siblings, appends; empty for `-` without `-o`). mktemp names are
+  # HJW_TMP_DIR and HJW_KNOWN (reply, log, siblings; empty for `-` without `-o`). mktemp names are
   # unknown, so their DIRECTORY is judged (`detect.py artifacts --dir`). Relative paths: the invoking cwd.
   local _sfx _out="$2" _log
   HJW_TMP_DIR="${TMPDIR:-/tmp}"
@@ -288,14 +298,11 @@ hjw_artifact_set() {
   for _sfx in ${HJW_OUT_SIBLINGS[@]+"${HJW_OUT_SIBLINGS[@]}"}; do
     HJW_KNOWN+=("${_out%.*}$_sfx")
   done
-  for _sfx in ${HJW_OUT_APPENDS[@]+"${HJW_OUT_APPENDS[@]}"}; do
-    HJW_KNOWN+=("$_out$_sfx")
-  done
   return 0
 }
 
 # ---- artifact guard (2.21): never write inside the reviewed repository ----
-# GUARANTEE: every artifact (reply, log, events, temp/effective brief, the legacy `.events.2.jsonl` and `$OUT.tmp`)
+# GUARANTEE: every artifact (reply, log, events, temp/effective brief)
 # lies outside the invoking worktree and its git dirs, lexically and through symlinks. NOT covered: other
 # worktrees, a hostile concurrent replacement — it guards accidental paths (a typo in `-o`, an in-repo brief).
 # It holds across a hop, even to an older guardless install; a pre-2.21 runner invoked DIRECTLY is outside it.
@@ -303,7 +310,6 @@ hjw_artifact_set() {
 # Relative paths resolve against the ORIGINAL cwd, hence before any chdir.
 # *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]*
 hjw_artifact_guard() {
-  # $@ = artifact FILE paths.
   hjw_artifact_check "" "$@"
 }
 
@@ -464,8 +470,7 @@ hjw_config_load() {
 }
 
 # ---- change detection (A5): file-backed before/after snapshots ----
-# Attribution is NOT established: a concurrent save looks like a reviewer edit, so the failure says
-# "attribution unknown" and never proposes reverting.
+# Attribution is NOT established (a concurrent save looks like a reviewer edit): "attribution unknown", no revert.
 git_snapshot() {
   # $1 = snapshot JSON (filenames may hold newlines); non-zero = detection unavailable. $ARTIFACTS: runner-owned.
   bounded 60 python3 "$HJW_LIB/detect.py" snapshot "$WORKDIR" "$1" "${ARTIFACTS[@]}"
@@ -477,13 +482,13 @@ snapshot_diff() {
 }
 
 hjw_git_preflight() {
-  # Creates SNAPDIR and probes git: inside a repo, genuinely not a repo (the documented non-git path), or
-  # "git could not tell" (broken repo, permissions, timeout) — the third is never read as "not a repo".
+  # Creates SNAPDIR; probes git: a repo, genuinely not one, or "git could not tell" (never read as "not a repo").
   SNAPDIR="$(mktemp -d "${TMPDIR:-/tmp}/${HJW_RUNNER_KIND}_snap.XXXXXX")" || SNAPDIR=""
   DETECT_OK=1
   [ -n "$SNAPDIR" ] || DETECT_OK=0
   GIT_OK=0
-  GIT_PROBE_ERR="$(bounded 60 git -C "$WORKDIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null)"
+  GIT_PROBE_ERR="$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    git -C "$WORKDIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null)"  # as detect.py GIT_ENV
   GIT_PROBE_RC=$?
   if [ "$GIT_PROBE_RC" -eq 0 ]; then
     GIT_OK=1
@@ -512,8 +517,7 @@ detect_fail_now() {
 }
 
 hjw_detect_before() {
-  # 0 = BEFORE snapshot taken (or the run already failed out); 1 = genuinely not a git repo, where VENDOR
-  # policy decides in the entrypoint (codex: a read-only sandbox may enforce; claude: always refuses).
+  # 0 = BEFORE snapshot taken (or the run failed out); 1 = genuinely not a git repo: the entrypoint's policy decides.
   if [ "$DETECT_OK" != 1 ]; then
     detect_fail_now
   fi

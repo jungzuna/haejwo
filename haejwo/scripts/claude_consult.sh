@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # claude_consult.sh — headless Claude reviewer runner: haejwo's reviewer slot on a Codex host (principle 9).
 # Feeds REVIEWER CONTRACT + a brief to `claude -p` on stdin; consult only; cwd = work root; usage: --help.
-# Shared mechanics live in lib/consult_common.sh; this file owns the vendor policy: contract text, the
-# `claude -p` argv and its --disallowedTools, the timeout default, and the non-git policy.
+# Shared mechanics: lib/consult_common.sh; vendor policy here: contract, `claude -p` argv, timeout, non-git policy.
 # NEVER trust the exit code alone: rc=0 with no reply or a changed repository is never success; with no event
 # classifier, a failure reported only in prose is not detected. Edit/Write/NotebookEdit are disallowed; Bash
 # stays available, covered by change detection — not a security boundary (scope: lib/detect.py).
@@ -38,7 +37,6 @@ unset _hjw_f
 HJW_RUNNER_KIND=claude
 # Declared BEFORE forwarding and init: the artifact guard derives from them, on a hop too.
 HJW_OUT_SIBLINGS=()  # no artifacts beyond the reply and the log
-HJW_OUT_APPENDS=()
 
 # FIRST action after sourcing (before parsing, stdin, traps, temp files, config, chdir): a stale remembered
 # runner path forwards to the installed version. Fail open; an argv naming an artifact inside the repo exits 2.

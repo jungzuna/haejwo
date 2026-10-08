@@ -2,7 +2,7 @@
 
 > **"just handle it."** — you talk; the models work it out among themselves.
 
-haejwo makes **multiple models run well on top of Claude Code and Codex, automatically**. You say what you want (however roughly — that's the 해줘); the host plans, delegates across tiers, reviews, and verifies. The main model stays on **judgment** (plan, delegate, decide, synthesize), **execution** goes to worker tiers, and a PreToolUse hook **denies** the main agent's code edits past a per-turn budget. By default the reviewer is OFF until setup verifies it and every worker tier is Opus; cost gains come from cheaper pins you set after measuring.
+haejwo makes **multiple models run well on top of Claude Code and Codex, automatically**. You say what you want (however roughly — that's the 해줘); the host plans, delegates across tiers, reviews, and verifies. The main model stays on **judgment** (plan, delegate, decide, synthesize), **execution** goes to worker tiers, and a PreToolUse hook **denies** the main agent's code edits past a per-turn budget. By default the reviewer is OFF until setup verifies it, every Claude Code worker tier is Opus, and Codex workers inherit the host model; cost gains come from cheaper pins you set after measuring.
 
 ## The 4 layers
 
@@ -11,23 +11,24 @@ haejwo makes **multiple models run well on top of Claude Code and Codex, automat
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the orchestration rules every session, plus a setup nudge until setup runs and the live config summary after; a minimal core only if the rules file is unreadable or over budget |
 | Roles | `agents/` | `deep-reasoner` (session model and effort) · `default-worker` (opus, high effort) · `task-worker` (opus, low effort) + the reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
 | Criteria | `rules/orchestration.md` | When the main agent handles directly vs must delegate |
-| **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied**; Bash writes to code files are denied (a heuristic over redirects, `tee` and in-place editors); delegating to a generic agent (general-purpose / Explore) without an explicit model is **denied**, and an omitted model that would miss a configured tier pin is checked |
+| **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) | Main agent: max **N distinct code files per turn** (default 2) — the N+1th edit is **denied**; Bash writes to code files are denied (heuristic); delegating to a generic agent (general-purpose / Explore) without an explicit model is **denied** |
 
 ## Gate semantics
 - Counts **distinct code files** (config extension list) per user turn; re-editing is free. **Subagents are exempt** (`agent_id`/`agent_type` in the payload).
 - The deny reason states the budget and exactly whom to delegate to; the last allowed edit warns that the budget is full.
 - **Fail-open**: any hook error or ambiguity ⇒ allow. A delegation aid, not a security boundary: code written dynamically is invisible to the guard and forbidden by instruction only.
-- Temp files outside the project are never code: a path under `/tmp`, `/var/tmp` or `tempfile.gettempdir()` outside the active project (git toplevel, else cwd) is unclassified, so the scratchpad spends no budget; a temp-dir repository that IS the project is gated, unless its root is a temp dir itself or an ancestor (`/tmp`, `/`). In-place editors fanned out through `find`/`xargs` are denied whatever their paths.
+- Temp-dir paths (`/tmp`, `/var/tmp`, `tempfile.gettempdir()`) outside the active project (git toplevel, else cwd) are not code, so the scratchpad spends no budget; a temp-dir repository that IS the project is gated unless its root is a temp dir or an ancestor of one (`/tmp`, `/`). In-place editors fanned out through `find`/`xargs` are denied whatever their paths.
+- By design the bash guard tries redirects, `tee` and in-place editors only — not `cp`, `mv`, `git apply` or `patch`: each added pattern costs false positives (2.20). The extension list IS the plugin's definition of code; json, yaml, html, css and tf are not on it.
 
 ## First run
-Run **`/haejwo:setup`** once (nudged each session until then) — model tiers, edit budget, bash-guard and the reviewer (CLI probed, slot smoke-tested); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives updates). Before setup the safe defaults apply unless a `/haejwo:gate` value was stored: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (default) / `Budget` (Sonnet/Haiku) / `Custom`.
+**`/haejwo:setup`** is optional; a nudge repeats each session until configured. It sets model tiers, edit budget, bash-guard and the reviewer (CLI probed, slot smoke-tested); persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives updates). Before setup the safe defaults apply unless a `/haejwo:gate` value was stored: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (default) / `Budget` (Sonnet/Haiku) / `Custom`.
 
 On Claude Code the workers run at their agent file's model unless one is passed explicitly; the delegation gate steers an omitted override that would miss a configured pin, but does not verify which model ran.
 
 ## Zero-command by design
 Normal use involves **no haejwo commands at all**:
 - Feature-scale ask → the host runs **planning consensus** itself before implementing (`/haejwo:plan` is only a manual trigger).
-- Implementation → delegated to the right tier, gate-enforced.
+- Implementation → delegated to a worker; generic agents must carry an explicit model (gate-enforced), and the TIER choice is the host's judgment.
 - Push/deploy → host asks first; an authorization you already gave for the action counts.
 
 The name-integrity rule: the moment users must **understand or manage the plugin** to get their work done, 해줘 stops being true.
@@ -47,12 +48,14 @@ Gate fires are logged to `state/observations.jsonl`. `HAEJWO_GATE=off` works onl
 ## Install
 See the [root README](../README.md) (both hosts; Codex CI-only: `--dangerously-bypass-hook-trust`).
 
-Hooks load at session start — restart after install or update. A runner invoked from a stale cache path forwards itself to the installed version (Claude Code only; pre-2.18 runners run as invoked); `scripts/lib/snapshot.py` is a tombstone kept only so 2.18–2.21 runners still forward.
+Hooks load at session start — restart after install or update. A runner invoked from a stale cache path forwards itself to the installed version (Claude Code only; pre-2.18 runners run as invoked).
+
+**Support floor:** runners support installs >= 2.22.0; a 2.26+ runner never forwards below it (says so, runs locally); older source runners do not enforce it. Pre-floor compatibility code (the `snapshot.py` tombstone, for hops from 2.18–2.21) is deleted when the floor moves.
 
 **Dual-host parity (measured):** gate (apply_patch-aware), bash-guard, rules injection, turn reset and worker exemption work on both hosts; the delegation gate is Claude Code-only (Codex `spawn_agent` is not hooked); the reviewer inverts per host (principle 9); Codex tiers ride `spawn_agent` parameters (`models_codex`).
 
 ## Reviewer runners
-Shared internals live in `scripts/lib`.
+Shared internals live in `scripts/lib`; implementation detail lives in the scripts' comments.
 
 **Usage:** `<runner> [--mode consult] [-o out.md] brief.md`, or `echo … | <runner> --mode consult -` (stdin brief, deleted on exit), from the project root. Without `-o` the reply is `<brief>.reply.md`, the log beside it. `consult` is the only mode; for a stable tree, pause writes or review a prepared worktree.
 
@@ -60,11 +63,11 @@ Shared internals live in `scripts/lib`.
 
 **Guarantees**
 - A standing non-editing REVIEWER CONTRACT is prepended to every brief; `claude_consult.sh` also disallows Edit/Write/NotebookEdit.
-- Post-run change detection FAILS the run: HEAD, tracked status, per-path fingerprints, `git diff` / `--cached`, untracked files (presence for all, contents for the first 2000). Runner artifacts are excluded.
+- Post-run change detection FAILS the run when the repository changed: HEAD, tracked files, untracked files (contents for the first 2000). Runner artifacts are excluded.
 - **Artifact guard:** a reply, log, events or temp-brief path inside the worktree or its git dirs (lexically or via a symlink), or an existing hard-linked artifact, is refused with exit 2 before the first write and the paid call. Other worktrees of the same repository are not covered.
-- `codex_consult.sh` reads failures from codex's JSONL events (top-level `turn.failed`/`error` only) plus an anchored `ERROR codex_core` tracing scan with no opt-out. A model rejected before execution fails with one hint; it is not retried.
+- A codex model rejected before execution fails with one hint; it is not retried.
 - Fail-closed: a git error, unreadable snapshot or timeout fails the run (before the paid call when the BEFORE snapshot fails); unreadable files are disclosed (`some files unreadable: N`).
-- Every helper and CLI call runs under a python3 wall clock except the runner's bootstrap python and plain file copies; reading a stdin brief is not bounded. Model and effort print with their source; the log header names the plugin version and config file.
+- Every helper and CLI call runs under a python3 wall clock except the runner's bootstrap python, `realpath`, the `awk`/`grep` log scans, plain file copies and reading a stdin brief. Model and effort print with their source.
 
 **Not guaranteed**
 - **Not a security boundary:** Bash stays available to the reviewer.
@@ -75,8 +78,7 @@ Shared internals live in `scripts/lib`.
 
 **Knobs and config**
 - Env wins over config; empty = unset. `CODEX_MODEL`, `CODEX_EFFORT` (`low`/`medium`/`high`/`xhigh`, runner default **`medium`**), `CODEX_SANDBOX` (`read-only` default / `workspace-write` / `danger-full-access`), `CODEX_TIMEOUT` (600s at every effort, `0` = unlimited); `CLAUDE_MODEL`, `HJW_CLAUDE_EFFORT` (env > `codex.effort`, else no flag: CLI default), `CLAUDE_TIMEOUT` on the claude runner.
-- Keys: `codex.model`, `codex.effort`, `codex.consult_sandbox`. The `codex` block describes the reviewer of the **host that owns the data dir**: the codex runner ignores model/effort under `/.codex/` and the claude runner reads them there; under `/.claude/` the reverse; under a custom plugin root each runner reads its own block. A stored `fallback_model` is ignored.
-- Path, by ownership: the runner's own `<plugins>/data/haejwo-haejwo/config.json`, else `CLAUDE_PLUGIN_DATA` only when named `haejwo-haejwo` (a naming heuristic, not authentication), else `~/.claude|~/.codex/plugins/data/haejwo-haejwo/config.json`. A foreign value is ignored and disclosed once; a bad owner file never falls back elsewhere.
+- Keys: `codex.model`, `codex.effort`, `codex.consult_sandbox`; the `codex` block describes the reviewer of the host that owns the data dir. Each runner reads its own install's `config.json`; a foreign value is ignored and disclosed once.
 
 **Official `codex@openai-codex` plugin (1.0.6, measured 2026-09-21):** its rescue subagent is exempt from haejwo's gate and `/codex:review` reported completion without inspecting changes; keep its Stop gate OFF, and verify its diffs before acceptance.
 

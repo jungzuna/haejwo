@@ -9,7 +9,9 @@ host kept invoking the literal 2.16.1 runner path, and three consults ran with t
 FAIL OPEN: any ambiguity or error prints NOTHING and the caller runs locally. HOST-SCOPED: the registry derives
 from the runner's own <plugins> prefix. ONE ORDERING, the support floor: a differing registry version is followed,
 downgrades included, unless below SUPPORTED_FLOOR — then the target field reads `floor <floor>` and the caller
-stays local, saying so. Values end with the library's sentinel (an install path may end in a newline).
+stays local, saying so. Installs below SUPPORTED_FLOOR are unsupported as SOURCES too — a pre-floor runner that
+hops here finds no snapshot.py and stays local on its own version. Values end with the library's sentinel (an
+install path may end in a newline).
 """
 import json
 import os
@@ -18,7 +20,7 @@ import sys
 
 SENTINEL = "\x04__HJW_SNAP_END__"
 MAX_BYTES = 1 << 20  # keeps a wrong/huge path or device node out of memory
-# Oldest install forwarded to (artifact guard, no snapshot dependency); older-install compat goes when it rises.
+# Oldest install forwarded to (artifact guard, no snapshot dependency); no older-install compat remains (2.29).
 SUPPORTED_FLOOR = "2.22.0"
 
 PLUGIN_KEY = "haejwo@haejwo"

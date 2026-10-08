@@ -33,8 +33,8 @@ be able to follow (P6): it is allowed as "skip:pin-not-passable" with a
 once-per-session note. An unreadable config or unreadable/malformed
 frontmatter SKIPS the check (never deny on state we could not read).
 
-Envelope (v2, one observations.jsonl record per call, written once after
-deciding; derivation and observe() fail open — the decision is emitted
+Envelope (v2, one observations.jsonl record per well-formed call; malformed
+input exits before observing; written once after deciding; derivation and observe() fail open — the decision is emitted
 regardless). Extending it requires stating why existing fields don't fit.
   v                — schema version; bump only on incompatible changes.
   hook             — always "delegation".
@@ -424,7 +424,7 @@ def main():
                         next_action = CODEX_TIER_ONLY if on_codex else CLAUDE_TIER_ONLY
                     deny_reason = (
                         f"[haejwo gate] Delegation to generic agent '{subagent_type}' without an "
-                        f"explicit model — it would INHERIT the session model instead of a "
+                        f"explicit model — it runs on the host's default (Explore under a Fable host: opus) instead of a "
                         f"configured tier. {next_action} Emergency override: {override}."
                     )
                 else:

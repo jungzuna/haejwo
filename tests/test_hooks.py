@@ -591,7 +591,7 @@ def config_host_summary_tests():
         rc, out = run("session_brief.py", SB, nd)
         check("nudge Claude text byte-identical (both hosts named, safe defaults ON)",
               "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
-              "skill in Codex; the user only answers 4 quick choices and never needs "
+              "skill in Codex; the user only answers a few quick choices and never needs "
               "to type a command). Until then safe defaults are ACTIVE: gate ON, max 2 "
               "distinct code files per turn for the main agent, bash-guard ON, "
               "subagents exempt. Delegation targets: " in ctx_of(out), ctx_of(out)[-900:])
@@ -1825,11 +1825,12 @@ def main():
             check(f"word-count ratchet: {rel} <= {cap}", words <= cap,
                   f"words={words} cap={cap}")
 
-        # b2. Runner-stack line ratchet (2.22): the eight files' total `wc -l`.
+        # b2. Runner-stack line ratchet (2.22): the seven files' total `wc -l`
+        # (2.29: the snapshot.py tombstone left the list when it was deleted).
         # The list is explicit so a renamed or added file fails loudly here
         # instead of silently leaving the count.
         runner_stack = ("codex_consult.sh", "claude_consult.sh",
-                        "lib/consult_common.sh", "lib/snapshot.py", "lib/detect.py",
+                        "lib/consult_common.sh", "lib/detect.py",
                         "lib/forward.py", "lib/bounded.py", "lib/config.py")
         stack_missing = [f for f in runner_stack
                          if not os.path.isfile(os.path.join(SCRIPTS, f))]
@@ -1839,8 +1840,8 @@ def main():
             {f for f in os.listdir(os.path.join(SCRIPTS, "lib"))
              if f.endswith((".sh", ".py"))}
             - {f[len("lib/"):] for f in runner_stack if f.startswith("lib/")})
-        check("line ratchet: runner stack (8 files) <= 1800 lines",
-              not stack_missing and not stack_unlisted and stack_lines <= 1800,
+        check("line ratchet: runner stack (7 files) <= 1790 lines",
+              not stack_missing and not stack_unlisted and stack_lines <= 1790,
               f"lines={stack_lines} missing={stack_missing} unlisted_lib={stack_unlisted}")
 
         # c. Retired surfaces stay retired, across every tracked doc, script and
@@ -1884,6 +1885,12 @@ def main():
               "(only haejwo/PHILOSOPHY.md may name it)",
               listed.returncode == 0 and bool(tracked_paths) and not push_offenders,
               f"rc={listed.returncode} scanned={len(tracked_paths)} offenders={push_offenders[:10]}")
+        # d. Shipped sentences that word-cap edits have dropped twice (2.29.0): the
+        # 2.24.0 host-effort advice must survive in the plugin README and in setup.
+        for rel, needle in (("haejwo/README.md", "vendor recommendation"),
+                            ("haejwo/commands/setup.md", "vendor's recommendation")):
+            text = open(os.path.join(repo, rel), encoding="utf-8").read()
+            check(f"docs pin: host-effort advice present in {rel}", needle in text, needle)
 
         print("== session_brief.py ==")
         rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)
@@ -2255,6 +2262,89 @@ def main():
             shutil.rmtree(a6_claude, ignore_errors=True)
             shutil.rmtree(a6_codex_base, ignore_errors=True)
 
+        print("== cycle 4: Codex tier names at injection, host-aware data dir (F1/D1, F6) ==")
+        # F1/D1: Codex ships no agents, so session_brief rewrites the rules'
+        # three tier identifiers at injection on a Codex host — every Codex
+        # branch (configured, unconfigured, malformed, emergency core); the
+        # Claude injection keeps the rules file's own words.
+        from session_brief import read_rules as c4_read_rules  # noqa: E402
+        c4_tiers = ("haejwo:default-worker", "haejwo:task-worker", "haejwo:deep-reasoner")
+        c4_base = tempfile.mkdtemp(prefix="hjw-test-c4-")
+        try:
+            c4_x = os.path.join(c4_base, "x", ".codex", "plugins", "data", "haejwo")
+            c4_c = os.path.join(c4_base, "c")
+            os.makedirs(c4_x)
+            os.makedirs(c4_c)
+            c4_ctx = {}
+
+            def c4_run(label, data_dir, cfg_text=None, root=None):
+                cfg_path = os.path.join(data_dir, "config.json")
+                if cfg_text is None:
+                    if os.path.exists(cfg_path):
+                        os.remove(cfg_path)
+                else:
+                    with open(cfg_path, "w") as f:
+                        f.write(cfg_text)
+                rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                              data_dir, root=root)
+                c4_ctx[label] = (rc, (out.get("hookSpecificOutput") or {})
+                                 .get("additionalContext", ""))
+
+            c4_over = os.path.join(c4_base, "over")
+            os.makedirs(os.path.join(c4_over, "rules"))
+            with open(os.path.join(c4_over, "rules", "orchestration.md"), "w") as f:
+                f.write("x" * (MAX_LEN + 1000))
+            c4_run("unconfigured", c4_x)
+            c4_run("configured", c4_x, json.dumps({"configured": True}))
+            c4_run("malformed", c4_x, "{ not valid json")
+            c4_run("emergency", c4_x, json.dumps({"configured": True}), root=c4_over)
+            c4_run("emergency-unconfigured", c4_x, None, root=c4_over)
+            c4_run("claude", c4_c, json.dumps({"configured": True}))
+            c4_leaks = {k: [t for t in c4_tiers if t in v[1]]
+                        for k, v in c4_ctx.items() if k != "claude"}
+            check("F1/D1 Codex: no haejwo: tier name in any injection branch "
+                  "(configured, unconfigured, malformed, emergency core)",
+                  all(v[0] == 0 and v[1] for v in c4_ctx.values())
+                  and not any(c4_leaks.values()), str(c4_leaks))
+            c4_rules_x = c4_read_rules(PLUGIN, True)
+            c4_rules_c = c4_read_rules(PLUGIN, False)
+            check("F1/D1 Codex: the injected rules are the file's text with ONLY the three "
+                  "tier names rewritten, and they fit MAX_LEN (no degrade)",
+                  c4_rules_x == c4_rules_c
+                  .replace("haejwo:default-worker", "spawn_agent (default-worker tier)")
+                  .replace("haejwo:task-worker", "spawn_agent (task-worker tier)")
+                  .replace("haejwo:deep-reasoner", "spawn_agent (deep-reasoner tier)")
+                  and all(c4_ctx[k][1].startswith(c4_rules_x)
+                          for k in ("unconfigured", "configured", "malformed"))
+                  and "- Implementation from a clear brief -> "
+                      "`spawn_agent (default-worker tier)`." in c4_rules_x,
+                  c4_ctx["configured"][1][:300])
+            check("F1/D1 Claude: the injection is the rules file unchanged "
+                  "(tier names verbatim)",
+                  c4_ctx["claude"][1].startswith(c4_rules_c)
+                  and "- Implementation from a clear brief -> `haejwo:default-worker`."
+                  in c4_ctx["claude"][1]
+                  and all(t in c4_ctx["claude"][1] for t in c4_tiers),
+                  c4_ctx["claude"][1][:300])
+        finally:
+            shutil.rmtree(c4_base, ignore_errors=True)
+
+        # F6: the home fallback data dir follows the host (a Codex root falls
+        # back under ~/.codex, the path the Codex commands name).
+        from hjw_common import paths as c4_paths  # noqa: E402
+        c4_env = {k: os.environ.pop(k) for k in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
+                  if k in os.environ}
+        try:
+            c4_px = c4_paths(["x", "/u/.codex/plugins/cache/haejwo/haejwo/2.29.0"])
+            c4_pc = c4_paths(["x", "/u/.claude/plugins/cache/haejwo/haejwo/2.29.0",
+                              "${CLAUDE_PLUGIN_DATA}"])
+        finally:
+            os.environ.update(c4_env)
+        check("F6 paths(): Codex root -> ~/.codex/plugins/data/haejwo-haejwo fallback",
+              c4_px[1] == os.path.expanduser("~/.codex/plugins/data/haejwo-haejwo"), c4_px)
+        check("F6 paths(): Claude root -> ~/.claude/plugins/data/haejwo-haejwo fallback",
+              c4_pc[1] == os.path.expanduser("~/.claude/plugins/data/haejwo-haejwo"), c4_pc)
+
         print("== session_brief.render_summary: one renderer, both states (B6) ==")
         # cold-loop B6: the configured and not-configured summaries used to be
         # rendered by two copies of the tier code; one function now renders
@@ -2293,6 +2383,32 @@ def main():
                  "(inherit = omit the model override) On Claude, omitting the model "
                  "override uses each agent file's default; pass an explicit model to "
                  "override it. | codex reviewer: disabled (fallback: deep-reasoner)")
+
+        # F7: plan.md requires enabled AND verified — an enabled reviewer with
+        # no recorded verified_at reads "enabled (unverified)".
+        check("F7 render_summary: enabled without verified_at -> 'enabled (unverified)'",
+              render_summary(_g, DEFAULT_CONFIG["models"], False, True, True,
+                             reviewer_verified=False)
+              .endswith("| codex reviewer: enabled (unverified)"))
+        c4_rv = tempfile.mkdtemp(prefix="hjw-test-c4rv-")
+        try:
+            c4_rv_ctx = {}
+            for c4_label, c4_codex in (("unverified", {"enabled": True}),
+                                       ("verified", {"enabled": True,
+                                                     "verified_at": 1760000000})):
+                with open(os.path.join(c4_rv, "config.json"), "w") as f:
+                    json.dump({"configured": True, "codex": c4_codex}, f)
+                rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, c4_rv)
+                c4_rv_ctx[c4_label] = (out.get("hookSpecificOutput") or {}).get(
+                    "additionalContext", "")
+            check("F7 session_brief: enabled + no verified_at -> 'enabled (unverified)'; "
+                  "enabled + verified_at -> 'enabled'",
+                  c4_rv_ctx["unverified"].rstrip().endswith(
+                      "codex reviewer: enabled (unverified)")
+                  and c4_rv_ctx["verified"].rstrip().endswith("codex reviewer: enabled"),
+                  c4_rv_ctx["unverified"][-80:] + " || " + c4_rv_ctx["verified"][-80:])
+        finally:
+            shutil.rmtree(c4_rv, ignore_errors=True)
 
         print("== delegation_gate docstring names every tier_pin_check value (D2) ==")
         # The envelope docstring was shrunk to one line per field (cold-loop
@@ -2411,8 +2527,9 @@ def main():
         rc, out = run("delegation_gate.py", task_payload("general-purpose"), data)
         reason = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
         check("deny: general-purpose without model", decision(out) == "deny", str(out))
-        check("deny reason instructs default-worker + INHERIT",
-              "haejwo:default-worker" in reason and "INHERIT" in reason)
+        check("deny reason instructs default-worker + names the host default",
+              "haejwo:default-worker" in reason
+              and "runs on the host's default (Explore under a Fable host: opus)" in reason)
 
         rc, out = run("delegation_gate.py",
                       task_payload("general-purpose", model="haiku"), data)
@@ -2464,7 +2581,7 @@ def main():
         # collapse (named once, no fake choice).
         CLAUDE_HOST_DENY_TEXT = (
             "[haejwo gate] Delegation to generic agent 'general-purpose' without an "
-            "explicit model — it would INHERIT the session model instead of a "
+            "explicit model — it runs on the host's default (Explore under a Fable host: opus) instead of a "
             "configured tier. Pass model: 'opus', or delegate to "
             "haejwo:default-worker / haejwo:task-worker instead. Emergency override: "
             "/haejwo:gate off."
@@ -5748,11 +5865,13 @@ exit "$rc"
                       "plugin=2.18.0" in fw_log_for(t12_brief),
                       fw_log_for(t12_brief)[:200])
 
-            # ---- (t14, 2.22) OLD FORWARDER -> NEW INSTALL. The 2.18-2.21
-            # forward.py requires lib/snapshot.py of every destination; 2.22
-            # ships it only as a tombstone so those runners still forward
-            # here. The stale side is the ACTUAL v2.21.0 scripts, read out of
-            # git history — a relabeled copy of today's would prove nothing. ----
+            # ---- (t14, 2.29) OLD FORWARDER -> NEW INSTALL. The 2.18-2.21
+            # forward.py requires lib/snapshot.py of every destination; 2.29
+            # deleted that tombstone, so sources below SUPPORTED_FLOOR are
+            # unsupported: they find no snapshot.py and stay local on their
+            # own version. The stale side is the ACTUAL v2.21.0 scripts, read
+            # out of git history — a relabeled copy of today's would prove
+            # nothing. ----
             t14_commit = "v2.21.0"
             t14_ls = subprocess.run(
                 ["git", "ls-tree", "-r", "--name-only", t14_commit, "--",
@@ -5765,7 +5884,7 @@ exit "$rc"
                       "(full-history checkout)", not os.environ.get("CI"),
                       f"{t14_commit} unreachable in a CI checkout")
             else:
-                def t14_install(case, tombstone=True):
+                def t14_install(case):
                     plugins = fw_install(case, ["9.9.0"])
                     root = fw_dir(plugins, "2.21.0")
                     for rel in t14_files:
@@ -5780,9 +5899,6 @@ exit "$rc"
                             f.write(blob.stdout)
                         os.chmod(dest, 0o755)
                     fw_manifest(root, "2.21.0")
-                    if not tombstone:
-                        os.remove(os.path.join(fw_dir(plugins, "9.9.0"), "scripts",
-                                               "lib", "snapshot.py"))
                     fw_reg_entries(plugins, [fw_entry(plugins, "9.9.0")])
                     return plugins
 
@@ -5795,41 +5911,18 @@ exit "$rc"
                       "requires snapshot.py of a destination, today's does not",
                       "snapshot.py" in t14_old_req and "snapshot.py" not in fw_required,
                       f"old={t14_old_req} new={fw_required}")
-                t14_tomb = subprocess.run(
-                    [sys.executable, os.path.join(SCRIPTS, "lib", "snapshot.py")],
-                    capture_output=True, text=True)
-                check("t14 tombstone: lib/snapshot.py exits 2 with one sentence and "
-                      "does nothing else",
-                      t14_tomb.returncode == 2 and t14_tomb.stdout == ""
-                      and t14_tomb.stderr.strip()
-                      == "snapshot review was removed in 2.22; review the live working copy",
-                      f"rc={t14_tomb.returncode} err={t14_tomb.stderr!r}")
+                check("t14: the new install ships no lib/snapshot.py (tombstone deleted in 2.29)",
+                      not os.path.exists(os.path.join(fw_dir(t14_plugins, "9.9.0"),
+                                                      "scripts", "lib", "snapshot.py")))
                 for who in ("codex", "claude"):
-                    t14_brief = brief_file(f"fw-t14-{who}.md")
-                    rc, out, err, cap = fw_run(
-                        f"t14-{who}", fw_script(t14_plugins, "2.21.0", who), who,
-                        args=[t14_brief])
-                    hops = fw_hops(err)
-                    check(f"t14 {who} old forwarder: a 2.21.0 runner forwards to the new "
-                          "install carrying the tombstone, and the new install ran",
-                          rc == 0 and len(hops) == 1
-                          and "runner 2.21.0 is stale — forwarding to 9.9.0" in hops[0]
-                          and len(read_calls(cap)) == 1
-                          and "plugin=9.9.0" in fw_log_for(t14_brief)
-                          and fw_marker_gone(cap),
-                          f"rc={rc} hops={hops} calls={len(read_calls(cap))} "
-                          f"log={fw_log_for(t14_brief)[:200]}")
-                # Control: WITHOUT the tombstone the old forwarder judges the
-                # new install incomplete and runs as invoked — the tombstone is
-                # what keeps 2.18-2.21 sessions forwarding.
-                t14n_plugins = t14_install("t14-notomb", tombstone=False)
-                rc, out, err, cap, t14n_brief = fw_no_forward(
-                    "t14", "a 2.21.0 forwarder facing a destination WITHOUT the "
-                    "tombstone", "t14-notomb",
-                    fw_script(t14n_plugins, "2.21.0", "codex"), "codex")
-                check("t14 control: without the tombstone it is 2.21.0 that ran",
-                      "plugin=2.21.0" in fw_log_for(t14n_brief),
-                      fw_log_for(t14n_brief)[:200])
+                    rc, out, err, cap, t14_brief = fw_no_forward(
+                        "t14", f"a 2.21.0 {who} forwarder facing a new install "
+                        "(pre-floor source, unsupported)", f"t14-{who}",
+                        fw_script(t14_plugins, "2.21.0", who), who)
+                    check(f"t14 {who}: the pre-floor source stays local — it is 2.21.0 "
+                          "that ran",
+                          "plugin=2.21.0" in fw_log_for(t14_brief),
+                          fw_log_for(t14_brief)[:200])
 
             # ---- (t13, 2.21) the artifact guard HOLDS ACROSS A HOP. The
             # registry may select an OLDER install (t2: downgrades are
@@ -6191,8 +6284,8 @@ exit "$rc"
             # registry-selected install in BOTH directions (t2), but never one
             # below SUPPORTED_FLOOR: the invoked runner stays local and says
             # so in one line. Tested AT and BELOW the floor; both destinations
-            # are complete copies of today's scripts (snapshot.py tombstone
-            # included), so only the floor can stop the below-floor hop. ====
+            # are complete copies of today's scripts, so only the floor can stop
+            # the below-floor hop. ====
             sf_src = open(os.path.join(SCRIPTS, "lib", "forward.py"), encoding="utf-8").read()
             sf_m = re.search(r'^SUPPORTED_FLOOR = "(\d+)\.(\d+)\.(\d+)"', sf_src, re.M)
             check("W39 floor: forward.py defines SUPPORTED_FLOOR as a dotted triple",
@@ -6249,7 +6342,8 @@ exit "$rc"
             # Each site that exists only for installs older than the floor
             # names the floor's major.minor as its NEWEST version; raising
             # the floor fails here until that code is deleted (a deleted site
-            # is skipped; a present site naming no version fails).
+            # is skipped; a present site naming no version fails). 2.29 deleted
+            # the last site (the snapshot.py tombstone): none left is a pass.
             sf_sites = {}
             sf_leg = re.search(r"((?:^#[^\n]*\n)+)LEGACY_LIB = ", sf_src, re.M)
             if "LEGACY_LIB" in sf_src:
@@ -6261,9 +6355,9 @@ exit "$rc"
             for site, text in sf_sites.items():
                 vs = [(int(a), int(b)) for a, b in re.findall(r"\b(\d+)\.(\d+)(?:\.\d+)?\b", text)]
                 sf_newest[site] = max(vs) if vs else None
-            check("W39 floor drift: SUPPORTED_FLOOR equals the version every compat site "
-                  "is anchored to (LEGACY_LIB, the snapshot.py tombstone)",
-                  bool(sf_sites) and all(v == sf_mm for v in sf_newest.values()),
+            check("W39 floor drift: SUPPORTED_FLOOR equals the version every remaining "
+                  "compat site is anchored to (LEGACY_LIB, the snapshot.py tombstone)",
+                  all(v == sf_mm for v in sf_newest.values()),
                   f"floor={sf_floor} sites={sf_newest}")
             sf_readme = open(os.path.join(PLUGIN, "README.md"), encoding="utf-8").read()
             check("W39 floor: the plugin README states the same floor",
@@ -6417,10 +6511,11 @@ exit "$rc"
               "REQUIRED_LIB only",
               "LEGACY_LIB" not in c3_fw and "for name in REQUIRED_LIB:" in c3_fw
               and '"snapshot.py"' not in c3_fw)
-        c3_tomb = open(os.path.join(SCRIPTS, "lib", "snapshot.py"), encoding="utf-8").read()
-        check("B3 tombstone: lib/snapshot.py stays, its header says it is for INCOMING hops "
-              "from 2.18-2.21 sources",
-              "INCOMING hops from 2.18-2.21 sources" in c3_tomb, c3_tomb[:300])
+        check("F15/D2 tombstone: lib/snapshot.py is gone, and forward.py's header says "
+              "pre-floor sources are unsupported (they stay local)",
+              not os.path.exists(os.path.join(SCRIPTS, "lib", "snapshot.py"))
+              and "Installs below SUPPORTED_FLOOR are unsupported as SOURCES too"
+              in c3_fw and "stays local on its own version" in c3_fw)
 
         import mirrors as c3_mirrors
         c3_cmds = os.path.join(PLUGIN, "commands")

@@ -13,7 +13,7 @@ The reviewer is the OTHER model's CLI: Claude Code → `codex login status`; Cod
 ## 2. Ask (one call; follow-ups only where needed)
 Claude Code: AskUserQuestion. Codex: the selection UI, else numbered chat choices.
 1. **Preset** — deep-reasoner / default-worker / task-worker. Say `Standard` runs when setup is skipped.
-   - Claude Code: `Standard (default)` session model / opus (effort high) / opus (effort low); `Budget` session model / sonnet / haiku (haiku ignores effort); `Custom` per-role.
+   - Claude Code: `Standard (default)` session model / opus (effort high) / opus (effort low); `Budget` session model / sonnet / haiku; `Custom` per-role.
    - Codex (`models_codex`; offer the account's current lineup): `Standard (default)` host model for all three, deep-reasoner at the HOST's effort (omit `reasoning_effort`), default-worker `medium`, task-worker `low` (omit the model on `spawn_agent`); `Budget` host model / gpt-5.6-terra / gpt-5.6-luna; `Custom` per-role. Measured 2026-09-21: overrides need a fresh or partial context fork.
    - `Custom` → one question per role, defaulting to its stored value else `Standard`. Claude Code accepts only Agent-tool aliases (sonnet/opus/haiku, plus any the session lists); full ids only on Codex.
 2. **Edit budget (files/turn)** — `2 (Recommended)` / `3` / `5` / `Gate off` (rules only).

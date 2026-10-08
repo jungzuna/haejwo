@@ -14,3 +14,7 @@ Data dir: `${CLAUDE_PLUGIN_DATA}` (if unsubstituted: `ls -d ~/.claude/plugins/da
 - Anything else → show usage.
 
 Notes: changes are effective immediately (hooks read config on every call). For a single-shot bypass without touching config there is also the env override `HAEJWO_GATE=off` on a command. If the user is disabling the gate, remind them to re-enable after the emergency (`/haejwo:gate on`).
+
+See also: /haejwo:setup (first run) and `/haejwo:status`. Not commands, left as written: the agent `haejwo:default-worker` and the path `cache/haejwo/haejwo:gate`.
+
+Links stay as written: https://[::1]/haejwo:setup and https://example.com/?next=/haejwo:plan, while the command `/haejwo:plan` beside them is rewritten.

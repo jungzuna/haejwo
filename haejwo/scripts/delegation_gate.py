@@ -5,7 +5,10 @@ Two things are denied, and only these two:
  1. delegating to a KNOWN GENERIC agent (general-purpose / Explore) with no
     explicit model override. With no model, that agent INHERITS the session
     model — judgment-tier capability silently spent on execution work, the
-    exact leak the tiered subagents exist to avoid.
+    exact leak the tiered subagents exist to avoid. Explore's model, per
+    Claude Code docs (sub-agents, built-in subagents): under a Fable host the
+    built-in Explore runs on the `opus` alias; otherwise it inherits the main
+    conversation's model.
  2. delegating to a haejwo TIER worker with no model override while the
     user's config pins a model for that tier that DIFFERS from the agent
     file's own default — omission would silently run the agent-file default
@@ -58,8 +61,9 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, command_name, config_ignored_note_once, deny, gate_disabled_by_env,
-    is_subagent, load_config_with_status, PASSABLE_MODEL_ALIASES, load_state,
+    CODEX_SPAWN_WORKER, allow, command_name, config_ignored_note_once, deny,
+    gate_disabled_by_env, is_subagent, load_config_with_status,
+    PASSABLE_MODEL_ALIASES, load_state,
     malformed_note_once, observe, on_codex_host, paths, read_payload,
     save_state, state_lock, with_note,
 )
@@ -99,9 +103,12 @@ CLAUDE_TIER_ONLY = (
     "(on Claude, omission uses each agent file's default model)."
 )
 CODEX_TIER_ONLY = (
-    "Delegate to haejwo:default-worker / haejwo:task-worker instead "
+    f"Delegate via {CODEX_SPAWN_WORKER} instead "
     "(configured tiers inherit — never pass model:'inherit')."
 )
+# The current role words (cycle 3 F8/D1), paired with the configured model.
+TASK_ROLE = "bounded mechanical work"
+DEFAULT_ROLE = "implementation"
 
 
 def _next_action(cfg, on_codex):
@@ -116,35 +123,29 @@ def _next_action(cfg, on_codex):
     name both only when BOTH are explicit — naming a non-explicit one would recommend
     model:'inherit', which this very gate would re-deny.
     Raises on a malformed models/models_codex value; the caller catches that
-    and falls back to the host-appropriate tier-only wording."""
+    and falls back to the host-appropriate tier-only wording.
+    On Codex the alternative is spawn_agent, never a haejwo agent name: the
+    Codex manifest ships no agents (cycle 3 F4)."""
     m = cfg["models_codex" if on_codex else "models"]
     task_worker = _normalize_model(m.get("task_worker"))
     default_worker = _normalize_model(m.get("default_worker"))
+    alt = (f"or use {CODEX_SPAWN_WORKER} instead." if on_codex else
+           "or delegate to haejwo:default-worker / haejwo:task-worker instead.")
     if task_worker and default_worker:
         if task_worker == default_worker:
             # both tiers on one model: naming it twice with two role labels
             # reads like a choice the user does not actually have
-            return (
-                f"Pass model: '{task_worker}', or delegate to "
-                f"haejwo:default-worker / haejwo:task-worker instead."
-            )
+            return f"Pass model: '{task_worker}', {alt}"
         return (
-            f"Pass model: '{task_worker}' (locate) or '{default_worker}' "
-            f"(read/summarize), or delegate to haejwo:default-worker / "
-            f"haejwo:task-worker instead."
+            f"Pass model: '{task_worker}' ({TASK_ROLE}) or '{default_worker}' "
+            f"({DEFAULT_ROLE}), {alt}"
         )
     if on_codex:
         return CODEX_TIER_ONLY
     if default_worker:
-        return (
-            f"Pass model: '{default_worker}' (read/summarize), or delegate "
-            f"to haejwo:default-worker / haejwo:task-worker instead."
-        )
+        return f"Pass model: '{default_worker}' ({DEFAULT_ROLE}), {alt}"
     if task_worker:
-        return (
-            f"Pass model: '{task_worker}' (locate), or delegate to "
-            f"haejwo:default-worker / haejwo:task-worker instead."
-        )
+        return f"Pass model: '{task_worker}' ({TASK_ROLE}), {alt}"
     return CLAUDE_TIER_ONLY
 
 

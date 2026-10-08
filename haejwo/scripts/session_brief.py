@@ -3,7 +3,8 @@
 
 Injects the operating layer into every session:
 - configured   -> orchestration rules + current config summary
-- unconfigured -> the SAME rules + a one-time setup nudge + a defaults summary
+- unconfigured -> the SAME rules + a setup nudge (repeated until configured)
+  + a defaults summary
   (origin 2026-09-21 audit item 2: the defaults are enforced from the first
   turn, so the rules that explain them must ship from the first turn too —
   cold-start sessions used to get a 4-line core and nothing else)
@@ -16,7 +17,8 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES, gate_disabled_by_env,
+    CODEX_SPAWN_WORKER, DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES,
+    gate_disabled_by_env,
     load_config_with_status, on_codex_host, paths, read_payload,
 )
 
@@ -50,6 +52,13 @@ CORE_BODY = (
 )
 EMERGENCY_CORE = "[haejwo] emergency core (rules file unreadable or over budget): " + CORE_BODY
 UNCONFIGURED_CORE = "[haejwo] not configured — minimal operating core active: " + CORE_BODY
+# Codex ships no agents: its core names spawn_agent, like the nudge (2.28 F1).
+_CLAUDE_WORKERS = "(haejwo:default-worker / haejwo:task-worker)"
+
+
+def host_core(core, on_codex):
+    """The core text for this host; the Claude text is returned unchanged."""
+    return core.replace(_CLAUDE_WORKERS, "via " + CODEX_SPAWN_WORKER) if on_codex else core
 
 # A config.json that exists but cannot be parsed is a THIRD state, and the
 # unconfigured nudge is actively wrong there: it would advertise "gate ON,
@@ -114,6 +123,17 @@ def _flag(on, env_off):
     return "ON" if on else "OFF"
 
 
+# Codex's spawn_agent is not hooked (the delegation gate's matcher is
+# Task|Agent), so on Codex the key has no effect either way (cycle 3 B4).
+CODEX_DG = "n/a (spawn_agent not hooked)"
+
+
+def _budget(n):
+    """The budget as in effect: None is an invalid stored value, which turns
+    the edit gate off (hjw_common._validate_types, cycle 3 B1)."""
+    return f"{n} files/turn" if n is not None else "invalid (edit gate OFF)"
+
+
 def render_summary(g, models, on_codex, configured, reviewer_on, label="",
                    env_off=False):
     """The ONE `[haejwo config]` line — gate, tiers, reviewer — for both the
@@ -139,7 +159,7 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
     (HAEJWO_GATE=off) renders gate, bash_guard and delegation_guard as
     `OFF (env)`; a stored gate OFF turns both guards OFF too (they run only
     while the gate is on); delegation_guard is shown so the key is not a
-    hidden switch.
+    hidden switch — on Codex it reads `n/a (spawn_agent not hooked)`.
     The whole line is bounded by SUMMARY_MAX.
     """
     fork = ("effort overrides need a fresh or partial context fork "
@@ -197,9 +217,10 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
     dg = g.get("delegation_guard", DEFAULT_CONFIG["gate"]["delegation_guard"])
     return _bounded(
         f"[haejwo config] {label}gate={_flag(g['enabled'], env_off)} "
-        f"budget={g['max_files_per_turn']} files/turn "
+        f"budget={_budget(g['max_files_per_turn'])} "
         f"bash_guard={_flag(g['bash_guard'] and g['enabled'], env_off)} "
-        f"delegation_guard={_flag(dg and g['enabled'], env_off)} | {tiers} | "
+        f"delegation_guard={CODEX_DG if on_codex else _flag(dg and g['enabled'], env_off)}"
+        f" | {tiers} | "
         f"{reviewer_label}: {'enabled' if reviewer_on else fallback}"
     )
 
@@ -236,9 +257,12 @@ def main():
         if stored:
             active = (
                 f"Until then the STORED gate settings are ACTIVE: "
-                f"gate {_flag(dg['enabled'], env_off)}, max "
-                f"{dg['max_files_per_turn']} distinct code files per turn for the "
-                f"main agent, bash-guard {_flag(dg['bash_guard'] and dg['enabled'], env_off)}, "
+                f"gate {_flag(dg['enabled'], env_off)}, "
+                + (f"max {dg['max_files_per_turn']} distinct code files per turn "
+                   f"for the main agent"
+                   if dg['max_files_per_turn'] is not None
+                   else "edit budget invalid (edit gate OFF)")
+                + f", bash-guard {_flag(dg['bash_guard'] and dg['enabled'], env_off)}, "
                 f"subagents exempt. "
             )
         elif env_off:
@@ -253,7 +277,10 @@ def main():
                 "ACTIVE: gate ON, max 2 distinct code files per turn for the main agent, "
                 "bash-guard ON, subagents exempt. "
             )
-        targets = (
+        if on_codex:
+            active += f"Delegation guard: {CODEX_DG}. "  # cycle 3 B4
+        # Codex ships no agents: name spawn_agent there (cycle 3 F4).
+        targets = CODEX_SPAWN_WORKER + "." if on_codex else (
             f"haejwo:deep-reasoner ({_default_tier(defaults['deep_reasoner'], on_codex)}), "
             f"haejwo:default-worker ({_default_tier(defaults['default_worker'], on_codex)}), "
             f"haejwo:task-worker ({_default_tier(defaults['task_worker'], on_codex)})."
@@ -294,13 +321,15 @@ def main():
             # keeps its own honest prefix. UNCONFIGURED_CORE is dropped on the
             # malformed path: "not configured" is the wrong diagnosis there,
             # and EMERGENCY_CORE already carries the same core body.
-            parts = ((EMERGENCY_CORE, nudge, summary) if malformed
-                     else (EMERGENCY_CORE, nudge, UNCONFIGURED_CORE, summary))
+            emergency = host_core(EMERGENCY_CORE, on_codex)
+            parts = ((emergency, nudge, summary) if malformed
+                     else (emergency, nudge, host_core(UNCONFIGURED_CORE, on_codex),
+                           summary))
             context = "\n\n".join(parts).strip()
     else:
         rules = read_rules(root)
         if rules is None:
-            rules = EMERGENCY_CORE
+            rules = host_core(EMERGENCY_CORE, on_codex)
         g = cfg["gate"]
         models = cfg.get("models_codex", {}) if on_codex else cfg["models"]
         summary = render_summary(g, models, on_codex, True,
@@ -311,7 +340,7 @@ def main():
             # doesn't fit this session's budget (e.g. an oversized or
             # corrupted rules file) — swap in the trusted emergency core and
             # keep the FULL config summary, which is short and load-bearing.
-            context = (EMERGENCY_CORE + "\n\n" + summary).strip()
+            context = (host_core(EMERGENCY_CORE, on_codex) + "\n\n" + summary).strip()
 
     print(json.dumps({
         "hookSpecificOutput": {

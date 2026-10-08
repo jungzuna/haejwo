@@ -38,7 +38,7 @@ KNOWN_KEYS = {
     "gate": BASE_KEYS | {"tool", "path", "via", "offending"},
     "bash_guard": BASE_KEYS | {"via", "target"},
     "delegation": BASE_KEYS | {"subagent_type", "requested_model",
-                               "plan_marker_kind", "tier_pin_check", "prompt_bytes"},
+                               "plan_marker_kind", "tier_pin_check"},
 }
 STALE_DAYS = 30
 
@@ -78,19 +78,26 @@ def config_lines(data, cfg, status, on_codex):
         lines.append("config: absent — shipped defaults active")
     off = "env HAEJWO_GATE" if env_off else ("config malformed" if status == "malformed" else "")
     sub_off = off or ("" if g["enabled"] else "gate off")
+    # cycle 3 B1: an invalid budget was replaced by None = edit gate off.
+    budget = g["max_files_per_turn"]
+    budget = "invalid (edit gate OFF)" if budget is None else budget
+    # cycle 3 B4: Codex's spawn_agent is not hooked, so the key does nothing.
+    dg = ("n/a (spawn_agent not hooked)" if on_codex
+          else _flag(g["delegation_guard"], sub_off))
     lines.append(
         f"config: configured={'yes' if cfg.get('configured') is True else 'no'} "
-        f"gate={_flag(g['enabled'], off)} budget={g['max_files_per_turn']} "
+        f"gate={_flag(g['enabled'], off)} budget={budget} "
         f"bash_guard={_flag(g['bash_guard'], sub_off)} "
-        f"delegation_guard={_flag(g['delegation_guard'], sub_off)} (effective)")
+        f"delegation_guard={dg} (effective)")
     tiers = cfg["models_codex" if on_codex else "models"]
     lines.append("tiers (%s): %s" % ("models_codex" if on_codex else "models", " ".join(
         f"{k}={tiers.get(k)}" for k in ("deep_reasoner", "default_worker", "task_worker"))))
     if cfg.get("_ignored"):
-        lines.append("config ignored (defaults used): " + "; ".join(cfg["_ignored"]))
+        lines.append("config ignored: " + "; ".join(cfg["_ignored"]))
     env = [f"{k}={os.environ[k]}" for k in ENV_KEYS if os.environ.get(k)]
     lines.append("env overrides: " + (", ".join(env) if env else "none"))
-    return lines, (g["enabled"] and not off)
+    return lines, (g["enabled"] and g["max_files_per_turn"] is not None
+                   and not off)
 
 
 def turn_line(data, sid, budget):
@@ -265,7 +272,8 @@ def main(argv):
     cfg, status = load_config_with_status(data)
     clines, active = config_lines(data, cfg, status, on_codex)
     print("\n".join(clines))
-    print(turn_line(data, sid, cfg["gate"]["max_files_per_turn"]))
+    budget = cfg["gate"]["max_files_per_turn"]
+    print(turn_line(data, sid, "-" if budget is None else budget))
     print(reviewer_line(cfg, on_codex, now))
     recs, bad, notes = load_observations(data)
     for n in notes:
@@ -278,7 +286,8 @@ def main(argv):
         print("anomalies (this session): " + ("none" if not an else f"{len(an)}"))
         for a in an:
             print("  " + a)
-    print(f"summary: gate {'ACTIVE' if active else 'OFF'}, budget {cfg['gate']['max_files_per_turn']}, "
+    print(f"summary: gate {'ACTIVE' if active else 'OFF'}, "
+          f"budget {'invalid' if budget is None else budget}, "
           f"configured {'yes' if cfg.get('configured') is True else 'no'}")
 
 

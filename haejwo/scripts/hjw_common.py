@@ -157,36 +157,65 @@ def _is_str(v):
     return isinstance(v, str)
 
 
-# The typed keys the hooks read: (section, key, test, expectation). Origin
+def _is_str_list(v):
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+
+# The typed keys the hooks read: (section, key, test, expectation, value used
+# when the supplied value is invalid, consequence named in the note). Origin
 # 2026-10-08 cold-loop B2: `"max_files_per_turn": "2"` reached gate.py, raised
 # in int(), and the gate failed open SILENTLY — the once-note only covered
-# unparseable JSON.
+# unparseable JSON. Cycle 3 B1/B2 (P4): an INVALID enforcement flag, budget or
+# code-classification list DISABLES what it controls — restoring the
+# restrictive default would tighten on a value the user never meant. A budget
+# of None means "edit gate off" (gate.py); an empty code_extensions means
+# "nothing is code". Absent keys keep their defaults (the merge).
+_OFF = "(all gate enforcement off)"
+_NOT_CODE = "(nothing counts as code)"
 _TYPED_KEYS = (
-    ("gate", "enabled", _is_bool, "true or false"),
-    ("gate", "max_files_per_turn", _is_budget, "an integer >= 1"),
-    ("gate", "bash_guard", _is_bool, "true or false"),
-    ("gate", "delegation_guard", _is_bool, "true or false"),
-    ("codex", "enabled", _is_bool, "true or false"),
-) + tuple((sec, role, _is_str, "a string")
+    ("gate", "enabled", _is_bool, "true or false", False, _OFF),
+    ("gate", "max_files_per_turn", _is_budget, "an integer >= 1", None,
+     "(edit gate off)"),
+    ("gate", "bash_guard", _is_bool, "true or false", False, "(bash-guard off)"),
+    ("gate", "delegation_guard", _is_bool, "true or false", False,
+     "(delegation guard off)"),
+    ("codex", "enabled", _is_bool, "true or false", False, "(default used)"),
+) + tuple((sec, role, _is_str, "a string", DEFAULT_CONFIG[sec][role],
+           "(default used)")
           for sec in ("models", "models_codex")
           for role in ("deep_reasoner", "default_worker", "task_worker"))
 
 
 def _validate_types(cfg):
-    """Replace each wrong-typed value the hooks read with its default and
-    record why in cfg["_ignored"] (a list of "<key> must be <type>"; absent
-    when everything is valid). A section that is not an object falls back to
-    its defaults as a whole. Never raises (P4)."""
+    """Replace each invalid value the hooks read and record why in
+    cfg["_ignored"] (a list of "<key> must be <type> (<consequence>)"; absent
+    when everything is valid). Enforcement keys fail OPEN (see _TYPED_KEYS); a
+    `gate` section that is not an object turns all gate enforcement off; the
+    other sections fall back to their defaults as a whole; an invalid
+    code_extensions / exempt_dir_components makes nothing count as code.
+    Never raises (P4)."""
     ignored = []
     try:
         for sec in ("gate", "codex", "models", "models_codex"):
             if not isinstance(cfg.get(sec), dict):
                 cfg[sec] = json.loads(json.dumps(DEFAULT_CONFIG[sec]))
-                ignored.append(f"{sec} must be an object")
-        for sec, key, ok, want in _TYPED_KEYS:
+                if sec == "gate":
+                    cfg[sec].update(enabled=False, bash_guard=False,
+                                    delegation_guard=False)
+                    ignored.append(f"gate must be an object {_OFF}")
+                else:
+                    ignored.append(f"{sec} must be an object (defaults used)")
+        for sec, key, ok, want, used, why in _TYPED_KEYS:
             if key in cfg[sec] and not ok(cfg[sec][key]):
-                cfg[sec][key] = DEFAULT_CONFIG[sec][key]
-                ignored.append(f"{sec}.{key} must be {want}")
+                cfg[sec][key] = used
+                ignored.append(f"{sec}.{key} must be {want} {why}")
+        bad = [k for k in ("code_extensions", "exempt_dir_components")
+               if not _is_str_list(cfg.get(k))]
+        for key in bad:
+            cfg[key] = []
+            ignored.append(f"{key} must be a list of strings {_NOT_CODE}")
+        if bad:
+            cfg["code_extensions"] = []
     except Exception:
         pass
     if ignored:
@@ -216,6 +245,13 @@ def command_name(cmd, on_codex):
     `/haejwo:plan` on Claude, `@haejwo-plan` on Codex (a skill, not a slash
     command). Arguments follow a space: `gate off`."""
     return ("@haejwo-" if on_codex else "/haejwo:") + cmd
+
+
+# The Codex next action wherever a Claude text names a haejwo agent: the
+# Codex manifest ships NO agents (skills + hooks only), so a Codex session
+# delegates with spawn_agent and the tier values setup wrote (cycle 3 F4).
+CODEX_SPAWN_WORKER = ("spawn_agent with the configured worker model and "
+                      "reasoning_effort (see @haejwo-setup)")
 
 
 def _safe_sid(session_id):
@@ -342,8 +378,8 @@ def config_ignored_note_once(data_dir, session_id, cfg):
     ignored = cfg.get("_ignored") if isinstance(cfg, dict) else None
     if not ignored:
         return None
-    note = (f"[haejwo] config value ignored: {'; '.join(ignored)} — the "
-            f"default applies until config.json is fixed")
+    note = (f"[haejwo] config value ignored: {'; '.join(ignored)} — in effect "
+            f"until config.json is fixed")
     try:
         with state_lock(data_dir, session_id) as lk:
             if not lk.acquired:

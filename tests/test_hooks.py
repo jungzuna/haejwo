@@ -325,14 +325,16 @@ def classification_state_tests():
         r = reason_of(out)
         check("B1 a further file after a Move fills the budget -> DENY",
               decision(out) == "deny", str(out))
-        check("D7 Codex (apply_patch) denial names spawn_agent, never the Agent tool",
-              "delegate via spawn_agent: 'haejwo:default-worker'" in r
-              and "Agent tool" not in r, r)
+        check("D7/F4 Codex (apply_patch) denial names spawn_agent, never the Agent tool "
+              "or a haejwo agent",
+              "delegate via spawn_agent with the configured worker model and "
+              "reasoning_effort (see @haejwo-setup). " in r
+              and "Agent tool" not in r and "haejwo:" not in r, r)
 
         for n in ("a", "b"):
             run("gate.py", edit_payload(f"/repo/d7/{n}.py", sid="sess-D7C"), mv_data)
         rc, out = run("gate.py", edit_payload("/repo/d7/c.py", sid="sess-D7C"), mv_data)
-        check("D7 Claude denial text is unchanged (pinned in full)",
+        check("D7 Claude denial text (pinned in full; cycle 3 adds the recovery clause)",
               reason_of(out) == (
                   "[haejwo gate] Per-turn code-edit budget exceeded: this change adds "
                   "1 new file(s) (/repo/d7/c.py) on top of 2/2 already touched "
@@ -343,6 +345,8 @@ def classification_state_tests():
                   "Re-editing the files already touched this turn is still allowed. "
                   "If this is unplanned feature-scale work, run /haejwo:plan first "
                   "(backup nudge — plan-first is the norm for delegate-tier work). "
+                  "If delegation is unavailable in this session, stop here and "
+                  "resume when the user next continues (the budget resets per user turn). "
                   "Emergency override: /haejwo:gate off."), reason_of(out))
         cx_root = "/home/u/.codex/plugins/cache/haejwo/haejwo"
         for n in ("a", "b"):
@@ -351,8 +355,8 @@ def classification_state_tests():
         rc, out = run("gate.py", edit_payload("/repo/d7x/c.py", sid="sess-D7X"), mv_data,
                       root=cx_root)
         check("D7 Codex install (plugin root under /.codex/) also names spawn_agent",
-              decision(out) == "deny" and "via spawn_agent:" in reason_of(out),
-              reason_of(out))
+              decision(out) == "deny" and "via spawn_agent with the configured worker"
+              in reason_of(out) and "haejwo:" not in reason_of(out), reason_of(out))
     finally:
         shutil.rmtree(mv_data, ignore_errors=True)
 
@@ -401,28 +405,32 @@ def config_host_summary_tests():
     print("== typed config validation + once-note (B2) ==")
     b2 = tempfile.mkdtemp(prefix="hjw-test-b2-")
     try:
+        # cycle 3 B1 (P4): an INVALID budget turns the edit gate OFF — it no
+        # longer restores the restrictive default 2.
         write_cfg(b2, {"gate": {"max_files_per_turn": "2"}})
         cfg_, st_ = load_config_with_status(b2)
-        check("B2 load: a string budget becomes the default 2, status ok, reason kept",
-              st_ == "ok" and cfg_["gate"]["max_files_per_turn"] == 2
-              and cfg_.get("_ignored") == ["gate.max_files_per_turn must be an integer >= 1"],
+        check("B2 load: an invalid budget becomes None (edit gate off), status ok, reason kept",
+              st_ == "ok" and cfg_["gate"]["max_files_per_turn"] is None
+              and cfg_["gate"]["enabled"] is True
+              and cfg_.get("_ignored") == [
+                  "gate.max_files_per_turn must be an integer >= 1 (edit gate off)"],
               str((st_, cfg_.get("gate"), cfg_.get("_ignored"))))
         note = ("[haejwo] config value ignored: gate.max_files_per_turn must be an "
-                "integer >= 1 — the default applies until config.json is fixed")
+                "integer >= 1 (edit gate off) — in effect until config.json is fixed")
         rc, out = run("gate.py", edit_payload("/repo/b2/a.py", sid="sess-B2"), b2)
-        check("B2 string budget: 1st code file allowed WITH the note (was: silent fail-open)",
+        check("B2 invalid budget: 1st code file allowed WITH the note (was: silent fail-open)",
               no_decision_key(out) and ctx_of(out) == note, str(out))
-        rc, out = run("gate.py", edit_payload("/repo/b2/b.py", sid="sess-B2"), b2)
-        check("B2 string budget: the default 2 is used (2nd file fills the budget), note not repeated",
-              no_decision_key(out) and "Edit budget now full (2/2" in ctx_of(out)
-              and "config value ignored" not in ctx_of(out), ctx_of(out))
-        rc, out = run("gate.py", edit_payload("/repo/b2/c.py", sid="sess-B2"), b2)
-        check("B2 string budget: the 3rd file is DENIED, no note in the reason",
-              decision(out) == "deny" and "config value ignored" not in reason_of(out),
-              str(out))
+        outs = [run("gate.py", edit_payload(f"/repo/b2/{n}.py", sid="sess-B2"), b2)[1]
+                for n in ("b", "c")]
+        check("B2 invalid budget: the edit gate is OFF (3rd file allowed, no budget "
+              "context), note not repeated",
+              all(no_decision_key(o) and ctx_of(o) == "" for o in outs), str(outs))
         rc, out = run("bash_guard.py", bash_payload("ls", sid="sess-B2"), b2)
         check("B2 the note is shared across hooks: bash_guard stays silent after gate said it",
               ctx_of(out) == "", str(out))
+        rc, out = run("bash_guard.py", bash_payload("echo x > src/app.py", sid="sess-B2"), b2)
+        check("B2 invalid budget disables ONLY the edit gate: bash-guard still denies",
+              decision(out) == "deny", str(out))
         run("turn_reset.py", {"session_id": "sess-B2", "prompt_id": "p2",
                               "hook_event_name": "UserPromptSubmit"}, b2)
         rc, out = run("gate.py", edit_payload("/repo/b2/d.py", sid="sess-B2", pid="p2"), b2)
@@ -437,35 +445,48 @@ def config_host_summary_tests():
               ctx_of(out) == note, str(out))
 
         write_cfg(b2, {"gate": {"enabled": "false"}})
-        firsts = [run("gate.py", edit_payload(f"/repo/b2e/{n}.py", sid="sess-B2E"), b2)[1]
-                  for n in ("a", "b")]
-        rc, out = run("gate.py", edit_payload("/repo/b2e/c.py", sid="sess-B2E"), b2)
-        check("B2 the string \"false\" never disables the gate (default ON), noted once",
-              decision(out) == "deny" and ctx_of(firsts[0]) == (
+        outs = [run("gate.py", edit_payload(f"/repo/b2e/{n}.py", sid="sess-B2E"), b2)[1]
+                for n in ("a", "b", "c")]
+        rc, bout = run("bash_guard.py", bash_payload("echo x > src/app.py", sid="sess-B2E"), b2)
+        check("B1 an invalid gate.enabled (the string \"false\") turns the gate OFF, "
+              "noted once",
+              all(no_decision_key(o) for o in outs) and ctx_of(outs[0]) == (
                   "[haejwo] config value ignored: gate.enabled must be true or "
-                  "false — the default applies until config.json is fixed")
-              and "config value ignored" not in reason_of(out), str(out))
+                  "false (all gate enforcement off) — in effect until config.json "
+                  "is fixed")
+              and ctx_of(outs[2]) == "" and no_decision_key(bout)
+              and ctx_of(bout) == "", str((outs, bout)))
 
         write_cfg(b2, {"gate": "off", "models": {"default_worker": 5},
                        "codex": {"enabled": "yes"}})
         cfg_, st_ = load_config_with_status(b2)
-        check("B2 load: a non-object section and wrong-typed leaves all fall back, each named",
-              st_ == "ok" and cfg_["gate"] == DEFAULT_CONFIG["gate"]
+        check("B1 load: a non-object gate section turns all gate enforcement OFF; "
+              "wrong-typed non-enforcement leaves fall back, each named",
+              st_ == "ok" and cfg_["gate"] == dict(DEFAULT_CONFIG["gate"], enabled=False,
+                                                   bash_guard=False,
+                                                   delegation_guard=False)
               and cfg_["models"]["default_worker"] == "opus"
               and cfg_["codex"]["enabled"] is False
-              and cfg_.get("_ignored") == ["gate must be an object",
-                                           "codex.enabled must be true or false",
-                                           "models.default_worker must be a string"],
-              str(cfg_.get("_ignored")))
+              and cfg_.get("_ignored") == [
+                  "gate must be an object (all gate enforcement off)",
+                  "codex.enabled must be true or false (default used)",
+                  "models.default_worker must be a string (default used)"],
+              str((cfg_["gate"], cfg_.get("_ignored"))))
+        rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-B2G"), b2)
+        check("B1 a non-object gate section: the delegation guard allows, with the note",
+              no_decision_key(out) and ctx_of(out).startswith(
+                  "[haejwo] config value ignored: gate must be an object (all gate "
+                  "enforcement off); codex.enabled"), str(out))
+        write_cfg(b2, {"models": {"default_worker": 5}, "codex": {"enabled": "yes"}})
         rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-B2D"), b2)
         check("B2 a deny carries the note on its reason (a deny has no context)",
               decision(out) == "deny" and reason_of(out).startswith(
                   "[haejwo gate] Delegation to generic agent")
               and reason_of(out).endswith(
                   "Emergency override: /haejwo:gate off.\n[haejwo] config value "
-                  "ignored: gate must be an object; codex.enabled must be true or "
-                  "false; models.default_worker must be a string — the default "
-                  "applies until config.json is fixed"), reason_of(out))
+                  "ignored: codex.enabled must be true or false (default used); "
+                  "models.default_worker must be a string (default used) — in "
+                  "effect until config.json is fixed"), reason_of(out))
         write_cfg(b2, {"gate": {"max_files_per_turn": 3, "enabled": True}})
         cfg_, _ = load_config_with_status(b2)
         check("B2 a valid config records nothing ignored", "_ignored" not in cfg_, str(cfg_))
@@ -486,13 +507,15 @@ def config_host_summary_tests():
         check("F11 bash_guard redirect deny on Codex, exact",
               reason_of(out) == (
                   "[haejwo gate] Bash output redirect writes to a code file (src/app.py). "
-                  "The main agent must not modify code via Bash — use Edit/Write within "
-                  "the turn budget, or delegate to 'haejwo:default-worker'. "
+                  "The main agent must not modify code via Bash — use apply_patch within "
+                  "the turn budget, or delegate to spawn_agent with the configured "
+                  "worker model and reasoning_effort (see @haejwo-setup). "
                   "Emergency override: @haejwo-gate off."), reason_of(out))
         rc, out = run("bash_guard.py", bash_payload("sed -i 's/a/b/' src/app.py"), f11,
                       root=cx_root)
-        check("F11 bash_guard in-place deny on Codex names @haejwo-gate off",
+        check("F11 bash_guard in-place deny on Codex names @haejwo-gate off and apply_patch",
               decision(out) == "deny"
+              and "use apply_patch within budget" in reason_of(out)
               and reason_of(out).endswith("Emergency override: @haejwo-gate off."),
               reason_of(out))
         rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-F11D"),
@@ -635,6 +658,206 @@ def config_host_summary_tests():
     finally:
         os.umask(old_mask)
         shutil.rmtree(f15, ignore_errors=True)
+
+
+def cycle3_hook_tests():
+    """2.28.0 (cold-loop cycle 3): an invalid enforcement flag, budget or
+    code list fails OPEN with the once-note (B1/B2); Codex shows
+    delegation_guard=n/a (B4) and never names a haejwo agent (F4); the gate
+    denial names a host-owned recovery before the user hatch; stale keys and
+    docstrings (F5/F6/F10/R1)."""
+    from hjw_common import load_config_with_status  # noqa: E402
+    SB = {"hook_event_name": "SessionStart"}
+    DG_NA = "delegation_guard=n/a (spawn_agent not hooked)"
+    st_script = os.path.join(SCRIPTS, "status_collect.py")
+
+    def write_cfg(d_, cfg):
+        with open(os.path.join(d_, "config.json"), "w") as f:
+            json.dump(cfg, f)
+
+    def note_for(*items):
+        return ("[haejwo] config value ignored: " + "; ".join(items)
+                + " — in effect until config.json is fixed")
+
+    def status(d_):
+        env = {k: v for k, v in os.environ.items() if k != "HAEJWO_GATE"}
+        return subprocess.run([sys.executable, st_script, d_, "sess-C3S"],
+                              capture_output=True, text=True, env=env,
+                              timeout=30).stdout
+
+    print("== invalid enforcement values fail OPEN with the once-note (cycle 3 B1/B2) ==")
+    c3 = tempfile.mkdtemp(prefix="hjw-test-c3-")
+    try:
+        write_cfg(c3, {"gate": {"bash_guard": "no"}})
+        rc, out = run("bash_guard.py", bash_payload("echo x > src/app.py", sid="sess-C3B"), c3)
+        rc2, out2 = run("bash_guard.py", bash_payload("sed -i s/a/b/ src/app.py",
+                                                      sid="sess-C3B"), c3)
+        check("B1 invalid gate.bash_guard -> bash-guard OFF, the note names the key once",
+              no_decision_key(out) and ctx_of(out) == note_for(
+                  "gate.bash_guard must be true or false (bash-guard off)")
+              and no_decision_key(out2) and ctx_of(out2) == "", str((out, out2)))
+        outs = [run("gate.py", edit_payload(f"/repo/c3b/{n}.py", sid="sess-C3B"), c3)[1]
+                for n in ("a", "b", "c")]
+        check("B1 invalid gate.bash_guard leaves the edit gate ON (3rd file denied)",
+              decision(outs[2]) == "deny" and "config value ignored" not in reason_of(outs[2]),
+              str(outs[2]))
+
+        write_cfg(c3, {"gate": {"delegation_guard": 1}})
+        rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-C3D"), c3)
+        rc2, out2 = run("delegation_gate.py", task_payload("Explore", sid="sess-C3D"), c3)
+        check("B1 invalid gate.delegation_guard -> delegation guard OFF, noted once",
+              no_decision_key(out) and ctx_of(out) == note_for(
+                  "gate.delegation_guard must be true or false (delegation guard off)")
+              and no_decision_key(out2) and ctx_of(out2) == "", str((out, out2)))
+
+        for budget in (0, 2.5, True, None):
+            write_cfg(c3, {"gate": {"max_files_per_turn": budget}})
+            cfg_, _ = load_config_with_status(c3)
+            if cfg_["gate"]["max_files_per_turn"] is not None:
+                break
+        check("B1 budgets 0 / 2.5 / true / null all turn the edit gate off (None)",
+              cfg_["gate"]["max_files_per_turn"] is None, str(budget))
+
+        write_cfg(c3, {"configured": True, "gate": {}})
+        cfg_, st_ = load_config_with_status(c3)
+        check("B1/B2 absent keys keep the defaults and record nothing",
+              st_ == "ok" and cfg_["gate"] == DEFAULT_CONFIG["gate"]
+              and cfg_["code_extensions"] == DEFAULT_CONFIG["code_extensions"]
+              and cfg_["exempt_dir_components"] == DEFAULT_CONFIG["exempt_dir_components"]
+              and "_ignored" not in cfg_, str(cfg_.get("_ignored")))
+
+        write_cfg(c3, {"code_extensions": None})
+        cfg_, _ = load_config_with_status(c3)
+        check("B2 load: code_extensions null -> [] (nothing is code), named",
+              cfg_["code_extensions"] == []
+              and cfg_["exempt_dir_components"] == DEFAULT_CONFIG["exempt_dir_components"]
+              and cfg_.get("_ignored") == [
+                  "code_extensions must be a list of strings (nothing counts as code)"],
+              str(cfg_.get("_ignored")))
+        outs = [run("gate.py", edit_payload(f"/repo/c3x/{n}.py", sid="sess-C3X"), c3)[1]
+                for n in ("a", "b", "c")]
+        check("B2 invalid code_extensions: no edit counts (3 files allowed, no budget "
+              "context), the note fires once",
+              all(no_decision_key(o) for o in outs)
+              and ctx_of(outs[0]) == note_for(
+                  "code_extensions must be a list of strings (nothing counts as code)")
+              and ctx_of(outs[1]) == "" and ctx_of(outs[2]) == ""
+              and json.load(open(os.path.join(c3, "state", "sess-C3X.json"))).get(
+                  "files") == [], str(outs))
+        guard = [run("bash_guard.py", bash_payload(c, sid="sess-C3X"), c3)[1] for c in (
+            "echo x > src/app.py", "sed -i s/a/b/ src/app.py",
+            "find . -name '*.py' -exec sed -i s/a/b/ {} +")]
+        check("B2 invalid code_extensions: bash-guard denies nothing (redirect, in-place, "
+              "fan-out)", all(no_decision_key(o) for o in guard), str(guard))
+
+        write_cfg(c3, {"exempt_dir_components": [".git", 3]})
+        cfg_, _ = load_config_with_status(c3)
+        rc, out = run("gate.py", edit_payload("/repo/c3e/a.py", sid="sess-C3E"), c3)
+        check("B2 invalid exempt_dir_components -> nothing is code, named",
+              cfg_["code_extensions"] == [] and cfg_["exempt_dir_components"] == []
+              and cfg_.get("_ignored") == [
+                  "exempt_dir_components must be a list of strings (nothing counts "
+                  "as code)"]
+              and no_decision_key(out) and ctx_of(out) == note_for(
+                  "exempt_dir_components must be a list of strings (nothing counts "
+                  "as code)"), str((cfg_.get("_ignored"), out)))
+
+        write_cfg(c3, {"configured": True, "gate": {"max_files_per_turn": "3"}})
+        rc, out = run("session_brief.py", SB, c3)
+        st_out = status(c3)
+        check("B1 invalid budget: the summary and status say the edit gate is OFF",
+              "[haejwo config] gate=ON budget=invalid (edit gate OFF) bash_guard=ON "
+              "delegation_guard=ON | " in ctx_of(out)
+              and "gate=ON budget=invalid (edit gate OFF) bash_guard=ON" in st_out
+              and "config ignored: gate.max_files_per_turn must be an integer >= 1 "
+                  "(edit gate off)" in st_out
+              and "summary: gate OFF, budget invalid, configured yes" in st_out,
+              ctx_of(out)[-700:] + "\n" + st_out)
+        write_cfg(c3, {"gate": {"max_files_per_turn": "3"}})
+        rc, out = run("session_brief.py", SB, c3)
+        check("B1 invalid budget before setup: the nudge reports the STORED, effective state",
+              "STORED gate settings are ACTIVE: gate ON, edit budget invalid (edit gate "
+              "OFF), bash-guard ON, subagents exempt." in ctx_of(out), ctx_of(out)[-900:])
+    finally:
+        shutil.rmtree(c3, ignore_errors=True)
+
+    print("== Codex: delegation_guard n/a, spawn_agent wording, recovery (B4/F4) ==")
+    cxb = tempfile.mkdtemp(prefix="hjw-test-c3x-")
+    cx = os.path.join(cxb, ".codex", "data")
+    os.makedirs(cx)
+    try:
+        write_cfg(cx, {"configured": True})
+        rc, out = run("session_brief.py", SB, cx)
+        rc2, out2 = run("session_brief.py", SB, cx, env_extra={"HAEJWO_GATE": "off"})
+        check("B4 Codex configured summary: delegation_guard=n/a, with or without env off",
+              "bash_guard=ON " + DG_NA + " | codex tiers" in ctx_of(out)
+              and "bash_guard=OFF (env) " + DG_NA + " | codex tiers" in ctx_of(out2),
+              ctx_of(out)[-700:])
+        st_out = status(cx)
+        check("B4 Codex status: delegation_guard=n/a (effective)",
+              "host=codex" in st_out and DG_NA + " (effective)" in st_out, st_out)
+        os.remove(os.path.join(cx, "config.json"))
+        rc, out = run("session_brief.py", SB, cx)
+        check("B4/F4 Codex nudge: delegation guard n/a + spawn_agent, no haejwo agent names",
+              "Delegation guard: n/a (spawn_agent not hooked). Delegation targets: "
+              "spawn_agent with the configured worker model and reasoning_effort "
+              "(see @haejwo-setup)." in ctx_of(out)
+              and "defaults — not configured: gate=ON budget=2 files/turn "
+                  "bash_guard=ON " + DG_NA in ctx_of(out), ctx_of(out)[-900:])
+        rc, out = run("session_brief.py", SB, cxb)
+        check("B4 Claude nudge/summary unchanged (no n/a, delegation_guard=ON)",
+              "n/a (spawn_agent" not in ctx_of(out)
+              and "bash_guard=ON delegation_guard=ON | " in ctx_of(out), ctx_of(out)[-700:])
+
+        outs = [run("gate.py", edit_payload(f"/repo/c3f/{n}.py", sid="sess-C3F"), cx)[1]
+                for n in ("a", "b", "c")]
+        r = reason_of(outs[2])
+        check("F4 Codex budget-full context names spawn_agent, no haejwo agent",
+              no_decision_key(outs[1]) and ctx_of(outs[1]).endswith(
+                  "must be delegated to a subagent (spawn_agent with the configured "
+                  "worker model and reasoning_effort (see @haejwo-setup)).")
+              and "haejwo:" not in ctx_of(outs[1]), ctx_of(outs[1]))
+        check("recovery: the Codex gate denial names the pause-for-the-user escape before the "
+              "user hatch, one sentence",
+              decision(outs[2]) == "deny" and r.endswith(
+                  "If delegation is unavailable in this session, stop here and "
+                  "resume when the user next continues (the budget resets per user turn). "
+                  "Emergency override: @haejwo-gate off.") and "haejwo:" not in r, r)
+        rc, out = run("bash_guard.py", bash_payload("sed -i s/a/b/ src/app.py"), cx)
+        check("F4 Codex bash in-place deny names spawn_agent, no haejwo agent",
+              decision(out) == "deny" and "or delegate to spawn_agent with the configured "
+              "worker model" in reason_of(out) and "haejwo:" not in reason_of(out),
+              reason_of(out))
+        cl = tempfile.mkdtemp(prefix="hjw-test-c3c-")
+        try:
+            outs = [run("gate.py", edit_payload(f"/repo/c3g/{n}.py", sid="sess-C3G"), cl)[1]
+                    for n in ("a", "b")]
+            check("F4 Claude budget-full context byte-identical",
+                  ctx_of(outs[1]) == (
+                      "[haejwo gate] Edit budget now full (2/2 distinct code files this "
+                      "turn). Any FURTHER code file this turn must be delegated to a "
+                      "subagent (haejwo:default-worker / haejwo:task-worker)."),
+                  ctx_of(outs[1]))
+        finally:
+            shutil.rmtree(cl, ignore_errors=True)
+    finally:
+        shutil.rmtree(cxb, ignore_errors=True)
+
+    print("== stale keys and docstrings (F5/F6/F10/R1) ==")
+    import delegation_gate as _dg  # noqa: E402
+    import gate as _gate  # noqa: E402
+    import session_brief as _sb  # noqa: E402
+    import status_collect as _sc  # noqa: E402
+    check("F5 status_collect no longer knows the retired prompt_bytes key",
+          "prompt_bytes" not in _sc.KNOWN_KEYS["delegation"])
+    check("F6 gate.py docstring title names apply_patch",
+          _gate.__doc__.splitlines()[0].endswith("PreToolUse on Edit|Write|NotebookEdit|apply_patch."))
+    check("F10 session_brief: the nudge is 'repeated until configured', not one-time",
+          "repeated until configured" in _sb.__doc__ and "one-time" not in _sb.__doc__)
+    check("R1 delegation_gate docstring cites the docs for Explore's model",
+          "Claude Code docs (sub-agents, built-in subagents)" in " ".join(_dg.__doc__.split())
+          and "the built-in Explore runs on the `opus` alias" in " ".join(_dg.__doc__.split()))
+
 
 def main():
     data = tempfile.mkdtemp(prefix="hjw-test-")
@@ -1508,7 +1731,9 @@ def main():
         check("apply_patch 3rd distinct code file -> deny (md didn't count)", decision(out) == "deny")
 
         # g. deny reason mirrors gate.py's delegation nudge (reusing the deny above)
-        check("apply_patch deny mentions delegation target", "default-worker" in reason)
+        check("apply_patch deny mentions the Codex delegation (spawn_agent, no agent names)",
+              "spawn_agent with the configured worker model" in reason
+              and "default-worker" not in reason)
 
         print("== dual-host manifests & mirrors ==")
         claude_pj = json.load(open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json")))
@@ -1891,6 +2116,31 @@ def main():
             check("unconfigured + oversized rules -> degraded output under MAX_LEN",
                   len(ctx_uo) < MAX_LEN, f"len={len(ctx_uo)}")
 
+            # 2.28 F1: Codex ships no agents — its emergency core names
+            # spawn_agent (configured and unconfigured), Claude's is unchanged.
+            ox_data = os.path.join(over_base, "d", ".codex", "plugins", "data", "haejwo")
+            os.makedirs(ox_data, exist_ok=True)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                          ox_data, root=over_root)
+            ctx_ox = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            with open(os.path.join(ox_data, "config.json"), "w") as f:
+                json.dump({"configured": True}, f)
+            rc2, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
+                           ox_data, root=over_root)
+            ctx_oxc = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            core_x = ("delegate implementation via spawn_agent with the configured "
+                      "worker model and reasoning_effort (see @haejwo-setup); gate limits")
+            check("2.28 F1 Codex + oversized rules -> the emergency core names spawn_agent, "
+                  "no haejwo: agent (unconfigured and configured)",
+                  rc == 0 and rc2 == 0
+                  and ctx_ox.startswith("[haejwo] emergency core") and core_x in ctx_ox
+                  and ctx_oxc.startswith("[haejwo] emergency core") and core_x in ctx_oxc
+                  and "haejwo:default-worker" not in ctx_ox + ctx_oxc
+                  and "haejwo:task-worker" not in ctx_ox + ctx_oxc, ctx_ox + "\n--\n" + ctx_oxc)
+            check("2.28 F1 Claude emergency core text is unchanged",
+                  "(haejwo:default-worker / haejwo:task-worker)" in CORE_BODY
+                  and ctx_uo.startswith(EMERGENCY_CORE))
+
             rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"},
                           unconf_data, root="/nonexistent/haejwo/root/xyz")
             ctx_um = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
@@ -1948,10 +2198,11 @@ def main():
             os.makedirs(a6_codex, exist_ok=True)
             rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, a6_codex)
             ctx_x = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
-            check("A6 Codex nudge names the codex tiers (host model, all inherit)",
+            check("A6/F4 Codex nudge names spawn_agent, never a haejwo agent",
                   rc == 0 and "NOT configured" in ctx_x
-                  and "haejwo:deep-reasoner (host model), haejwo:default-worker "
-                      "(host model), haejwo:task-worker (host model)." in ctx_x, ctx_x)
+                  and "Delegation targets: spawn_agent with the configured worker "
+                      "model and reasoning_effort (see @haejwo-setup)." in ctx_x
+                  and "Delegation targets: haejwo:" not in ctx_x, ctx_x)
             check("A6 Codex defaults summary: host model, deep-reasoner at the host's "
                   "own effort, per-role efforts below it",
                   "codex tiers: deep-reasoner=host model/host effort (omit "
@@ -2022,7 +2273,8 @@ def main():
               render_summary({"enabled": False, "max_files_per_turn": 4,
                               "bash_guard": False}, {}, True, True, True)
               == "[haejwo config] gate=OFF budget=4 files/turn bash_guard=OFF "
-                 "delegation_guard=OFF | codex tiers (pass model + reasoning_effort on spawn_agent; "
+                 "delegation_guard=n/a (spawn_agent not hooked) | codex tiers (pass model + "
+                 "reasoning_effort on spawn_agent; "
                  "'inherit' = omit model; effort overrides need a fresh or partial "
                  "context fork (fork_turns), never a full-history fork): "
                  "deep-reasoner=inherit/host effort (omit reasoning_effort), "
@@ -2237,11 +2489,13 @@ def main():
         reason2 = (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
         check("Codex host + explicit pins: still denies, rc0",
               rc == 0 and decision(out) == "deny", str(out))
-        check("Codex host + explicit pins: names configured models",
-              "'gpt-5.6-luna' (locate)" in reason2
-              and "'gpt-5.6-terra' (read/summarize)" in reason2, reason2)
-        check("Codex host + explicit pins: also names haejwo tiers",
-              "haejwo:default-worker" in reason2 and "haejwo:task-worker" in reason2, reason2)
+        check("Codex host + explicit pins: names configured models with the role words (F8)",
+              "'gpt-5.6-luna' (bounded mechanical work)" in reason2
+              and "'gpt-5.6-terra' (implementation)" in reason2, reason2)
+        check("Codex host + explicit pins: names spawn_agent, never a haejwo agent (F4)",
+              "or use spawn_agent with the configured worker model and reasoning_effort "
+              "(see @haejwo-setup) instead." in reason2
+              and "haejwo:" not in reason2, reason2)
         check("Codex host + explicit pins: no Claude-alias leakage",
               "'haiku'" not in reason2 and "'sonnet'" not in reason2, reason2)
 
@@ -2257,8 +2511,9 @@ def main():
               rc == 0 and decision(out) == "deny", str(out))
         check("Codex host + inherit tiers: no 'Pass model:' recommendation",
               "Pass model:" not in reason3, reason3)
-        check("Codex host + inherit tiers: names both haejwo tiers",
-              "haejwo:default-worker" in reason3 and "haejwo:task-worker" in reason3, reason3)
+        check("Codex host + inherit tiers: names spawn_agent, never a haejwo agent (F4)",
+              CODEX_TIER_ONLY in reason3 and "spawn_agent" in reason3
+              and "haejwo:" not in reason3, reason3)
 
         # 4. Codex host + malformed models_codex (a string, not a dict):
         #    falls back to the CODEX tier-only wording (2.11.0: it used to
@@ -2299,28 +2554,29 @@ def main():
                              "sess-A12b")
             check("A12 both tiers explicit: names both configured models",
                   dec == "deny"
-                  and "Pass model: 'sonnet' (locate) or 'opus' (read/summarize)" in r, r)
+                  and "Pass model: 'sonnet' (bounded mechanical work) or 'opus' "
+                      "(implementation)" in r, r)
 
             rc, dec, r = a12({"default_worker": "opus", "task_worker": "opus"}, "sess-A12g")
             check("A12 both tiers on the SAME model: named once, no fake choice",
                   dec == "deny"
                   and "Pass model: 'opus', or delegate to haejwo:default-worker / "
                       "haejwo:task-worker instead." in r
-                  and "(locate)" not in r and "(read/summarize)" not in r, r)
+                  and "(bounded mechanical work)" not in r and "(implementation)" not in r, r)
 
             rc, dec, r = a12({"default_worker": "opus", "task_worker": "inherit"}, "sess-A12c")
             check("A12 only default_worker explicit: names just that one, for its role",
                   dec == "deny"
-                  and "Pass model: 'opus' (read/summarize), or delegate to "
+                  and "Pass model: 'opus' (implementation), or delegate to "
                       "haejwo:default-worker / haejwo:task-worker instead." in r
-                  and "(locate)" not in r, r)
+                  and "(bounded mechanical work)" not in r, r)
 
             rc, dec, r = a12({"default_worker": "inherit", "task_worker": "opus"}, "sess-A12d")
             check("A12 only task_worker explicit: names just that one, for its role",
                   dec == "deny"
-                  and "Pass model: 'opus' (locate), or delegate to "
+                  and "Pass model: 'opus' (bounded mechanical work), or delegate to "
                       "haejwo:default-worker / haejwo:task-worker instead." in r
-                  and "(read/summarize)" not in r, r)
+                  and "(implementation)" not in r, r)
 
             rc, dec, r = a12({"default_worker": "inherit", "task_worker": "inherit"},
                              "sess-A12e")
@@ -2954,6 +3210,7 @@ def main():
 
         classification_state_tests()
         config_host_summary_tests()
+        cycle3_hook_tests()
 
         print("== hooks.json hook-target existence ==")
         hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")
@@ -5574,48 +5831,6 @@ exit "$rc"
                       "plugin=2.21.0" in fw_log_for(t14n_brief),
                       fw_log_for(t14n_brief)[:200])
 
-            # ---- (t15, 2.22) NEW FORWARDER -> LEGACY DESTINATION. A 2.18-2.21
-            # destination's OWN runners require lib/snapshot.py and exit 3
-            # without it — after the exec, with no local fallback left. Since
-            # 2.26 the support floor refuses such a destination even WITH it
-            # (W39 below). The destination runner is a stand-in leaving a marker. ----
-            for t15_case, t15_keep in (("t15-nosnap", False), ("t15-snap", True)):
-                t15_plugins = fw_install(t15_case, ["9.9.0", "2.21.0"])
-                t15_marker = os.path.join(fw_root, f"{t15_case}-target-ran")
-                t15_target = fw_script(t15_plugins, "2.21.0", "codex")
-                with open(t15_target, "w") as f:
-                    f.write("#!/usr/bin/env bash\n"
-                            f"echo ran > '{t15_marker}'\n"
-                            "echo LEGACY-TARGET-RAN\n")
-                os.chmod(t15_target, 0o755)
-                if not t15_keep:
-                    os.remove(os.path.join(fw_dir(t15_plugins, "2.21.0"), "scripts",
-                                           "lib", "snapshot.py"))
-                fw_reg_entries(t15_plugins, [fw_entry(t15_plugins, "2.21.0")])
-                t15_self = fw_script(t15_plugins, "9.9.0", "codex")
-                if not t15_keep:
-                    rc, out, err, cap, t15_brief = fw_no_forward(
-                        "t15", "a 2.21.0 destination WITHOUT lib/snapshot.py",
-                        t15_case, t15_self, "codex")
-                    check("t15 legacy completeness: without snapshot.py the invoked "
-                          "9.9.0 ran and the destination never did",
-                          "plugin=9.9.0" in fw_log_for(t15_brief)
-                          and not os.path.exists(t15_marker)
-                          and "LEGACY-TARGET-RAN" not in out,
-                          f"marker={os.path.exists(t15_marker)} "
-                          f"log={fw_log_for(t15_brief)[:200]}")
-                else:
-                    rc, out, err, cap = fw_run(t15_case, t15_self, "codex")
-                    hops = fw_hops(err)
-                    check("t15 legacy completeness: WITH snapshot.py the 2.21.0 "
-                          "destination is still NOT forwarded into — it is below the "
-                          "support floor (2.26); no marker",
-                          rc == 0 and not hops and "below the supported floor" in err
-                          and not os.path.exists(t15_marker)
-                          and "LEGACY-TARGET-RAN" not in out,
-                          f"rc={rc} hops={hops} marker={os.path.exists(t15_marker)} "
-                          f"err={err}")
-
             # ---- (t13, 2.21) the artifact guard HOLDS ACROSS A HOP. The
             # registry may select an OLDER install (t2: downgrades are
             # followed), and a pre-2.21 runner has no artifact guard — so the
@@ -6194,6 +6409,86 @@ exit "$rc"
 
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)
+
+        # ==== (2.28, cycle 3) B3 / F15 / D5 / F11 / F13 / F18: compat, mirrors, command text ====
+        print("== cycle 3: forward compat, Codex mirror substitution, command text ==")
+        c3_fw = open(os.path.join(SCRIPTS, "lib", "forward.py"), encoding="utf-8").read()
+        check("B3 forward.py: the unreachable LEGACY_LIB branch is gone; completeness checks "
+              "REQUIRED_LIB only",
+              "LEGACY_LIB" not in c3_fw and "for name in REQUIRED_LIB:" in c3_fw
+              and '"snapshot.py"' not in c3_fw)
+        c3_tomb = open(os.path.join(SCRIPTS, "lib", "snapshot.py"), encoding="utf-8").read()
+        check("B3 tombstone: lib/snapshot.py stays, its header says it is for INCOMING hops "
+              "from 2.18-2.21 sources",
+              "INCOMING hops from 2.18-2.21 sources" in c3_tomb, c3_tomb[:300])
+
+        import mirrors as c3_mirrors
+        c3_cmds = os.path.join(PLUGIN, "commands")
+        c3_skills = os.path.join(PLUGIN, "codex-skills")
+        for c3_name in sorted(fn[:-3] for fn in os.listdir(c3_cmds) if fn.endswith(".md")):
+            c3_c = open(os.path.join(c3_cmds, c3_name + ".md"), encoding="utf-8").read()
+            c3_s = open(os.path.join(c3_skills, "haejwo-" + c3_name, "SKILL.md"),
+                        encoding="utf-8").read()
+            c3_refs = re.findall(r"(?<![\w./~-])/haejwo:([a-z][a-z0-9-]*)", c3_c)
+            check(f"F15 mirror {c3_name}: no `/haejwo:<cmd>` slash reference survives in the "
+                  "Codex mirror; each one in the command appears as `@haejwo-<cmd>`",
+                  not re.search(r"(?<![\w./~-])/haejwo:[a-z]", c3_s)
+                  and all(f"@haejwo-{r}" in c3_s for r in c3_refs), str(c3_refs))
+            c3_ph = [ph for ph in ("${CLAUDE_PLUGIN_ROOT}", "${CLAUDE_PLUGIN_DATA}", "$ARGUMENTS")
+                     if ph in c3_c]
+            check(f"F15 mirror {c3_name}: placeholders are NOT substituted (Codex unmeasured) "
+                  "— each one the command uses appears verbatim, as often",
+                  all(c3_s.count(ph) == c3_c.count(ph) for ph in c3_ph), str(c3_ph))
+        c3_fx = os.path.join(HERE, "fixtures", "mirror-gate")
+        c3_fx_cmd = open(os.path.join(c3_fx, "command.md"), encoding="utf-8").read()
+        c3_fx_want = open(os.path.join(c3_fx, "SKILL.md"), encoding="utf-8").read()
+        check("F15 golden fixture: the hand-written pair covers the substitution (slash "
+              "references in, `@haejwo-` out) and the non-commands left as written",
+              "/haejwo:setup" in c3_fx_cmd and "@haejwo-setup" in c3_fx_want
+              and "`@haejwo-gate on`" in c3_fx_want
+              and not re.search(r"(?<![\w./~-])/haejwo:[a-z]",
+                                re.sub(r"\S*://\S*", "", c3_fx_want))
+              and c3_fx_want.count("haejwo:default-worker") == 1
+              and "cache/haejwo/haejwo:gate" in c3_fx_want
+              and "$ARGUMENTS" in c3_fx_want and "${CLAUDE_PLUGIN_DATA}" in c3_fx_want)
+        check("F15 generator: a slash command inside a path or an agent name is not rewritten",
+              c3_mirrors.rewrite_commands(
+                  "a/haejwo:gate haejwo:default-worker ~/haejwo:x /haejwo:plan")
+              == "a/haejwo:gate haejwo:default-worker ~/haejwo:x @haejwo-plan")
+        check("2.28 F3 generator: a slash command inside a URL (IPv6 host path, query "
+              "value) is left as written; an inline command beside it is rewritten",
+              c3_mirrors.rewrite_commands(
+                  "https://[::1]/haejwo:setup <https://e.com/?next=/haejwo:plan> `/haejwo:plan`")
+              == "https://[::1]/haejwo:setup <https://e.com/?next=/haejwo:plan> `@haejwo-plan`")
+        check("2.28 F3 golden fixture: the hand-written pair carries the URL cases verbatim "
+              "and the inline command beside them rewritten",
+              "https://[::1]/haejwo:setup and https://example.com/?next=/haejwo:plan, while "
+              "the command `@haejwo-plan`" in c3_fx_want
+              and "the command `/haejwo:plan` beside" in c3_fx_cmd)
+
+        c3_md = {n: open(os.path.join(c3_cmds, n + ".md"), encoding="utf-8").read()
+                 for n in ("setup", "gate", "status")}
+        for c3_name, c3_text in c3_md.items():
+            check(f"D5 {c3_name}.md: says the placeholders are substituted by the host for THIS "
+                  "plugin (measured on Claude Code, not asserted on Codex) and STOPs before any "
+                  "write on an UNRESOLVED one, with the host fallback",
+                  "substituted by the host for THIS plugin (measured on Claude Code; not on Codex)"
+                  in c3_text and "UNRESOLVED" in c3_text and "STOP before any write" in c3_text
+                  and "~/.claude/plugins/data/haejwo-haejwo/" in c3_text
+                  and "~/.codex/plugins/data/haejwo-haejwo/" in c3_text)
+        check("F13 setup.md: the Claude reviewer's SUCCESS path persists verified_at and enabled",
+              "Claude reviewer (sandbox not applicable): success → persist "
+              "`verified_at=<probe unix-ts>`, `enabled=true`; DONE." in c3_md["setup"])
+        check("F11 status.md: configured=no no longer claims defaults; stored gate values apply",
+              "stored gate values apply even before setup" in c3_md["status"]
+              and "defaults active" not in c3_md["status"])
+        check("F11/D3 status.md: the plan_marker_kind none label covers generic agents and is "
+              "not a violation count",
+              "recorded non-rescue delegations, including generic agents; a missing marker is "
+              "not necessarily a violation" in c3_md["status"]
+              and "haejwo tiers only" not in c3_md["status"])
+        check("F18 status.md: the observations log is disclosed as pruned by size, not by age",
+              "pruned by size, ~400 KB, not by age" in c3_md["status"])
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

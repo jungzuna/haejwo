@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""haejwo orchestration gate — PreToolUse on Edit|Write|NotebookEdit.
+"""haejwo orchestration gate — PreToolUse on Edit|Write|NotebookEdit|apply_patch.
 
 The MAIN agent may touch at most N DISTINCT code files per user turn
 (default 2). The N+1th distinct code file is denied, and the deny reason
@@ -15,7 +15,8 @@ lock. `via` is the reason the decision was reached, in precedence order:
   subagent-exempt  the call came from inside a subagent (never gated)
   env-off          HAEJWO_GATE=off in the environment
   config-malformed config.json is unparseable — allowed, gates fail open
-  gate-off         config gate.enabled is false
+  gate-off         config gate.enabled is false, or the budget is invalid
+                   (hjw_common._validate_types: an invalid value fails open)
   non-code         no code file in this call (non-code/temp/metadata paths)
   free-reedit      every file was already counted this turn (iteration free)
   budget-full      allowed, and this call filled the budget (warning context)
@@ -37,7 +38,7 @@ import time
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, canonical, carry_session_flags, command_name,
+    CODEX_SPAWN_WORKER, allow, canonical, carry_session_flags, command_name,
     config_ignored_note_once, deny, gate_disabled_by_env, is_code_file,
     is_subagent, load_config_with_status, load_state, malformed_note_once,
     observe, on_codex_host, paths, read_payload, save_state, state_lock,
@@ -84,7 +85,7 @@ def _decide(payload, data, root=""):
 
 def _decide_loaded(payload, data, root, cfg):
     """_decide past the config load: the gate and budget decision proper."""
-    if not cfg["gate"]["enabled"]:
+    if not cfg["gate"]["enabled"] or cfg["gate"]["max_files_per_turn"] is None:
         return "allow", "gate-off", None, None, None
 
     tool_input = payload.get("tool_input") or {}
@@ -153,22 +154,29 @@ def _decide_loaded(payload, data, root, cfg):
         # multi-file patch that would exceed the budget is denied entirely.
         if len(files) + len(additions) > max_files:
             listed = ", ".join(files[:6]) or "none"
-            # Codex has no Agent tool; its delegation primitive is
-            # spawn_agent (cold-loop D7), and its commands are skills
-            # (F11). The Claude text stays as it was.
-            delegate_via = "spawn_agent" if on_codex else "the Agent tool"
+            # Codex has no Agent tool and its manifest ships no agents: its
+            # delegation primitive is spawn_agent with the configured worker
+            # model/effort (cold-loop D7, cycle 3 F4), and its commands are
+            # skills (F11). The recovery clause names a HOST-owned escape
+            # before the user hatch (cycle 3, unavailable delegation); it resets
+            # per USER turn, so it pauses for the user (2.28 F2).
             offending = ", ".join(additions[:6])
+            delegate = (
+                CODEX_SPAWN_WORKER if on_codex else
+                "the Agent tool: 'haejwo:default-worker' (implementation), "
+                "'haejwo:task-worker' (mechanical chores), "
+                "'haejwo:deep-reasoner' (hard design/analysis)")
             reason = (
                 f"[haejwo gate] Per-turn code-edit budget exceeded: this change adds "
                 f"{len(additions)} new file(s) ({offending}) on top of {len(files)}/"
                 f"{max_files} already touched ({listed}). Do NOT edit more code files "
-                f"directly — split the change or delegate via {delegate_via}: "
-                f"'haejwo:default-worker' (implementation), 'haejwo:task-worker' "
-                f"(mechanical chores), 'haejwo:deep-reasoner' (hard design/analysis). "
+                f"directly — split the change or delegate via {delegate}. "
                 f"Re-editing the files already touched this turn is still allowed. "
                 f"If this is unplanned feature-scale work, run "
                 f"{command_name('plan', on_codex)} first "
                 f"(backup nudge — plan-first is the norm for delegate-tier work). "
+                f"If delegation is unavailable in this session, stop here and "
+                f"resume when the user next continues (the budget resets per user turn). "
                 f"Emergency override: {command_name('gate off', on_codex)}."
             )
             return "deny", "budget", None, reason, additions[:6]
@@ -185,7 +193,8 @@ def _decide_loaded(payload, data, root, cfg):
         context = (
             f"[haejwo gate] Edit budget now full ({len(files)}/{max_files} distinct code "
             f"files this turn). Any FURTHER code file this turn must be delegated to a "
-            f"subagent (haejwo:default-worker / haejwo:task-worker)."
+            + (f"subagent ({CODEX_SPAWN_WORKER})." if on_codex else
+               "subagent (haejwo:default-worker / haejwo:task-worker).")
         )
         if not_saved:
             context += "\n" + not_saved

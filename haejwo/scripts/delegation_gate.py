@@ -58,9 +58,10 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, deny, gate_disabled_by_env, is_subagent, load_config_with_status,
-    PASSABLE_MODEL_ALIASES, load_state, malformed_note_once, observe, paths,
-    read_payload, save_state, state_lock,
+    allow, command_name, config_ignored_note_once, deny, gate_disabled_by_env,
+    is_subagent, load_config_with_status, PASSABLE_MODEL_ALIASES, load_state,
+    malformed_note_once, observe, on_codex_host, paths, read_payload,
+    save_state, state_lock, with_note,
 )
 
 KNOWN_GENERIC = {"general-purpose", "Explore"}
@@ -291,7 +292,8 @@ def _tier_pin_check(subagent_type, model, requested_model, cfg, cfg_status, root
     return "deny", file_default, pin
 
 
-def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default):
+def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default,
+                                on_codex=False):
     """The not-passable note, ONCE per session per role (same flag-in-
     session-state pattern as hjw_common.malformed_note_once; turn_reset
     preserves the flag). None on later calls. An unwritable state repeats the
@@ -300,7 +302,7 @@ def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default):
         f"[haejwo] {role}: configured pin `{pin}` is not enforced; allowing "
         f"the agent-file default `{file_default}` (`{pin}` is outside the "
         f"measured passable aliases sonnet/opus/haiku). To enforce a pin, set "
-        f"an alias in /haejwo:setup, or pass the model explicitly if your "
+        f"an alias in {command_name('setup', on_codex)}, or pass the model explicitly if your "
         f"session's Agent tool offers it."
     )
     try:
@@ -355,6 +357,7 @@ def _plan_marker_kind(prompt):
 
 
 def main():
+    os.umask(0o077)  # cold-loop F15: state and observations are per-user
     payload = read_payload()
     if not payload:
         allow()
@@ -378,11 +381,17 @@ def main():
     deny_reason = None
     context = None
     tier_pin_check = "pass:not-a-tier"  # "the check did not apply" bucket
+    ignored_note = None
     try:
         if not is_subagent(payload) and not gate_disabled_by_env():
             # ONE read serves both the decision and the tier check: the two
             # can never disagree about what the config said.
             cfg, cfg_status = load_config_with_status(data)
+            # cold-loop B2: wrong-typed values fell back to their defaults at
+            # load (never set on a malformed file); said once per session,
+            # on whatever this call emits.
+            ignored_note = config_ignored_note_once(
+                data, payload.get("session_id", "unknown"), cfg)
             if cfg_status == "malformed":
                 # P4, origin 2026-09-21 audit item 1: an unparseable config
                 # fails the WHOLE hook open. Not just the tier pin: the
@@ -395,12 +404,14 @@ def main():
                 # still learns enforcement is off (origin 2026-09-21 F2).
                 tier_pin_check = "skip:config-malformed"
                 context = malformed_note_once(
-                    data, payload.get("session_id", "unknown"))
+                    data, payload.get("session_id", "unknown"),
+                    on_codex_host(root, data))
             elif cfg["gate"]["enabled"] and cfg["gate"]["delegation_guard"]:
-                # Host detection by plugin path: codex passes compat env/argv
-                # rooted under /.codex/plugins (measured heuristic, same test
-                # session_brief.py:87 uses to pick codex vs Claude wording).
-                on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
+                # Host detection by plugin path (hjw_common.on_codex_host, the
+                # same test session_brief uses to pick Codex vs Claude
+                # wording); Codex spells the commands as skills (F11).
+                on_codex = on_codex_host(root, data)
+                override = command_name("gate off", on_codex)
                 if subagent_type in KNOWN_GENERIC and requested_model is None:
                     decision = "deny"
                     try:
@@ -413,7 +424,7 @@ def main():
                     deny_reason = (
                         f"[haejwo gate] Delegation to generic agent '{subagent_type}' without an "
                         f"explicit model — it would INHERIT the session model instead of a "
-                        f"configured tier. {next_action} Emergency override: /haejwo:gate off."
+                        f"configured tier. {next_action} Emergency override: {override}."
                     )
                 else:
                     # Tier pin check — disjoint from the generic-agent check
@@ -425,7 +436,8 @@ def main():
                     if tier_pin_check == "skip:pin-not-passable":
                         context = _pin_not_passable_note_once(
                             data, payload.get("session_id", "unknown"),
-                            TIER_AGENTS[subagent_type][1], pin, file_default)
+                            TIER_AGENTS[subagent_type][1], pin, file_default,
+                            on_codex)
                     if tier_pin_check == "deny":
                         decision = "deny"
                         # Origin 2026-08-21 silent-downgrade (kept here, out of
@@ -437,7 +449,8 @@ def main():
                             f"config pins '{pin}' for this tier (omission would not honor the "
                             f"pin). Pass model: '{pin}', or "
                             f"another explicit model if you intend to override the pin, or run "
-                            f"/haejwo:setup to change it. Emergency override: /haejwo:gate off."
+                            f"{command_name('setup', on_codex)} to change it. "
+                            f"Emergency override: {override}."
                         )
     except Exception:
         # Any ambiguity in the decision path fails open — still record it.
@@ -445,6 +458,7 @@ def main():
         deny_reason = None
         context = None
         tier_pin_check = "skip:fail-open"
+    context, deny_reason = with_note(ignored_note, context, deny_reason)
 
     # Envelope derivation must be exactly as fail-open as the decision path
     # above: a malformed prompt, an encoding surprise, or an observe()

@@ -23,13 +23,15 @@ only had an unresolved target still denies on a later literal one:
   tee                DENIED: `tee` into a literal code file
   inplace            DENIED: an in-place editor with a literal code target
   fanout             DENIED: an in-place editor fanned out via find/xargs
+  heredoc-data       allowed: the whole command is one `cat` writing a
+                     quoted heredoc into a literal non-code file (below)
   unresolved-target  allowed: the only write target(s) were shell-expanded
                      (see below) and nothing literal was denied
   no-command         the payload carried no command
   ok                 allowed, nothing matched
   fail-open          an internal error — allowed, as always (P4)
 `target` carries the offending/exempted target (<=200 chars) for the
-redirect / tee / inplace / unresolved-target cases: the stripped path for a
+redirect / tee / inplace / heredoc-data / unresolved-target cases: the stripped path for a
 deny (what the deny text names), and for unresolved-target the FIRST
 unresolved word seen, raw and verbatim.
 
@@ -43,14 +45,32 @@ message, 22ba141): placing a relative path or classifying a heredoc body
 needs the shell's parser, which this heuristic is not. Reopen only with field
 evidence that a false positive costs more than one retry, and only with a
 shape that leaves nothing else in the command unclassified.
+
+Reopened for ONE shape (2.26, cold-loop cycle 2 S-F; field evidence: four
+heredoc-body denies in one day, one costing two retries): the WHOLE command
+is exactly `cat > T <<'D'` (`>>`, `<<"D"`, `<<-'D'` too; the heredoc may come
+first), first line `[ \t]` between tokens and nothing else on it; T a plain
+literal word (no quote, `$`, backtick, glob, `~`) that is not a code file by
+the ordinary test; the body ends at the FIRST line the shell itself takes
+as the delimiter (exact; `<<-` strips leading tabs), and only spaces/tabs
+follow. Then the body is data and is not scanned. Any other command — a
+second command on any line, an unquoted delimiter, a code-file target,
+`tee`, an extra redirect, a file operand — runs the scan below unchanged.
+Signed stop condition (reviewer): withdraw, never patch around, on any
+reproduced allow outside this grammar, any previously denied executable
+code-write becoming allowed, any other decision changing, or a new parser
+dependency. Evidence: tests/test_hooks.py, the 54-row matrix and the
+seeded differential fuzzer in the private notes (guard-fuzz-20261004).
 """
+import os
 import re
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, deny, gate_disabled_by_env, is_code_file, is_subagent,
-    load_config_with_status, malformed_note_once, observe, paths, read_payload,
+    allow, command_name, config_ignored_note_once, deny, gate_disabled_by_env,
+    is_code_file, is_subagent, load_config_with_status, malformed_note_once,
+    observe, on_codex_host, paths, read_payload, with_note,
 )
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\|")
@@ -67,6 +87,16 @@ PERL_INPLACE = re.compile(r"\bperl\b[^|;&]*\s-\w*i")
 # names never appear in the command — treat in-place editor + fan-out as write
 # intent even without a visible code-file token.
 FANOUT = re.compile(r"\b(?:find|xargs)\b")
+# heredoc-data (header): the first line of the whole-command shape, both
+# operand orders. Groups: T, then `-` of `<<-`, then the delimiter (one of
+# two alternatives). ASCII-only classes on purpose: `\s`/`\w` would accept
+# `\r` and non-ASCII (the 2.20 `cat\r` finding).
+_HD_T = r"([A-Za-z0-9_./@%+,:=-]+)"
+_HD_OP = r"<<(-?)(?:'([A-Za-z0-9_]+)'|\"([A-Za-z0-9_]+)\")"
+HEREDOC_DATA_HEADS = (
+    re.compile(r"[ \t]*cat[ \t]+>>?[ \t]*" + _HD_T + r"[ \t]+" + _HD_OP + r"[ \t]*"),
+    re.compile(r"[ \t]*cat[ \t]+" + _HD_OP + r"[ \t]+>>?[ \t]*" + _HD_T + r"[ \t]*"),
+)
 
 
 def protected_spans(text):
@@ -172,7 +202,38 @@ def code_words(segment, cfg, cwd="", mask=None):
     return literal, unresolved_words
 
 
-def _decide(payload, data):
+def heredoc_data_target(command, cfg, cwd=""):
+    """T when the WHOLE raw command is the header's heredoc-data shape, else
+    None. Runs on the RAW command (before any normalization), and the body
+    ends at the first line the shell itself ends it on, so no executed line
+    is ever treated as data."""
+    first, nl, rest = command.partition("\n")
+    if not nl:
+        return None
+    for order, head in enumerate(HEREDOC_DATA_HEADS):
+        m = head.fullmatch(first)
+        if m:
+            break
+    else:
+        return None
+    if order == 0:
+        target, dash, delim = m.group(1), m.group(2), m.group(3) or m.group(4)
+    else:
+        dash, delim, target = m.group(1), m.group(2) or m.group(3), m.group(4)
+    lines = rest.split("\n")
+    for k, line in enumerate(lines):
+        if (line.lstrip("\t") if dash else line) == delim:
+            if any(after.strip(" \t") for after in lines[k + 1:]):
+                return None
+            break
+    else:
+        return None  # no delimiter line: not the shape
+    if is_code_file(target, cfg, cwd):
+        return None
+    return target
+
+
+def _decide(payload, data, root=""):
     """Compute (decision, via, target, reason, context) without emitting."""
     if is_subagent(payload):
         return "allow", "subagent-exempt", None, None, None
@@ -187,8 +248,23 @@ def _decide(payload, data):
         # hook fires first emits it, so a session whose only tool call is a
         # Bash write still learns enforcement is off (origin 2026-09-21
         # review F2). An ABSENT config keeps the DEFAULT_CONFIG behavior.
-        note = malformed_note_once(data, payload.get("session_id", "unknown"))
+        note = malformed_note_once(data, payload.get("session_id", "unknown"),
+                                   on_codex_host(root, data))
         return "allow", "config-malformed", None, None, note
+    # cold-loop B2: wrong-typed values fell back to defaults at load; said
+    # once per session, on whatever this call emits.
+    note = config_ignored_note_once(
+        data, payload.get("session_id", "unknown"), cfg)
+    decision, via, target, reason, context = _decide_loaded(
+        payload, cfg, on_codex_host(root, data))
+    context, reason = with_note(note, context, reason)
+    return decision, via, target, reason, context
+
+
+def _decide_loaded(payload, cfg, on_codex):
+    """_decide past the config load: the guard decision proper."""
+    # Codex spells the commands as skills (cold-loop F11); Claude text as was.
+    override = command_name("gate off", on_codex)
     if not (cfg["gate"]["enabled"] and cfg["gate"]["bash_guard"]):
         return "allow", "gate-off", None, None, None
 
@@ -196,6 +272,10 @@ def _decide(payload, data):
     if not command:
         return "allow", "no-command", None, None, None
     cwd = payload.get("cwd", "")
+
+    data_target = heredoc_data_target(command, cfg, cwd)
+    if data_target is not None:
+        return "allow", "heredoc-data", data_target, None, None
 
     cleaned = re.sub(r"2>&1", " ", command)
     cleaned = " ".join(cleaned.split())
@@ -222,7 +302,7 @@ def _decide(payload, data):
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
                         f"The main agent must not modify code via Bash — use Edit/Write "
                         f"within the turn budget, or delegate to 'haejwo:default-worker'. "
-                        f"Emergency override: /haejwo:gate off."
+                        f"Emergency override: {override}."
                     ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
         #    find/xargs where targets are invisible to regex (write intent).
@@ -242,7 +322,7 @@ def _decide(payload, data):
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
                             f"The main agent must not modify code via Bash — use "
                             f"Edit/Write within budget, or delegate to 'haejwo:default-worker'. "
-                            f"Emergency override: /haejwo:gate off."
+                            f"Emergency override: {override}."
                         ), None
     # Precedence: a literal code target always wins (it returned a deny
     # above); the unresolved exemption only applies when nothing literal did.
@@ -252,6 +332,7 @@ def _decide(payload, data):
 
 
 def main():
+    os.umask(0o077)  # cold-loop F15: state and observations are per-user
     payload = read_payload()
     if not payload:
         allow()
@@ -270,7 +351,7 @@ def main():
         pass
 
     try:
-        decision, via, target, reason, context = _decide(payload, data)
+        decision, via, target, reason, context = _decide(payload, data, root)
     except Exception:
         decision, via, target, reason, context = ("allow", "fail-open", None,
                                                   None, None)

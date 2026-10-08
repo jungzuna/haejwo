@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # codex_consult.sh — headless Codex reviewer runner (haejwo's reviewer slot on a Claude host).
-# Feeds REVIEWER CONTRACT + a self-contained brief to `codex exec` on stdin and captures the final reply.
-# Consult (non-editing) only; the invoking directory is the work root. Options, env, exit codes: --help.
+# Feeds REVIEWER CONTRACT + a brief to `codex exec` on stdin; consult only; cwd = work root; usage: --help.
 # Shared mechanics live in lib/consult_common.sh; this file owns the vendor policy: contract text, `codex exec`
 # argv, effort/sandbox, the JSONL event classifier, the events artifact and the non-git policy.
-# NEVER trust the exit code alone: rc=0 with no reply, a reported failure event or a changed repository
-# is never success; a failure the reviewer reports only in prose is not detected.
+# NEVER trust the exit code alone: no reply, a failure event or a changed repo fails; prose-only failure is not detected.
 # Config is host-relative: codex.model/effort are ignored under /.codex/ (the block describes Claude); `models_codex`
 # never selects this reviewer. Each value is disclosed with its source; unselected = `cli-default (identity unverified)`.
 # *[origin: reviewer replies discussing sandbox/tool errors self-failed — only TOP-LEVEL JSONL failure events count]*
@@ -38,10 +36,8 @@ unset _hjw_f
 . "$HJW_LIB/consult_common.sh" || {
   echo "consult runner library missing: $HJW_LIB/consult_common.sh" >&2; exit 3; }
 HJW_RUNNER_KIND=codex
-# Declared before forwarding and init so the artifact guard judges them; `.events.2.jsonl` and `$OUT.tmp`
-# are written only by an older install a hop may reach (the retry was removed in 2.22).
-HJW_OUT_SIBLINGS=(.events.jsonl .events.2.jsonl)
-HJW_OUT_APPENDS=(.tmp)
+# Declared BEFORE forwarding and init: the artifact guard derives from them, on a hop too.
+HJW_OUT_SIBLINGS=(.events.jsonl)
 
 # FIRST action after sourcing (before parsing, stdin, traps, temp files, config, chdir): a stale remembered
 # runner path forwards to the installed version. Fail open; an argv naming an artifact inside the repo exits 2.
@@ -109,8 +105,7 @@ else
     *) SANDBOX="read-only" ;;
   esac
 fi
-# ---- model: env CODEX_MODEL > config codex.model > CLI default ----
-# Whitespace-only counts as UNSET on both paths: an empty env var is not a model named "".
+# ---- model: env CODEX_MODEL > config codex.model > CLI default (whitespace-only = UNSET on both paths) ----
 ENV_MODEL="$(trim "${CODEX_MODEL:-}")"
 if [ -n "$ENV_MODEL" ]; then
   MODEL="$ENV_MODEL"; MODEL_SRC="env"

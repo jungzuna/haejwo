@@ -6,9 +6,8 @@ EXECUTION. NEVER require plugin commands mid-run (settings excepted).
 **Handle directly:** small edits (<=2 files, ~50 lines), typos, config/docs, reads,
 questions, decisions, review.
 **Delegate:** new features; 3+ files or 50+ lines; test suites; refactors;
-repo-wide exploration; research; log triage. Session model == worker tier: size
-alone never forces delegation (long-session isolation may); gate limit
-applies while on.
+repo-wide exploration; research; log triage. The file budget limits
+host-context growth and applies even when workers use the same model tier.
 
 **Routing:**
 - Implementation from a clear brief -> `haejwo:default-worker`.

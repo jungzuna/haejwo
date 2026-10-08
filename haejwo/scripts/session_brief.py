@@ -16,14 +16,19 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES, load_config_with_status, paths,
-    read_payload,
+    DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES, gate_disabled_by_env,
+    load_config_with_status, on_codex_host, paths, read_payload,
 )
 
 # Self-imposed injection budget (not a platform limit). Keep rules DISCIPLINED
 # regardless — injected context costs tokens every session; the cap is a
 # tripwire against silent truncation, with headroom for a few more norms.
 MAX_LEN = 5000
+# The config summary's own bound (cold-loop: it is appended AFTER the MAX_LEN
+# check, so an unbounded summary — e.g. long model ids — defeated the cap).
+# Shipped summaries run ~400-560 chars; past this it is cut at a word with
+# an ellipsis rather than growing the injection without limit.
+SUMMARY_MAX = 600
 
 PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
 
@@ -91,7 +96,26 @@ def _default_tier(v, on_codex):
     return v
 
 
-def render_summary(g, models, on_codex, configured, reviewer_on, label=""):
+def _bounded(text, limit=SUMMARY_MAX):
+    """`text` cut to at most `limit` chars at a word boundary, with `…`."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+def _flag(on, env_off):
+    """An enforcement flag as it is IN EFFECT: HAEJWO_GATE=off in the
+    environment turns every hook off whatever config.json says (F12)."""
+    if env_off:
+        return "OFF (env)"
+    return "ON" if on else "OFF"
+
+
+def render_summary(g, models, on_codex, configured, reviewer_on, label="",
+                   env_off=False):
     """The ONE `[haejwo config]` line — gate, tiers, reviewer — for both the
     configured summary and the not-configured defaults summary (cold-loop B6:
     the two used to be rendered twice). `label` prefixes the gate fields
@@ -110,6 +134,13 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label=""):
     only per-role effort control there; a canary test keeps these words equal
     to agents/*.md. On Codex the deep-reasoner carries NO effort of its own
     (2.14): spawn_agent omits reasoning_effort and the host's level applies.
+
+    Gate flags describe the EFFECTIVE state (cold-loop F12/D6): `env_off`
+    (HAEJWO_GATE=off) renders gate, bash_guard and delegation_guard as
+    `OFF (env)`; a stored gate OFF turns both guards OFF too (they run only
+    while the gate is on); delegation_guard is shown so the key is not a
+    hidden switch.
+    The whole line is bounded by SUMMARY_MAX.
     """
     fork = ("effort overrides need a fresh or partial context fork "
             "(fork_turns), never a full-history fork")
@@ -163,15 +194,18 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label=""):
                           "file's default; pass an explicit model to override it.")
         reviewer_label = "codex reviewer"
         fallback = "disabled (fallback: deep-reasoner)"
-    return (
-        f"[haejwo config] {label}gate={'ON' if g['enabled'] else 'OFF'} "
+    dg = g.get("delegation_guard", DEFAULT_CONFIG["gate"]["delegation_guard"])
+    return _bounded(
+        f"[haejwo config] {label}gate={_flag(g['enabled'], env_off)} "
         f"budget={g['max_files_per_turn']} files/turn "
-        f"bash_guard={'ON' if g['bash_guard'] else 'OFF'} | {tiers} | "
+        f"bash_guard={_flag(g['bash_guard'] and g['enabled'], env_off)} "
+        f"delegation_guard={_flag(dg and g['enabled'], env_off)} | {tiers} | "
         f"{reviewer_label}: {'enabled' if reviewer_on else fallback}"
     )
 
 
 def main():
+    os.umask(0o077)  # cold-loop F15: every hook, though this one writes nothing
     read_payload()  # consume stdin; content unused
     root, data = paths(sys.argv)
     cfg, cfg_status = load_config_with_status(data)
@@ -181,7 +215,8 @@ def main():
     # configured branch: the unconfigured nudge names the tiers too, and on
     # Codex it must never advertise Claude aliases (origin 2026-09-14: a fresh
     # Codex session was told to use Claude aliases, which it cannot pass).
-    on_codex = "/.codex/" in (root or "") or "/.codex/" in (data or "")
+    on_codex = on_codex_host(root, data)
+    env_off = gate_disabled_by_env()
 
     if not cfg.get("configured"):
         defaults = DEFAULT_CONFIG["models_codex" if on_codex else "models"]
@@ -194,14 +229,23 @@ def main():
         if not isinstance(dg, dict):
             dg = DEFAULT_CONFIG["gate"]
         stored = any(dg.get(k) != DEFAULT_CONFIG["gate"][k]
-                     for k in ("enabled", "max_files_per_turn", "bash_guard"))
+                     for k in ("enabled", "max_files_per_turn", "bash_guard",
+                               "delegation_guard"))
+        # F12: HAEJWO_GATE=off overrides whatever is stored or defaulted —
+        # the nudge must not claim a gate the environment switched off.
         if stored:
             active = (
                 f"Until then the STORED gate settings are ACTIVE: "
-                f"gate {'ON' if dg['enabled'] else 'OFF'}, max "
+                f"gate {_flag(dg['enabled'], env_off)}, max "
                 f"{dg['max_files_per_turn']} distinct code files per turn for the "
-                f"main agent, bash-guard {'ON' if dg['bash_guard'] else 'OFF'}, "
+                f"main agent, bash-guard {_flag(dg['bash_guard'] and dg['enabled'], env_off)}, "
                 f"subagents exempt. "
+            )
+        elif env_off:
+            active = (
+                "Until then the defaults apply, but HAEJWO_GATE=off in the "
+                "environment overrides them: gate OFF (env), bash-guard OFF "
+                "(env). "
             )
         else:
             active = (
@@ -217,8 +261,10 @@ def main():
         nudge = (
             "[haejwo] Installed but NOT configured yet (first use). Offer ONCE to "
             "configure right now, and if the user agrees RUN THE SETUP FLOW YOURSELF "
-            "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
-            "skill in Codex; the user only answers 4 quick choices and never needs "
+            + ("(the setup procedure — the @haejwo-setup skill; " if on_codex else
+               "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
+               "skill in Codex; ")
+            + "the user only answers 4 quick choices and never needs "
             "to type a command). " + active + "Delegation targets: " + targets
         )
         # Defaults summary: the same fields the configured summary carries,
@@ -227,7 +273,8 @@ def main():
         summary = render_summary(
             dg, defaults, on_codex, False,
             DEFAULT_CONFIG["codex"].get("enabled"),
-            f"{'stored gate settings' if stored else 'defaults'} — not configured: ")
+            f"{'stored gate settings' if stored else 'defaults'} — not configured: ",
+            env_off)
         malformed = cfg_status == "malformed"
         if malformed:
             # A config file that exists but cannot be parsed is NOT a fresh
@@ -235,7 +282,8 @@ def main():
             # hooks are failing open past a file the user believes is live.
             # The setup nudge goes too — it would claim enforcement that this
             # status has switched off.
-            nudge = MALFORMED_NOTICE
+            nudge = (MALFORMED_NOTICE.replace("/haejwo:setup", "@haejwo-setup")
+                     if on_codex else MALFORMED_NOTICE)  # F11
             summary = ("[haejwo config] config.json unreadable — "
                        "fail-open defaults active")
         rules = read_rules(root)
@@ -256,7 +304,7 @@ def main():
         g = cfg["gate"]
         models = cfg.get("models_codex", {}) if on_codex else cfg["models"]
         summary = render_summary(g, models, on_codex, True,
-                                 cfg["codex"].get("enabled"))
+                                 cfg["codex"].get("enabled"), env_off=env_off)
         context = (rules + "\n\n" + summary).strip()
         if len(context) > MAX_LEN:
             # Explicit degrade, never a mid-text cut: the full rules text

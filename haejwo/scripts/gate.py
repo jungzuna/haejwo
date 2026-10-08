@@ -30,16 +30,18 @@ failed) says so in its additionalContext on EVERY call
 `offending` (deny only) lists the canonical paths that would have exceeded
 the budget, capped at 6 — the same paths the deny text names.
 """
+import os
 import sys
 
 import time
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, canonical, carry_session_flags, deny, gate_disabled_by_env,
-    is_code_file, is_subagent,
-    load_config_with_status, load_state, malformed_note_once, observe, paths,
-    read_payload, save_state, state_lock, state_not_persisted_note,
+    allow, canonical, carry_session_flags, command_name,
+    config_ignored_note_once, deny, gate_disabled_by_env, is_code_file,
+    is_subagent, load_config_with_status, load_state, malformed_note_once,
+    observe, on_codex_host, paths, read_payload, save_state, state_lock,
+    state_not_persisted_note, with_note,
 )
 
 STALE_TURN_SECONDS = 7200  # fallback reset if both turn signals ever fail
@@ -66,8 +68,22 @@ def _decide(payload, data, root=""):
         # across all three enforcement hooks (hjw_common.malformed_note_once):
         # whichever fires first emits it. An ABSENT config keeps the
         # DEFAULT_CONFIG behavior (there is nothing broken to fix).
-        note = malformed_note_once(data, payload.get("session_id", "unknown"))
+        note = malformed_note_once(
+            data, payload.get("session_id", "unknown"),
+            payload.get("tool_name") == "apply_patch" or on_codex_host(root, data))
         return "allow", "config-malformed", note, None, None
+    # cold-loop B2: a wrong-typed value was replaced by its default at load;
+    # say so once per session, on whatever this call emits.
+    note = config_ignored_note_once(
+        data, payload.get("session_id", "unknown"), cfg)
+    decision, via, context, reason, offending = _decide_loaded(
+        payload, data, root, cfg)
+    context, reason = with_note(note, context, reason)
+    return decision, via, context, reason, offending
+
+
+def _decide_loaded(payload, data, root, cfg):
+    """_decide past the config load: the gate and budget decision proper."""
     if not cfg["gate"]["enabled"]:
         return "allow", "gate-off", None, None, None
 
@@ -81,7 +97,7 @@ def _decide(payload, data, root=""):
     # An Update hunk may rename with "*** Move to: <path>": the destination
     # is a file this change writes, so it counts as well (cold-loop B1).
     on_codex = (payload.get("tool_name") == "apply_patch"
-                or "/.codex/" in (root or "") or "/.codex/" in (data or ""))
+                or on_codex_host(root, data))
     if payload.get("tool_name") == "apply_patch":
         import re
         raw_paths = re.findall(
@@ -138,7 +154,8 @@ def _decide(payload, data, root=""):
         if len(files) + len(additions) > max_files:
             listed = ", ".join(files[:6]) or "none"
             # Codex has no Agent tool; its delegation primitive is
-            # spawn_agent (cold-loop D7). The Claude text stays as it was.
+            # spawn_agent (cold-loop D7), and its commands are skills
+            # (F11). The Claude text stays as it was.
             delegate_via = "spawn_agent" if on_codex else "the Agent tool"
             offending = ", ".join(additions[:6])
             reason = (
@@ -149,9 +166,10 @@ def _decide(payload, data, root=""):
                 f"'haejwo:default-worker' (implementation), 'haejwo:task-worker' "
                 f"(mechanical chores), 'haejwo:deep-reasoner' (hard design/analysis). "
                 f"Re-editing the files already touched this turn is still allowed. "
-                f"If this is unplanned feature-scale work, run /haejwo:plan first "
+                f"If this is unplanned feature-scale work, run "
+                f"{command_name('plan', on_codex)} first "
                 f"(backup nudge — plan-first is the norm for delegate-tier work). "
-                f"Emergency override: /haejwo:gate off."
+                f"Emergency override: {command_name('gate off', on_codex)}."
             )
             return "deny", "budget", None, reason, additions[:6]
 
@@ -176,6 +194,7 @@ def _decide(payload, data, root=""):
 
 
 def main():
+    os.umask(0o077)  # cold-loop F15: state and observations are per-user
     payload = read_payload()
     if not payload:
         allow()

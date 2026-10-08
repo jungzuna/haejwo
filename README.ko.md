@@ -21,7 +21,7 @@ haejwo는 [Claude Code](https://claude.com/claude-code)와 [Codex](https://githu
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
 /reload-plugins   # 이미 열려 있는 세션이 있을 때만 (훅과 명령어를 갱신; 주입된 규칙은 재시작 필요)
-/haejwo:setup     # 선택 — 기본값(게이트 ON, 턴당 2파일, bash-guard ON)으로 이미 동작합니다
+/haejwo:setup     # 선택 — 기본값으로 이미 동작하며, 설정 전까지 세션마다 안내가 반복됩니다
 ```
 
 **Codex CLI** (같은 repo, 같은 훅; 훅 호환성은 실측했지만 실제 프로젝트 작업에서는 아직 써보지 않았습니다):
@@ -35,9 +35,9 @@ codex plugin add haejwo@haejwo
 
 ## 무엇을 얻나
 
-**판단은 비싸게.** 호스트는 언제나 **세션에서 고른 그 모델**이고, haejwo가 절대 바꾸지 않습니다. 계획·결정·검토는 호스트 몫이며, feature급 작업은 토론을 거친 계획에서 출발합니다. `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집을 거부하고 — 알려진 편집 도구, 지정된 코드 확장자, 프로젝트 안의 경로만 세며 프로젝트 밖 임시 파일은 면제 — Bash 코드 수정은 휴리스틱으로 막습니다. 서브에이전트는 면제, 훅 오류는 무조건 통과(fail-open).
+**판단은 비싸게.** 호스트는 언제나 **세션에서 고른 그 모델**이고, haejwo가 절대 바꾸지 않습니다. 계획·결정·검토는 호스트 몫이며, feature급 작업은 리뷰어 비평을 거친 계획에서 출발하라는 것이 규칙입니다(규범일 뿐: plan 마커는 관찰만 하고 강제하지 않으며, 리뷰어가 꺼져 있으면 같은 모델이 비평합니다). `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집을 거부하고 — 알려진 편집 도구로, 지정된 코드 확장자 파일이면 프로젝트 안팎을 가리지 않고 세며, 메타데이터 디렉터리와 프로젝트 밖 임시 디렉터리 경로만 면제 — Bash 코드 수정은 휴리스틱으로 막습니다. 서브에이전트는 면제, 훅 오류는 무조건 통과(fail-open).
 
-**실행은 설정된 티어로.** 구현과 잡무는 설정된 워커 티어로 갑니다 — Claude Code 기준 `default-worker`는 세션 effort와 상관없이 Opus high effort, `task-worker`는 Opus low effort, 더 싸게 쓰려면 `Budget`(sonnet/haiku); Codex에서는 `spawn_agent` 모델 매핑. 기본값은 전부 Opus에 리뷰어 꺼짐이라, 비용 절감은 측정 후 직접 정한 더 싼 티어에서 나옵니다.
+**실행은 설정된 티어로.** 구현과 잡무는 설정된 워커 티어로 갑니다 — Claude Code 기준 `default-worker`는 세션 effort와 상관없이 Opus high effort, `task-worker`는 Opus low effort, 더 싸게 쓰려면 `Budget`(sonnet/haiku); Codex에서는 `spawn_agent` 모델 매핑(기본값은 호스트 모델 상속). 비용 절감은 측정 후 직접 정한 더 싼 티어에서만 나옵니다.
 
 **리뷰는 다른 회사 모델이.** 두 CLI가 다 있고 `/haejwo:setup`으로 리뷰어를 켜고 검증하면(기본값은 꺼짐) 리뷰어는 상대 회사의 모델입니다 — Claude Code에선 codex가, Codex에선 claude가. 상대 CLI가 없거나 검증 전이면 같은 계열 `deep-reasoner`가 대신합니다(독립성은 약해집니다). 켜면 브리프와 리뷰어가 읽는 저장소 내용이 상대 회사로 전송됩니다([고지](haejwo/commands/setup.md)).
 
@@ -54,7 +54,7 @@ codex plugin add haejwo@haejwo
 
 ## 명령어 (설정·점검 전용)
 
-평소엔 **하나도** 필요 없습니다: `/haejwo:setup`(최초 1회 설정) · `/haejwo:status`(읽기 전용 상태) · `/haejwo:gate`(예산 `N`, `on`/`off`) · `/haejwo:plan`(수동 트리거; 호스트가 알아서 돌립니다). Codex에서는 `@haejwo-*` 스킬입니다.
+평소엔 **하나도** 필요 없습니다: `/haejwo:setup`(최초 1회 설정) · `/haejwo:status`(읽기 전용 상태) · `/haejwo:gate`(예산 `N`, `on`/`off`) · `/haejwo:plan`(수동 트리거; 호스트가 알아서 돌립니다).
 
 ## 하지 않는 것
 

@@ -5,6 +5,7 @@ A user prompt = a new turn: reset this session's distinct-file counter.
 (gate.py also lazy-resets on prompt_id change, so either mechanism alone
 is sufficient — this is belt and braces.)
 """
+import os
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -15,6 +16,7 @@ from hjw_common import (  # noqa: E402
 
 
 def main():
+    os.umask(0o077)  # cold-loop F15: state files are per-user
     payload = read_payload()
     if not payload or is_subagent(payload):
         sys.exit(0)

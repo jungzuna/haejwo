@@ -141,7 +141,56 @@ def load_config_with_status(data_dir):
                 cfg[k] = v
     except Exception:
         pass
+    _validate_types(cfg)
     return cfg, "ok"
+
+
+def _is_bool(v):
+    return isinstance(v, bool)
+
+
+def _is_budget(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
+def _is_str(v):
+    return isinstance(v, str)
+
+
+# The typed keys the hooks read: (section, key, test, expectation). Origin
+# 2026-10-08 cold-loop B2: `"max_files_per_turn": "2"` reached gate.py, raised
+# in int(), and the gate failed open SILENTLY — the once-note only covered
+# unparseable JSON.
+_TYPED_KEYS = (
+    ("gate", "enabled", _is_bool, "true or false"),
+    ("gate", "max_files_per_turn", _is_budget, "an integer >= 1"),
+    ("gate", "bash_guard", _is_bool, "true or false"),
+    ("gate", "delegation_guard", _is_bool, "true or false"),
+    ("codex", "enabled", _is_bool, "true or false"),
+) + tuple((sec, role, _is_str, "a string")
+          for sec in ("models", "models_codex")
+          for role in ("deep_reasoner", "default_worker", "task_worker"))
+
+
+def _validate_types(cfg):
+    """Replace each wrong-typed value the hooks read with its default and
+    record why in cfg["_ignored"] (a list of "<key> must be <type>"; absent
+    when everything is valid). A section that is not an object falls back to
+    its defaults as a whole. Never raises (P4)."""
+    ignored = []
+    try:
+        for sec in ("gate", "codex", "models", "models_codex"):
+            if not isinstance(cfg.get(sec), dict):
+                cfg[sec] = json.loads(json.dumps(DEFAULT_CONFIG[sec]))
+                ignored.append(f"{sec} must be an object")
+        for sec, key, ok, want in _TYPED_KEYS:
+            if key in cfg[sec] and not ok(cfg[sec][key]):
+                cfg[sec][key] = DEFAULT_CONFIG[sec][key]
+                ignored.append(f"{sec}.{key} must be {want}")
+    except Exception:
+        pass
+    if ignored:
+        cfg["_ignored"] = ignored
 
 
 def load_config(data_dir):
@@ -154,6 +203,19 @@ def config_status(data_dir):
 
 def gate_disabled_by_env():
     return os.environ.get("HAEJWO_GATE", "").lower() in ("off", "0", "false")
+
+
+def on_codex_host(root, data):
+    """Host detection by plugin path: Codex passes compat env/argv rooted
+    under /.codex/plugins (measured) — no extra probe needed."""
+    return "/.codex/" in (root or "") or "/.codex/" in (data or "")
+
+
+def command_name(cmd, on_codex):
+    """A haejwo command as the host spells it (cold-loop F11): `plan` ->
+    `/haejwo:plan` on Claude, `@haejwo-plan` on Codex (a skill, not a slash
+    command). Arguments follow a space: `gate off`."""
+    return ("@haejwo-" if on_codex else "/haejwo:") + cmd
 
 
 def _safe_sid(session_id):
@@ -217,6 +279,8 @@ def carry_session_flags(prev, state):
     every reset."""
     if prev.get("cfg_malformed_noted"):
         state["cfg_malformed_noted"] = True
+    if prev.get("cfg_ignored_noted"):
+        state["cfg_ignored_noted"] = True
     if isinstance(prev.get("pin_unpassable_noted"), list):
         state["pin_unpassable_noted"] = list(prev["pin_unpassable_noted"])
     return state
@@ -236,7 +300,15 @@ CONFIG_MALFORMED_NOTE = (
 )
 
 
-def malformed_note_once(data_dir, session_id):
+def config_malformed_note(on_codex=False):
+    """CONFIG_MALFORMED_NOTE as the host spells the setup command (F11)."""
+    if not on_codex:
+        return CONFIG_MALFORMED_NOTE
+    return CONFIG_MALFORMED_NOTE.replace("/haejwo:setup",
+                                         command_name("setup", True))
+
+
+def malformed_note_once(data_dir, session_id, on_codex=False):
     """The malformed-config note, ONCE per session; None on later calls.
 
     Shared by gate.py, bash_guard.py and delegation_gate.py: whichever hook
@@ -247,18 +319,54 @@ def malformed_note_once(data_dir, session_id):
     costs a line of context, suppressing it would hide that enforcement is
     off.
     """
+    note = config_malformed_note(on_codex)
     try:
         with state_lock(data_dir, session_id) as lk:
             if not lk.acquired:
-                return CONFIG_MALFORMED_NOTE  # no unlocked read/write; repeat
+                return note  # no unlocked read/write; repeat
             state = load_state(data_dir, session_id)
             if state.get("cfg_malformed_noted"):
                 return None
             state["cfg_malformed_noted"] = True
             save_state(data_dir, session_id, state)
-        return CONFIG_MALFORMED_NOTE
+        return note
     except Exception:
-        return CONFIG_MALFORMED_NOTE
+        return note
+
+
+def config_ignored_note_once(data_dir, session_id, cfg):
+    """The ignored-config-values note (cfg["_ignored"], see _validate_types),
+    ONCE per session and shared by the three enforcement hooks exactly like
+    malformed_note_once; None when nothing was ignored or it was already
+    said. An unwritable state repeats it (the fail-open direction)."""
+    ignored = cfg.get("_ignored") if isinstance(cfg, dict) else None
+    if not ignored:
+        return None
+    note = (f"[haejwo] config value ignored: {'; '.join(ignored)} — the "
+            f"default applies until config.json is fixed")
+    try:
+        with state_lock(data_dir, session_id) as lk:
+            if not lk.acquired:
+                return note  # no unlocked read/write; repeat
+            state = load_state(data_dir, session_id)
+            if state.get("cfg_ignored_noted"):
+                return None
+            state["cfg_ignored_noted"] = True
+            save_state(data_dir, session_id, state)
+        return note
+    except Exception:
+        return note
+
+
+def with_note(note, context=None, reason=None):
+    """(context, reason) with `note` appended to whichever is emitted: the
+    deny reason on a deny (a deny carries no additionalContext), else the
+    allow context."""
+    if not note:
+        return context, reason
+    if reason:
+        return context, reason + "\n" + note
+    return (context + "\n" + note if context else note), reason
 
 
 def prune_state(data_dir, max_age_days=7):

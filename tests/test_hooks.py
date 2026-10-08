@@ -358,7 +358,8 @@ def classification_state_tests():
         c_ = ctx_of(out)
         check("B3 gate off before setup: the summary reports the STORED values",
               "[haejwo config] stored gate settings — not configured: "
-              "gate=OFF budget=5 files/turn bash_guard=ON" in c_, c_[-400:])
+              "gate=OFF budget=5 files/turn bash_guard=OFF delegation_guard=OFF" in c_,
+              c_[-400:])
         check("B3 gate off before setup: the nudge does not claim the gate is ON",
               "NOT configured" in c_ and "gate OFF, max 5 distinct code files" in c_
               and "safe defaults are ACTIVE" not in c_ and "gate=ON" not in c_, c_[-900:])
@@ -372,6 +373,261 @@ def classification_state_tests():
     finally:
         shutil.rmtree(b3_data, ignore_errors=True)
 
+
+def config_host_summary_tests():
+    """2.26.0 (cold-loop cycle 2): typed config validation with the once-note
+    (B2), Codex command names in denials (F11), the effective state in the
+    config summary (F12/D6), a bounded summary, per-user file modes (F15),
+    one host-detection helper (F16)."""
+    from hjw_common import load_config_with_status, on_codex_host  # noqa: E402
+    cx_root = "/home/u/.codex/plugins/cache/haejwo/haejwo"
+    SB = {"hook_event_name": "SessionStart"}
+
+    def write_cfg(d_, cfg):
+        with open(os.path.join(d_, "config.json"), "w") as f:
+            json.dump(cfg, f)
+
+    def summary_line(c_):
+        return next((ln for ln in c_.splitlines()
+                     if ln.startswith("[haejwo config]")), "")
+
+    print("== typed config validation + once-note (B2) ==")
+    b2 = tempfile.mkdtemp(prefix="hjw-test-b2-")
+    try:
+        write_cfg(b2, {"gate": {"max_files_per_turn": "2"}})
+        cfg_, st_ = load_config_with_status(b2)
+        check("B2 load: a string budget becomes the default 2, status ok, reason kept",
+              st_ == "ok" and cfg_["gate"]["max_files_per_turn"] == 2
+              and cfg_.get("_ignored") == ["gate.max_files_per_turn must be an integer >= 1"],
+              str((st_, cfg_.get("gate"), cfg_.get("_ignored"))))
+        note = ("[haejwo] config value ignored: gate.max_files_per_turn must be an "
+                "integer >= 1 — the default applies until config.json is fixed")
+        rc, out = run("gate.py", edit_payload("/repo/b2/a.py", sid="sess-B2"), b2)
+        check("B2 string budget: 1st code file allowed WITH the note (was: silent fail-open)",
+              decision(out) == "allow" and ctx_of(out) == note, str(out))
+        rc, out = run("gate.py", edit_payload("/repo/b2/b.py", sid="sess-B2"), b2)
+        check("B2 string budget: the default 2 is used (2nd file fills the budget), note not repeated",
+              decision(out) == "allow" and "Edit budget now full (2/2" in ctx_of(out)
+              and "config value ignored" not in ctx_of(out), ctx_of(out))
+        rc, out = run("gate.py", edit_payload("/repo/b2/c.py", sid="sess-B2"), b2)
+        check("B2 string budget: the 3rd file is DENIED, no note in the reason",
+              decision(out) == "deny" and "config value ignored" not in reason_of(out),
+              str(out))
+        rc, out = run("bash_guard.py", bash_payload("ls", sid="sess-B2"), b2)
+        check("B2 the note is shared across hooks: bash_guard stays silent after gate said it",
+              ctx_of(out) == "", str(out))
+        run("turn_reset.py", {"session_id": "sess-B2", "prompt_id": "p2",
+                              "hook_event_name": "UserPromptSubmit"}, b2)
+        rc, out = run("gate.py", edit_payload("/repo/b2/d.py", sid="sess-B2", pid="p2"), b2)
+        with open(os.path.join(b2, "state", "sess-B2.json")) as f:
+            b2_state = json.load(f)
+        check("B2 the once-flag survives a turn reset",
+              rc == 0 and decision(out) != "deny" and ctx_of(out) == ""
+              and b2_state.get("prompt_id") == "p2"
+              and b2_state.get("cfg_ignored_noted") is True, str((out, b2_state)))
+        rc, out = run("bash_guard.py", bash_payload("ls", sid="sess-B2b"), b2)
+        check("B2 a new session hears the note once (bash_guard fires first)",
+              ctx_of(out) == note, str(out))
+
+        write_cfg(b2, {"gate": {"enabled": "false"}})
+        firsts = [run("gate.py", edit_payload(f"/repo/b2e/{n}.py", sid="sess-B2E"), b2)[1]
+                  for n in ("a", "b")]
+        rc, out = run("gate.py", edit_payload("/repo/b2e/c.py", sid="sess-B2E"), b2)
+        check("B2 the string \"false\" never disables the gate (default ON), noted once",
+              decision(out) == "deny" and ctx_of(firsts[0]) == (
+                  "[haejwo] config value ignored: gate.enabled must be true or "
+                  "false — the default applies until config.json is fixed")
+              and "config value ignored" not in reason_of(out), str(out))
+
+        write_cfg(b2, {"gate": "off", "models": {"default_worker": 5},
+                       "codex": {"enabled": "yes"}})
+        cfg_, st_ = load_config_with_status(b2)
+        check("B2 load: a non-object section and wrong-typed leaves all fall back, each named",
+              st_ == "ok" and cfg_["gate"] == DEFAULT_CONFIG["gate"]
+              and cfg_["models"]["default_worker"] == "opus"
+              and cfg_["codex"]["enabled"] is False
+              and cfg_.get("_ignored") == ["gate must be an object",
+                                           "codex.enabled must be true or false",
+                                           "models.default_worker must be a string"],
+              str(cfg_.get("_ignored")))
+        rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-B2D"), b2)
+        check("B2 a deny carries the note on its reason (a deny has no context)",
+              decision(out) == "deny" and reason_of(out).startswith(
+                  "[haejwo gate] Delegation to generic agent")
+              and reason_of(out).endswith(
+                  "Emergency override: /haejwo:gate off.\n[haejwo] config value "
+                  "ignored: gate must be an object; codex.enabled must be true or "
+                  "false; models.default_worker must be a string — the default "
+                  "applies until config.json is fixed"), reason_of(out))
+        write_cfg(b2, {"gate": {"max_files_per_turn": 3, "enabled": True}})
+        cfg_, _ = load_config_with_status(b2)
+        check("B2 a valid config records nothing ignored", "_ignored" not in cfg_, str(cfg_))
+    finally:
+        shutil.rmtree(b2, ignore_errors=True)
+
+    print("== Codex command names in denials (F11) ==")
+    f11 = tempfile.mkdtemp(prefix="hjw-test-f11-")
+    try:
+        for n in ("a", "b"):
+            run("gate.py", edit_payload(f"/repo/f11/{n}.py", sid="sess-F11"), f11, root=cx_root)
+        rc, out = run("gate.py", edit_payload("/repo/f11/c.py", sid="sess-F11"), f11, root=cx_root)
+        r = reason_of(out)
+        check("F11 gate on Codex: @haejwo-plan and @haejwo-gate off, no Claude command",
+              decision(out) == "deny" and "run @haejwo-plan first (backup nudge" in r
+              and r.endswith("Emergency override: @haejwo-gate off.") and "/haejwo:" not in r, r)
+        rc, out = run("bash_guard.py", bash_payload("echo x >> src/app.py"), f11, root=cx_root)
+        check("F11 bash_guard redirect deny on Codex, exact",
+              reason_of(out) == (
+                  "[haejwo gate] Bash output redirect writes to a code file (src/app.py). "
+                  "The main agent must not modify code via Bash — use Edit/Write within "
+                  "the turn budget, or delegate to 'haejwo:default-worker'. "
+                  "Emergency override: @haejwo-gate off."), reason_of(out))
+        rc, out = run("bash_guard.py", bash_payload("sed -i 's/a/b/' src/app.py"), f11,
+                      root=cx_root)
+        check("F11 bash_guard in-place deny on Codex names @haejwo-gate off",
+              decision(out) == "deny"
+              and reason_of(out).endswith("Emergency override: @haejwo-gate off."),
+              reason_of(out))
+        rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-F11D"),
+                      f11, root=cx_root)
+        check("F11 delegation deny on Codex names @haejwo-gate off",
+              decision(out) == "deny"
+              and reason_of(out).endswith("Emergency override: @haejwo-gate off.")
+              and "/haejwo:" not in reason_of(out), reason_of(out))
+        check("F16 on_codex_host: root or data under /.codex/, else Claude",
+              on_codex_host(cx_root, "") and on_codex_host("", "/h/.codex/data")
+              and not on_codex_host(PLUGIN, f11) and not on_codex_host(None, None))
+    finally:
+        shutil.rmtree(f11, ignore_errors=True)
+
+    print("== config summary: effective state, delegation_guard, bound (F12/D6) ==")
+    f12 = tempfile.mkdtemp(prefix="hjw-test-f12-")
+    try:
+        write_cfg(f12, {"configured": True})
+        rc, out = run("session_brief.py", SB, f12, env_extra={"HAEJWO_GATE": "off"})
+        check("F12 HAEJWO_GATE=off: the configured summary says OFF (env) for all three",
+              summary_line(ctx_of(out)).startswith(
+                  "[haejwo config] gate=OFF (env) budget=2 files/turn "
+                  "bash_guard=OFF (env) delegation_guard=OFF (env) | "), ctx_of(out)[-700:])
+        rc, out = run("session_brief.py", SB, f12)
+        check("F12 without the env override: the stored ON",
+              summary_line(ctx_of(out)).startswith(
+                  "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON "
+                  "delegation_guard=ON | "), ctx_of(out)[-700:])
+        write_cfg(f12, {})
+        rc, out = run("session_brief.py", SB, f12, env_extra={"HAEJWO_GATE": "off"})
+        check("F12 not configured + env off: the defaults summary says OFF (env) too",
+              "[haejwo config] defaults — not configured: gate=OFF (env) budget=2 "
+              "files/turn bash_guard=OFF (env) delegation_guard=OFF (env) | "
+              in ctx_of(out), ctx_of(out)[-700:])
+        # (2.26 review e) both guards run only while the gate is on: a stored
+        # gate OFF shows them OFF too, untagged (the cause is config, not env).
+        write_cfg(f12, {"configured": True, "gate": {"enabled": False}})
+        rc, out = run("session_brief.py", SB, f12)
+        check("F12 stored gate OFF: bash_guard and delegation_guard are effectively OFF",
+              summary_line(ctx_of(out)).startswith(
+                  "[haejwo config] gate=OFF budget=2 files/turn bash_guard=OFF "
+                  "delegation_guard=OFF | "), ctx_of(out)[-700:])
+        write_cfg(f12, {"configured": True, "gate": {"delegation_guard": False}})
+        rc, out = run("session_brief.py", SB, f12)
+        check("D6 delegation_guard=false is visible in the summary",
+              summary_line(ctx_of(out)).startswith(
+                  "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON "
+                  "delegation_guard=OFF | "), ctx_of(out)[-700:])
+        write_cfg(f12, {"gate": {"delegation_guard": False}})
+        rc, out = run("session_brief.py", SB, f12)
+        check("D6 delegation_guard=false before setup is reported as STORED, not defaults",
+              "[haejwo config] stored gate settings — not configured: gate=ON budget=2 "
+              "files/turn bash_guard=ON delegation_guard=OFF | " in ctx_of(out),
+              ctx_of(out)[-700:])
+        long_id = "claude-" + "x" * 400
+        write_cfg(f12, {"configured": True,
+                        "models": {"deep_reasoner": long_id, "default_worker": long_id,
+                                   "task_worker": long_id}})
+        rc, out = run("session_brief.py", SB, f12)
+        line = summary_line(ctx_of(out))
+        check("summary bound: long model ids are cut to <= 600 chars at a word, with …",
+              line.startswith("[haejwo config] gate=ON") and len(line) <= 600
+              and line.endswith("…") and not line[:-1].endswith(" ")
+              and len(ctx_of(out)) <= MAX_LEN, f"len={len(line)} {line[-80:]!r}")
+    finally:
+        shutil.rmtree(f12, ignore_errors=True)
+
+    print("== setup nudge: env override + Codex names (F12/F11) ==")
+    nd = tempfile.mkdtemp(prefix="hjw-test-nudge-")
+    cx_data = os.path.join(nd, ".codex", "data")
+    os.makedirs(cx_data)
+    try:
+        rc, out = run("session_brief.py", SB, nd)
+        check("nudge Claude text byte-identical (both hosts named, safe defaults ON)",
+              "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
+              "skill in Codex; the user only answers 4 quick choices and never needs "
+              "to type a command). Until then safe defaults are ACTIVE: gate ON, max 2 "
+              "distinct code files per turn for the main agent, bash-guard ON, "
+              "subagents exempt. Delegation targets: " in ctx_of(out), ctx_of(out)[-900:])
+        rc, out = run("session_brief.py", SB, nd, env_extra={"HAEJWO_GATE": "off"})
+        c_ = ctx_of(out)
+        check("F12 nudge with HAEJWO_GATE=off: says OFF (env), never 'gate ON'",
+              "environment overrides them: gate OFF (env), bash-guard OFF (env). " in c_
+              and "gate ON" not in c_ and "safe defaults are ACTIVE" not in c_, c_[-900:])
+        write_cfg(nd, {"gate": {"max_files_per_turn": 5}})
+        rc, out = run("session_brief.py", SB, nd, env_extra={"HAEJWO_GATE": "off"})
+        c_ = ctx_of(out)
+        check("F12 stored-settings nudge with HAEJWO_GATE=off: OFF (env) for both",
+              "STORED gate settings are ACTIVE: gate OFF (env), max 5 distinct code "
+              "files per turn for the main agent, bash-guard OFF (env)," in c_
+              and "gate ON" not in c_, c_[-900:])
+        rc, out = run("session_brief.py", SB, cx_data)
+        c_ = ctx_of(out)
+        check("F11 Codex nudge names only the @haejwo-setup skill",
+              "(the setup procedure — the @haejwo-setup skill; the user only answers"
+              in c_ and "/haejwo:" not in c_, c_[-900:])
+        with open(os.path.join(cx_data, "config.json"), "w") as f:
+            f.write("{not json")
+        rc, out = run("session_brief.py", SB, cx_data)
+        c_ = ctx_of(out)
+        check("F11 Codex malformed notice names @haejwo-setup",
+              "Run @haejwo-setup to rewrite it, or fix the JSON by hand." in c_
+              and "/haejwo:" not in c_, c_[-600:])
+        cx_note = ("[haejwo] config.json is unreadable (malformed JSON) — enforcement "
+                   "is disabled (fail-open) until it is repaired; run @haejwo-setup "
+                   "or fix the file")
+        rc, out = run("gate.py", edit_payload("/repo/n/a.py", sid="sess-NCX"), cx_data)
+        check("F11 Codex malformed-config hook note, exact", ctx_of(out) == cx_note,
+              ctx_of(out))
+        rc, out = run("bash_guard.py", bash_payload("ls", sid="sess-NCX2"), cx_data)
+        check("F11 Codex malformed-config note from bash_guard too", ctx_of(out) == cx_note,
+              ctx_of(out))
+        from delegation_gate import _pin_not_passable_note_once  # noqa: E402
+        n_cx = _pin_not_passable_note_once(nd, "sess-PNCX", "default_worker",
+                                           "claude-x", "opus", True)
+        n_cl = _pin_not_passable_note_once(nd, "sess-PNCL", "default_worker",
+                                           "claude-x", "opus")
+        check("F11 pin note: Codex names @haejwo-setup, Claude keeps /haejwo:setup",
+              "set an alias in @haejwo-setup, or pass" in (n_cx or "")
+              and "/haejwo:" not in (n_cx or "")
+              and "set an alias in /haejwo:setup, or pass" in (n_cl or ""),
+              f"{n_cx!r} {n_cl!r}")
+    finally:
+        shutil.rmtree(nd, ignore_errors=True)
+
+    print("== hook files are per-user (F15) ==")
+    f15 = tempfile.mkdtemp(prefix="hjw-test-f15-")
+    old_mask = os.umask(0o022)
+    try:
+        run("gate.py", edit_payload("/repo/f15/a.py", sid="sess-F15"), f15)
+        obs_ = os.path.join(f15, "state", "observations.jsonl")
+        st_f = os.path.join(f15, "state", "sess-F15.json")
+        modes = {os.path.basename(p_): oct(os.stat(p_).st_mode & 0o777)
+                 for p_ in (obs_, st_f) if os.path.exists(p_)}
+        check("F15 under a 022 caller umask, a fresh observations.jsonl and state file are 0600",
+              modes == {"observations.jsonl": "0o600", "sess-F15.json": "0o600"}, str(modes))
+        check("F15 the state dir is 0700",
+              oct(os.stat(os.path.join(f15, "state")).st_mode & 0o777) == "0o700",
+              oct(os.stat(os.path.join(f15, "state")).st_mode & 0o777))
+    finally:
+        os.umask(old_mask)
+        shutil.rmtree(f15, ignore_errors=True)
 
 def main():
     data = tempfile.mkdtemp(prefix="hjw-test-")
@@ -774,6 +1030,83 @@ def main():
                           bool(rec) and rec.get("target") == target, str(rec))
         finally:
             shutil.rmtree(a9_data, ignore_errors=True)
+
+        print("== bash_guard.py heredoc-data shape (S-F, 2.26) ==")
+        # ONE shape (bash_guard.py header): the WHOLE command is a single
+        # `cat > T <<'D'` (or `>>`) into a literal non-code T -> body is data.
+        # Every other command keeps the 2.25.0 decision AND via (pinned here
+        # per case). Signed stop condition: any reproduced allow outside the
+        # shape withdraws the change — these denies are not to be relaxed.
+        sf_data = tempfile.mkdtemp(prefix="hjw-test-sf-")
+        try:
+            def sf_last(sid):
+                recs = [json.loads(l) for l in
+                        open(os.path.join(sf_data, "state", "observations.jsonl"))]
+                hits = [r for r in recs if r.get("sid") == sid]
+                return hits[-1] if hits else None
+
+            sf_cases = [
+                # field case (cold-loop cycle 1 F#3 / cycle 2 E): a note whose
+                # body QUOTES a redirect into a .py and an in-place edit
+                ("cat > notes/x.md <<'EOF'\nrun: printf x > src/app.py\n"
+                 "then: sed -i 's/a/b/' src/app.py\nEOF", "sess-SFa", "allow",
+                 "heredoc-data", "field case: quoted heredoc note"),
+                ('cat >> notes/x.md <<"EOF"\nprintf x > src/app.py\nEOF\n  \n',
+                 "sess-SFb", "allow", "heredoc-data",
+                 "double-quoted delimiter, append, trailing blank line"),
+                ("cat <<'EOF' > notes/x.md\nsed -i s/a/b/ a.py\nEOF", "sess-SFc",
+                 "allow", "heredoc-data", "heredoc before the redirect"),
+                ("cat > notes/x.md <<-'EOF'\nsed -i s/a/b/ a.py\n\t\tEOF",
+                 "sess-SFd", "allow", "heredoc-data",
+                 "<<- closes on a tab-indented delimiter"),
+                ("cat > notes/x.md <<'EOF'\nprintf x > a.py\n EOF\nEOF",
+                 "sess-SFe", "allow", "heredoc-data",
+                 "a space-indented line is body, as in bash"),
+                # adversarial: each was denied by 2.25.0 and still is, same via
+                ("cat > notes/x.md <<'EOF'; sed -i 's/a/b/' src/app.py\nhello\nEOF",
+                 "sess-SF1", "deny", "inplace", "second command on the first line"),
+                ("cat > notes/x.md <<'EOF'\nhello\nEOF; sed -i 's/a/b/' src/app.py",
+                 "sess-SF2", "deny", "inplace",
+                 "heredoc followed by `; <in-place edit of a .py>`"),
+                ("cat > notes/x.md <<'EOF'\nprintf x > src/app.py\nEOF x",
+                 "sess-SF3", "deny", "redirect", "delimiter line with trailing text"),
+                ("cat > notes/x.md <<EOF\n$(echo x; printf x > src/app.py )\nEOF",
+                 "sess-SF4", "deny", "redirect", "unquoted delimiter with $( ) body"),
+                ("cat > src/new.py <<'EOF'\nhello\nEOF", "sess-SF5", "deny",
+                 "redirect", "quoted heredoc into a .py target"),
+                # `python3 -c` alone is the documented residual gap (allowed in
+                # 2.25.0 too); what must hold is that a trailing command
+                # leaves the shape, so the body is scanned as before
+                ("cat > notes/x.md <<'EOF'\nsed -i 's/a/b/' src/app.py\nEOF\n"
+                 "python3 -c \"open('src/app.py','w').write('x')\"", "sess-SF6",
+                 "deny", "inplace", "a python3 -c line after the delimiter"),
+                ("cat <<'EOF' | tee x.py\nhello\nEOF", "sess-SF7", "deny", "tee",
+                 "cat heredoc piped to tee x.py"),
+                ("cat f.py > notes/x.md <<'EOF'\nsed -i 's/a/b/' src/app.py\nEOF",
+                 "sess-SF8", "deny", "inplace", "cat with a file operand"),
+                ("cat > notes/x.md <<'EOF'\nEOF\nprintf x > src/app.py\nEOF",
+                 "sess-SF9", "deny", "redirect",
+                 "the FIRST delimiter line ends the body (a later EOF does not)"),
+                ("cat > notes/x.md <<'EOF'\nprintf x > src/app.py", "sess-SF10",
+                 "deny", "redirect", "no delimiter line"),
+                ("cat\r > notes/x.md <<'EOF'\nprintf x > src/app.py\nEOF",
+                 "sess-SF11", "deny", "redirect", "a carriage return is not a blank"),
+                ("cat > notes/x.md 2>a.py <<'EOF'\nx\nEOF", "sess-SF12", "deny",
+                 "redirect", "an extra redirect"),
+            ]
+            for cmd, sid, want, via, name in sf_cases:
+                rc, out = run("bash_guard.py", bash_payload(cmd, sid=sid), sf_data)
+                got = "deny" if decision(out) == "deny" else "allow"
+                rec = sf_last(sid)
+                check(f"S-F {want}: {name} (via {via})",
+                      rc == 0 and got == want and bool(rec)
+                      and rec.get("decision") == want and rec.get("via") == via,
+                      f"out={out} rec={rec}")
+            rec = sf_last("sess-SFa")
+            check("S-F record: heredoc-data names the data target",
+                  bool(rec) and rec.get("target") == "notes/x.md", str(rec))
+        finally:
+            shutil.rmtree(sf_data, ignore_errors=True)
 
         print("== gate.py / bash_guard.py decision observations (A10) ==")
         a10_data = tempfile.mkdtemp(prefix="hjw-test-a10-")
@@ -1239,10 +1572,10 @@ def main():
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
         for rel, cap in (("README.md", 740), ("README.ko.md", 650),
-                         ("haejwo/README.md", 1480),
+                         ("haejwo/README.md", 1470),
                          ("haejwo/commands/plan.md", 490),
                          ("haejwo/commands/setup.md", 900),
-                         ("haejwo/commands/status.md", 390)):
+                         ("haejwo/commands/status.md", 310)):
             words = len(open(os.path.join(repo, rel), encoding="utf-8").read().split())
             check(f"word-count ratchet: {rel} <= {cap}", words <= cap,
                   f"words={words} cap={cap}")
@@ -1661,14 +1994,15 @@ def main():
               render_summary(_g, DEFAULT_CONFIG["models"], False, False, False,
                              "defaults — not configured: ")
               == "[haejwo config] defaults — not configured: gate=ON budget=2 "
-                 "files/turn bash_guard=ON | models: deep-reasoner=session model, "
+                 "files/turn bash_guard=ON delegation_guard=ON | models: "
+                 "deep-reasoner=session model, "
                  "default-worker=opus (effort high), task-worker=opus (effort low) "
                  "| codex reviewer: disabled (fallback: deep-reasoner)")
         check("B6 configured Codex: missing keys fall back to the shipped defaults, exact",
               render_summary({"enabled": False, "max_files_per_turn": 4,
                               "bash_guard": False}, {}, True, True, True)
-              == "[haejwo config] gate=OFF budget=4 files/turn bash_guard=OFF | "
-                 "codex tiers (pass model + reasoning_effort on spawn_agent; "
+              == "[haejwo config] gate=OFF budget=4 files/turn bash_guard=OFF "
+                 "delegation_guard=OFF | codex tiers (pass model + reasoning_effort on spawn_agent; "
                  "'inherit' = omit model; effort overrides need a fresh or partial "
                  "context fork (fork_turns), never a full-history fork): "
                  "deep-reasoner=inherit/host effort (omit reasoning_effort), "
@@ -1678,8 +2012,9 @@ def main():
               render_summary(_g, {"deep_reasoner": "inherit",
                                   "default_worker": "claude-opus-5-5",
                                   "task_worker": "inherit"}, False, True, False)
-              == "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON | "
-                 "models: deep-reasoner=inherit(session), default-worker="
+              == "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON "
+                 "delegation_guard=ON | models: deep-reasoner=inherit(session), "
+                 "default-worker="
                  "claude-opus-5-5 (not passable via the Agent tool — set an alias) "
                  "(effort high), task-worker=agent-file default (effort low) — pass "
                  "as Agent-tool model override if it differs from the agent default "
@@ -1972,9 +2307,14 @@ def main():
             check("A12 neither explicit: tier-only wording, no 'Pass model:'",
                   dec == "deny" and CLAUDE_TIER_ONLY in r and "Pass model:" not in r, r)
 
+            # 2.26 (cold-loop B2): a non-object `models` falls back to the
+            # shipped defaults at load, so the deny names the default pin and
+            # carries the once-note — still the Claude wording, never Codex's.
             rc, dec, r = a12("not-a-dict", "sess-A12f")
-            check("A12 malformed models on Claude: still denies with Claude tier-only wording",
-                  rc == 0 and dec == "deny" and CLAUDE_TIER_ONLY in r, r)
+            check("A12 malformed models on Claude: denies with the default pins + the note",
+                  rc == 0 and dec == "deny" and "Pass model: 'opus'" in r
+                  and "config value ignored: models must be an object" in r
+                  and CODEX_TIER_ONLY not in r, r)
         finally:
             shutil.rmtree(a12_data, ignore_errors=True)
 
@@ -2593,6 +2933,7 @@ def main():
             shutil.rmtree(pin_data, ignore_errors=True)
 
         classification_state_tests()
+        config_host_summary_tests()
 
         print("== hooks.json hook-target existence ==")
         hooks_path = os.path.join(PLUGIN, "hooks", "hooks.json")
@@ -3353,29 +3694,6 @@ exit "$rc"
                     check(f"{tag}: a non-git cwd passes the guard (the runner's own non-git policy decides)",
                           rc == 2 and not stub[0] and "outside a git repo" in err
                           and ag_inside not in err, f"rc={rc} err={err}")
-
-            # ---- (2.21 review F1) `$OUT.tmp` — written by a pre-2.22 codex
-            # runner's fallback rewrite, which a hop may still reach — is
-            # judged with the other artifacts, up front. claude has no such write.
-            f1_link_out = os.path.join(ag_out, "f1-link.md")
-            os.symlink(ag_tracked, f1_link_out + ".tmp")
-            rc, out, err, stub = ag_run("codex", "outtmp-link", ["-o", f1_link_out, ag_brief], ag_repo)
-            check("artifact guard (codex): a pre-existing $OUT.tmp symlink into the repo -> refused "
-                  "before any call, tracked bytes unchanged",
-                  ag_refused(rc, err, stub) and f1_link_out + ".tmp" in err
-                  and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} stub={stub} err={err}")
-            rc, out, err, stub = ag_run("claude", "outtmp-link", ["-o", f1_link_out, ag_brief], ag_repo)
-            check("artifact guard (claude): $OUT.tmp is codex's artifact, never claude's -> the review runs",
-                  rc == 0 and stub[0], f"rc={rc} err={err}")
-            os.remove(f1_link_out + ".tmp")
-            f1_hard_out = os.path.join(ag_out, "f1-hard.md")
-            os.link(ag_tracked, f1_hard_out + ".tmp")
-            rc, out, err, stub = ag_run("codex", "outtmp-hard", ["-o", f1_hard_out, ag_brief], ag_repo)
-            check("artifact guard (codex): a pre-existing $OUT.tmp hard link to a tracked file -> refused "
-                  "before any call",
-                  ag_refused(rc, err, stub, "more than one hard link") and f1_hard_out + ".tmp" in err
-                  and open(ag_tracked, "rb").read() == ag_tracked_bytes, f"rc={rc} stub={stub} err={err}")
-            os.remove(f1_hard_out + ".tmp")
 
             AG_DIR_INSIDE = "artifact directory is inside the reviewed repository"
 
@@ -5238,9 +5556,9 @@ exit "$rc"
 
             # ---- (t15, 2.22) NEW FORWARDER -> LEGACY DESTINATION. A 2.18-2.21
             # destination's OWN runners require lib/snapshot.py and exit 3
-            # without it — after the exec, with no local fallback left. So a
-            # destination below 2.22.0 must carry it to count as complete.
-            # The destination runner is a stand-in leaving a marker. ----
+            # without it — after the exec, with no local fallback left. Since
+            # 2.26 the support floor refuses such a destination even WITH it
+            # (W39 below). The destination runner is a stand-in leaving a marker. ----
             for t15_case, t15_keep in (("t15-nosnap", False), ("t15-snap", True)):
                 t15_plugins = fw_install(t15_case, ["9.9.0", "2.21.0"])
                 t15_marker = os.path.join(fw_root, f"{t15_case}-target-ran")
@@ -5270,11 +5588,11 @@ exit "$rc"
                     rc, out, err, cap = fw_run(t15_case, t15_self, "codex")
                     hops = fw_hops(err)
                     check("t15 legacy completeness: WITH snapshot.py the 2.21.0 "
-                          "destination is forwarded into (marker written)",
-                          len(hops) == 1
-                          and "runner 9.9.0 is stale — forwarding to 2.21.0" in hops[0]
-                          and os.path.exists(t15_marker)
-                          and "LEGACY-TARGET-RAN" in out,
+                          "destination is still NOT forwarded into — it is below the "
+                          "support floor (2.26); no marker",
+                          rc == 0 and not hops and "below the supported floor" in err
+                          and not os.path.exists(t15_marker)
+                          and "LEGACY-TARGET-RAN" not in out,
                           f"rc={rc} hops={hops} marker={os.path.exists(t15_marker)} "
                           f"err={err}")
 
@@ -5294,6 +5612,7 @@ exit "$rc"
                     f.write("#!/usr/bin/env bash\n"
                             "# a guardless pre-2.21 destination\n"
                             f"echo ran > '{t13_marker}'\n"
+                            f"env | grep -E '^GIT_(DIR|WORK_TREE|INDEX_FILE)=' >> '{t13_marker}'\n"
                             "echo GUARDLESS-TARGET-RAN\n")
                 os.chmod(t13_target, 0o755)
                 fw_reg_entries(t13_plugins, [fw_entry(t13_plugins, "9.8.0")])
@@ -5373,32 +5692,6 @@ exit "$rc"
                       t13_off == 0 and not os.listdir(t13_tmpdir),
                       f"offset={t13_off} tmpdir={os.listdir(t13_tmpdir)}")
 
-                # (3c, 2.22 downgrade regression) the 2.22 codex runner no longer
-                # writes `.events.2.jsonl` or `$OUT.tmp`, but the OLDER target a
-                # hop reaches still does — so an `-o` whose legacy sibling is a
-                # pre-existing symlink INTO the repo is refused before the exec.
-                if who == "codex":
-                    t13_tracked = write_file(os.path.join(repo_dir, "t13-tracked.txt"),
-                                             "tracked bytes\n")
-                    for leg, sib in (("events2", ".events.2.jsonl"), ("outtmp", ".tmp")):
-                        t13_lo = os.path.join(runner_tmp, f"t13-legacy-{leg}.md")
-                        t13_sib = (t13_lo + sib if sib == ".tmp"
-                                   else os.path.splitext(t13_lo)[0] + sib)
-                        os.symlink(t13_tracked, t13_sib)
-                        try:
-                            rc, out, err, cap = fw_run(
-                                f"t13-codex-legacy-{leg}", t13_self, who,
-                                args=["-o", t13_lo, brief_file(f"fw-t13-legacy-{leg}.md")])
-                            check(f"t13 codex hop guard (2.22 downgrade): a legacy `{sib}` "
-                                  "sibling symlinked into the repo, with an OLDER guardless "
-                                  "target -> refused before the exec, bytes unchanged",
-                                  t13_refused(rc, out, err, cap) and t13_sib in err
-                                  and open(t13_tracked).read() == "tracked bytes\n",
-                                  f"rc={rc} marker={os.path.exists(t13_marker)} err={err}")
-                        finally:
-                            os.remove(t13_sib)
-                    os.remove(t13_tracked)
-
                 # (4) `-o` OUTSIDE the repository: forwarded exactly as before.
                 rc, out, err, cap = fw_run(
                     f"t13-{who}-out", t13_self, who,
@@ -5411,6 +5704,24 @@ exit "$rc"
                       and "runner 9.9.0 is stale — forwarding to 9.8.0" in hops[0]
                       and os.path.exists(t13_marker) and "GUARDLESS-TARGET-RAN" in out,
                       f"rc={rc} hops={hops} out={out} err={err}")
+
+                # (5, 2.26 review a) a 2.22–2.25 target's detection inherits
+                # GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE: the hop never passes them.
+                t13_other = make_repo_committed(f"repo-t13-git-{who}")
+                os.remove(t13_marker)
+                rc, out, err, cap = fw_run(
+                    f"t13-{who}-gitenv", t13_self, who,
+                    args=["-o", os.path.join(runner_tmp, f"t13-{who}-gitenv.md"),
+                          brief_file(f"fw-t13-{who}-gitenv.md")],
+                    env_extra={"GIT_DIR": os.path.join(t13_other, ".git"),
+                               "GIT_WORK_TREE": t13_other,
+                               "GIT_INDEX_FILE": os.path.join(t13_other, ".git", "index")})
+                t13_seen = (open(t13_marker).read().splitlines()
+                            if os.path.exists(t13_marker) else None)
+                check(f"t13 {who} hop: GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE -> another repo "
+                      "in the caller's env -> the forwarded target sees none of them",
+                      rc == 0 and len(fw_hops(err)) == 1 and t13_seen == ["ran"],
+                      f"rc={rc} seen={t13_seen} err={err}")
 
 
             # ==== (2.25, W33) runner lifecycle & detection: B2 a parent
@@ -5573,6 +5884,293 @@ exit "$rc"
                   and json.load(open(loc_snap))["head"] == "unborn",
                   f"ctl={loc_ctl.stderr!r} rc={loc.returncode} err={loc.stderr}")
 
+            # ==== (2.26, W37) B1: an inherited GIT_DIR/GIT_WORK_TREE never
+            # redirects detection or the artifact guard away from the cwd's
+            # repository; reused artifacts are tightened to 0600. ====
+            print("== runner git env & reused artifacts (2.26: B1, umask repair) ==")
+            for who, script, cli in (("codex", codex_script, "codex"),
+                                     ("claude", claude_script, "claude")):
+                ge_a = make_repo_committed(f"repo-b1-a-{who}")
+                ge_b = make_repo_committed(f"repo-b1-b-{who}")
+                ge_env = {"GIT_DIR": os.path.join(ge_b, ".git"), "GIT_WORK_TREE": ge_b}
+                for tag, target, want_rc in (("cwd", ge_a, 1), ("other", ge_b, 0)):
+                    ge_bin = os.path.join(runner_tmp, f"bin-b1-{who}-{tag}")
+                    make_stub(ge_bin, cli, os.path.join(runner_tmp, f"cap-b1-{who}-{tag}"))
+                    rc, out, err = run_script(
+                        script, ["-o", os.path.join(runner_tmp, f"b1-{who}-{tag}.md"),
+                                 brief_file(f"b1-{who}-{tag}-brief.md")],
+                        dict(ge_env, PATH=ge_bin + os.pathsep + os.environ.get("PATH", ""),
+                             STUB_TOUCH_FILE=os.path.join(target, "seed.txt")), cwd=ge_a)
+                    check(f"B1 {who}: GIT_DIR/GIT_WORK_TREE -> another repo; a change in the "
+                          f"{tag} repo " + ("FAILS the run (detection covers the cwd repo)"
+                                            if want_rc else "does not fail it"),
+                          rc == want_rc and (("repository changed during the run" in err
+                                              and "seed.txt" in err) if want_rc
+                                             else "STUB-REPLY-OK-1" in out),
+                          f"rc={rc} out={out} err={err}")
+                    ge_seen = [v for v in fw_cli_env(os.path.join(runner_tmp, f"cap-b1-{who}-{tag}"))
+                               if v.startswith(("GIT_DIR=", "GIT_WORK_TREE=", "GIT_INDEX_FILE="))]
+                    check(f"B1 {who} ({tag}): the reviewer process inherits no GIT_DIR/GIT_WORK_TREE",
+                          ge_seen == [] and fw_cli_env(os.path.join(
+                              runner_tmp, f"cap-b1-{who}-{tag}")) != [], f"seen={ge_seen}")
+                ge_bin = os.path.join(runner_tmp, f"bin-b1-{who}-guard")
+                ge_cap = os.path.join(runner_tmp, f"cap-b1-{who}-guard")
+                make_stub(ge_bin, cli, ge_cap)
+                rc, out, err = run_script(
+                    script, ["-o", os.path.join(ge_a, "in-repo-reply.md"),
+                             brief_file(f"b1-{who}-guard-brief.md")],
+                    dict(ge_env, PATH=ge_bin + os.pathsep + os.environ.get("PATH", "")), cwd=ge_a)
+                check(f"B1 {who}: with GIT_DIR -> another repo, `-o` inside the cwd repo is "
+                      "still refused (exit 2, no reviewer call)",
+                      rc == 2 and "inside the reviewed repository" in err
+                      and read_calls(ge_cap) == [], f"rc={rc} err={err}")
+
+                # umask repair: reused reply/log/events created 0644 end 0600.
+                rr_bin = os.path.join(runner_tmp, f"bin-umr-{who}")
+                make_stub(rr_bin, cli, os.path.join(runner_tmp, f"cap-umr-{who}"))
+                rr_out = os.path.join(runner_tmp, f"umr-{who}.md")
+                rr_files = [rr_out, os.path.join(runner_tmp, f"umr-{who}.log")]
+                if who == "codex":
+                    rr_files.append(os.path.join(runner_tmp, f"umr-{who}.events.jsonl"))
+                for f in rr_files:
+                    write_file(f, "stale\n")
+                    os.chmod(f, 0o644)
+                um_old = os.umask(0o022)
+                try:
+                    rc, out, err = run_script(
+                        script, ["-o", rr_out, brief_file(f"umr-{who}-brief.md")],
+                        {"PATH": rr_bin + os.pathsep + os.environ.get("PATH", "")},
+                        cwd=make_repo_committed(f"repo-umr-{who}"))
+                finally:
+                    os.umask(um_old)
+                rr_modes = {os.path.basename(f): oct(os.stat(f).st_mode & 0o777)
+                            for f in rr_files if os.path.exists(f)}
+                check(f"umask repair {who}: a reused 0644 reply/log"
+                      + ("/events" if who == "codex" else "") + " ends 0600",
+                      rc == 0 and len(rr_modes) == len(rr_files)
+                      and set(rr_modes.values()) == {"0o600"},
+                      f"rc={rc} modes={rr_modes} err={err}")
+
+
+            # ==== (2.26, W39) S-C SUPPORT FLOOR. forward.py follows a
+            # registry-selected install in BOTH directions (t2), but never one
+            # below SUPPORTED_FLOOR: the invoked runner stays local and says
+            # so in one line. Tested AT and BELOW the floor; both destinations
+            # are complete copies of today's scripts (snapshot.py tombstone
+            # included), so only the floor can stop the below-floor hop. ====
+            sf_src = open(os.path.join(SCRIPTS, "lib", "forward.py"), encoding="utf-8").read()
+            sf_m = re.search(r'^SUPPORTED_FLOOR = "(\d+)\.(\d+)\.(\d+)"', sf_src, re.M)
+            check("W39 floor: forward.py defines SUPPORTED_FLOOR as a dotted triple",
+                  sf_m is not None and int(sf_m.group(2)) > 0, str(sf_m))
+            sf_floor = ".".join(sf_m.groups()) if sf_m else "0.1.0"
+            sf_mm = tuple(int(x) for x in sf_floor.split(".")[:2])
+            sf_below = f"{sf_mm[0]}.{sf_mm[1] - 1}.0"
+            for who in ("codex", "claude"):
+                sf_p = fw_install(f"sf-below-{who}", ["9.9.0", sf_below])
+                fw_reg_entries(sf_p, [fw_entry(sf_p, sf_below)])
+                sf_brief = brief_file(f"fw-sf-below-{who}.md")
+                rc, out, err, cap = fw_run(f"sf-below-{who}", fw_script(sf_p, "9.9.0", who),
+                                           who, args=[sf_brief])
+                sf_lines = [l for l in err.splitlines() if "supported floor" in l]
+                check(f"W39 floor {who}: a complete {sf_below} destination (below the floor) "
+                      "is NOT forwarded to — one line, then the invoked 9.9.0 runs locally",
+                      rc == 0 and not fw_hops(err) and sf_lines == [
+                          f"# installed runner {sf_below} is below the supported floor "
+                          f"{sf_floor}; running locally"]
+                      and "plugin=9.9.0" in fw_log_for(sf_brief)
+                      and len(read_calls(cap)) == 1 and fw_marker_gone(cap),
+                      f"rc={rc} err={err} log={fw_log_for(sf_brief)[:200]}")
+                sf_p = fw_install(f"sf-at-{who}", ["9.9.0", sf_floor])
+                fw_reg_entries(sf_p, [fw_entry(sf_p, sf_floor)])
+                sf_brief = brief_file(f"fw-sf-at-{who}.md")
+                rc, out, err, cap = fw_run(f"sf-at-{who}", fw_script(sf_p, "9.9.0", who),
+                                           who, args=[sf_brief])
+                hops = fw_hops(err)
+                check(f"W39 floor {who}: a {sf_floor} destination (AT the floor) is forwarded "
+                      "to, and it ran",
+                      rc == 0 and len(hops) == 1 and hops[0] ==
+                      f"# runner 9.9.0 is stale — forwarding to {sf_floor} "
+                      f"({fw_script(sf_p, sf_floor, who)})"
+                      and "supported floor" not in err
+                      and f"plugin={sf_floor}" in fw_log_for(sf_brief)
+                      and len(read_calls(cap)) == 1 and fw_marker_gone(cap),
+                      f"rc={rc} hops={hops} err={err}")
+            # An unparsable version is not known to be at the floor: refused,
+            # with the floor record (never silently followed).
+            sf_p = fw_install("sf-unparsable", ["9.9.0", sf_floor + "-rc1"])
+            fw_reg_entries(sf_p, [fw_entry(sf_p, sf_floor + "-rc1")])
+            sf_fwd = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "lib", "forward.py"), "target",
+                 os.path.join(sf_p, "installed_plugins.json"),
+                 os.path.join(sf_p, "cache", "haejwo", "haejwo"), "9.9.0",
+                 fw_script(sf_p, "9.9.0", "codex"), "codex_consult.sh"],
+                capture_output=True, text=True)
+            sf_end = "\x04__HJW_SNAP_END__"
+            check("W39 floor: an unparsable registry version is treated as below the floor",
+                  sf_fwd.returncode == 0 and sf_fwd.stdout
+                  == f"{sf_floor}-rc1{sf_end}floor {sf_floor}{sf_end}", repr(sf_fwd.stdout))
+
+            # DRIFT: the floor and the compat code it licenses move TOGETHER.
+            # Each site that exists only for installs older than the floor
+            # names the floor's major.minor as its NEWEST version; raising
+            # the floor fails here until that code is deleted (a deleted site
+            # is skipped; a present site naming no version fails).
+            sf_sites = {}
+            sf_leg = re.search(r"((?:^#[^\n]*\n)+)LEGACY_LIB = ", sf_src, re.M)
+            if "LEGACY_LIB" in sf_src:
+                sf_sites["lib/forward.py LEGACY_LIB comment"] = sf_leg.group(1) if sf_leg else ""
+            sf_tomb = os.path.join(SCRIPTS, "lib", "snapshot.py")
+            if os.path.exists(sf_tomb):
+                sf_sites["lib/snapshot.py tombstone"] = open(sf_tomb, encoding="utf-8").read()
+            sf_newest = {}
+            for site, text in sf_sites.items():
+                vs = [(int(a), int(b)) for a, b in re.findall(r"\b(\d+)\.(\d+)(?:\.\d+)?\b", text)]
+                sf_newest[site] = max(vs) if vs else None
+            check("W39 floor drift: SUPPORTED_FLOOR equals the version every compat site "
+                  "is anchored to (LEGACY_LIB, the snapshot.py tombstone)",
+                  bool(sf_sites) and all(v == sf_mm for v in sf_newest.values()),
+                  f"floor={sf_floor} sites={sf_newest}")
+            sf_readme = open(os.path.join(PLUGIN, "README.md"), encoding="utf-8").read()
+            check("W39 floor: the plugin README states the same floor",
+                  f"runners support installs >= {sf_floor}" in sf_readme)
+
+            # ==== (2.26, W39) D8 STATUS COLLECTOR: /haejwo:status runs one
+            # read-only, stdlib-only script; the host interprets its block. ====
+            st_root = tempfile.mkdtemp(dir=runner_tmp, prefix="status-")
+            st_script = os.path.join(SCRIPTS, "status_collect.py")
+            st_md = open(os.path.join(PLUGIN, "commands", "status.md"), encoding="utf-8").read()
+            check("W39 status: commands/status.md runs scripts/status_collect.py",
+                  "scripts/status_collect.py" in st_md and os.path.isfile(st_script))
+
+            def st_run(data_dir, sid, env_extra=None):
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ("HAEJWO_GATE", "CODEX_MODEL", "CODEX_EFFORT",
+                                    "CODEX_SANDBOX", "CODEX_TIMEOUT", "CLAUDE_MODEL",
+                                    "HJW_CLAUDE_EFFORT", "CLAUDE_TIMEOUT")}
+                env["TZ"] = "UTC"
+                env.update(env_extra or {})
+                p = subprocess.run([sys.executable, st_script, data_dir, sid],
+                                   capture_output=True, text=True, env=env, timeout=30)
+                return p.returncode, p.stdout, p.stderr
+
+            def st_tree(root):
+                snap = {}
+                for d, _, fs in os.walk(root):
+                    for fn in fs:
+                        path = os.path.join(d, fn)
+                        snap[path] = open(path, "rb").read()
+                return snap
+
+            st_data = os.path.join(st_root, "fx")
+            os.makedirs(os.path.join(st_data, "state"))
+            write_file(os.path.join(st_data, "config.json"), json.dumps({
+                "configured": True,
+                "gate": {"enabled": True, "max_files_per_turn": 3, "bash_guard": False},
+                "models": {"default_worker": "sonnet"},
+                "codex": {"enabled": True, "verified_at": None, "model": "m1",
+                          "effort": "high", "consult_sandbox": "read-only"}}))
+            write_file(os.path.join(st_data, "state", "sess-W39-status.json"), json.dumps(
+                {"prompt_id": "p1", "files": ["/r/a.py", "/r/b.py"], "updated_at": 0}))
+
+            def st_rec(ts, sid="sess-W39-sta", **k):
+                r = {"v": 2, "agent_type": None, "agent_id": None, "sid": sid}
+                r.update(k)
+                r["ts"] = ts
+                return json.dumps(r) + "\n"
+
+            write_file(os.path.join(st_data, "state", "observations.jsonl.1"),
+                       st_rec(1000.0, sid="other-sessio", hook="gate", tool="Edit",
+                              path="/r/x.py", decision="allow", via="budget"))
+            write_file(os.path.join(st_data, "state", "observations.jsonl"), "".join([
+                st_rec(2000.0, hook="gate", tool="Edit", path="/r/a.py",
+                       decision="deny", via="budget"),
+                st_rec(2001.0, hook="gate", tool="Edit", path="/r/b.py",
+                       decision="deny", via="budget"),
+                st_rec(2002.0, hook="bash_guard", decision="deny", via="redirect",
+                       target="/r/c.py"),
+                st_rec(2003.0, hook="delegation", subagent_type="haejwo:default-worker",
+                       requested_model=None, plan_marker_kind="none", decision="allow",
+                       tier_pin_check="pass:not-a-tier"),
+                st_rec(2004.0, hook="delegation", subagent_type="codex:codex-rescue",
+                       requested_model=None, plan_marker_kind="none", decision="allow",
+                       tier_pin_check="pass:not-a-tier"),
+                st_rec(2005.0, hook="gate", tool="Write", path="/r/d.py", decision="allow",
+                       via="subagent-exempt", agent_type="haejwo:task-worker", agent_id="a1"),
+                st_rec(2006.0, hook="bash_guard", decision="allow", via="no-code-write", zz=1),
+                "{not json\n"]))
+            st_before = st_tree(st_data)
+            rc, out, err = st_run(st_data, "sess-W39-status", {"CODEX_EFFORT": "low"})
+            st_want = [
+                f"[haejwo status] data={st_data} host=claude session=sess-W39-status",
+                "config: configured=yes gate=ON budget=3 bash_guard=OFF delegation_guard=ON (effective)",
+                "tiers (models): deep_reasoner=inherit default_worker=sonnet task_worker=opus",
+                "env overrides: CODEX_EFFORT=low",
+                "this turn: 2/3 code edits: /r/a.py, /r/b.py",
+                "reviewer (codex): enabled model=m1 effort=high sandbox=read-only consent=none "
+                "verified=never verified",
+                "observations (machine-wide, both files): records=8 span=1970-01-01 00:16..1970-01-01 "
+                "00:33 distinct_sids=2 denies=3 unparsable_lines=1",
+                "observations (this session, sid sess-W39-sta): 7 records — bash_guard=2 "
+                "delegation=2 gate=3; subagent-origin records: haejwo:task-worker=1",
+                "  1970-01-01 00:33 gate deny/budget actor=main Edit a.py",
+                "  1970-01-01 00:33 gate deny/budget actor=main Edit b.py",
+                "  1970-01-01 00:33 bash_guard deny/redirect actor=main /r/c.py",
+                "  1970-01-01 00:33 delegation allow/- actor=main haejwo:default-worker model=None",
+                "  1970-01-01 00:33 delegation allow/- actor=main codex:codex-rescue model=None",
+                "  1970-01-01 00:33 gate allow/subagent-exempt actor=haejwo:task-worker Write d.py",
+                "  1970-01-01 00:33 bash_guard allow/no-code-write actor=main",
+                "delegations (this session): 1 — haejwo:default-worker/None=1 "
+                "(type/requested_model; None = no override)",
+                "  denies=0 tier_pin_check: pass:not-a-tier=1; plan_marker_kind none=1",
+                "  codex: rescue delegations=1",
+                "anomalies (this session): 3",
+                "  deny streak x3 (bash_guard, gate) ending 1970-01-01 00:33",
+                "  actor haejwo:task-worker x1 has no delegation record this session",
+                "  new shape x1: hook=bash_guard v=2 keys=zz",
+                "summary: gate ACTIVE, budget 3, configured yes",
+            ]
+            st_got = out.splitlines()
+            check("W39 status: the collector prints the expected block for a fixture data dir "
+                  "(effective flags, env override, counter, reviewer, observations, "
+                  "delegations, anomalies), exit 0, nothing on stderr",
+                  rc == 0 and err == "" and st_got == st_want,
+                  "\n".join(f"{'==' if a == b else '!='} {a!r} | {b!r}"
+                            for a, b in zip(st_got + [""] * 40, st_want + [""] * 40)
+                            if a or b))
+            check("W39 status: the collector is read-only (fixture tree byte-identical)",
+                  st_tree(st_data) == st_before)
+
+            # Stale verification names the HOST's spelling of setup.
+            st_cfg = json.loads(open(os.path.join(st_data, "config.json")).read())
+            st_cfg["codex"]["verified_at"] = int(time.time()) - 40 * 86400
+            write_file(os.path.join(st_data, "config.json"), json.dumps(st_cfg))
+            rc, out, err = st_run(st_data, "sess-W39-status")
+            check("W39 status: verified 40 days ago while enabled -> the re-verify hint",
+                  rc == 0 and "(40d ago) — re-run /haejwo:setup to re-verify" in out, out)
+
+            # Malformed everything, unknown session id: still exit 0, notes in the block.
+            st_bad = os.path.join(st_root, "bad")
+            os.makedirs(os.path.join(st_bad, "state", "observations.jsonl"))
+            write_file(os.path.join(st_bad, "config.json"), "{bad")
+            write_file(os.path.join(st_bad, "state", "sess-bad.json"), "nope")
+            write_file(os.path.join(st_bad, "state", "observations.jsonl.1"), "[1,2]\n")
+            for sid, label in (("sess-bad", "known"), ("$CLAUDE_CODE_SESSION_ID", "unsubstituted")):
+                rc, out, err = st_run(st_bad, sid)
+                check(f"W39 status: malformed config/state/observations ({label} session id) "
+                      "-> exit 0 with notes, no traceback",
+                      rc == 0 and "Traceback" not in out + err
+                      and out.splitlines()[1].startswith("CONFIG MALFORMED")
+                      and "state file sess-bad.json unreadable (JSONDecodeError)" in out
+                      and "note: observations.jsonl unreadable (IsADirectoryError)" in out
+                      and "unparsable_lines=1" in out
+                      and out.rstrip().endswith("summary: gate OFF, budget 2, configured no")
+                      and (label == "known" or ("may be another session's" in out
+                                                and "machine-wide line only" in out)),
+                      f"rc={rc} out={out} err={err}")
+            rc, out, err = st_run(os.path.join(st_root, "missing"), "")
+            check("W39 status: a missing data dir and no session id -> exit 0, defaults",
+                  rc == 0 and "data dir not found" in out
+                  and "summary: gate ACTIVE, budget 2, configured no" in out, out)
 
         finally:
             shutil.rmtree(runner_tmp, ignore_errors=True)

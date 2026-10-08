@@ -6,11 +6,10 @@
 
 *[origin: measured 2026-09-28 (khnp-rag): `/reload-plugins` did not re-inject the SessionStart brief, the
 host kept invoking the literal 2.16.1 runner path, and three consults ran with the 2.16.1 defect]*
-FAIL OPEN: every ambiguity or error prints NOTHING and the caller runs locally. HOST-SCOPED: the registry
-derives from the invoked runner's own <plugins> prefix (a no-op on a Codex host, never cross-host).
-NO VERSION ORDERING: the one registry entry is followed whenever its version string differs, downgrades
-included — the host installed what it installed. Values end with the library's sentinel (command
-substitution strips trailing newlines; an install path may end in one).
+FAIL OPEN: any ambiguity or error prints NOTHING and the caller runs locally. HOST-SCOPED: the registry derives
+from the runner's own <plugins> prefix. ONE ORDERING, the support floor: a differing registry version is followed,
+downgrades included, unless below SUPPORTED_FLOOR — then the target field reads `floor <floor>` and the caller
+stays local, saying so. Values end with the library's sentinel (an install path may end in a newline).
 """
 import json
 import os
@@ -18,33 +17,31 @@ import stat
 import sys
 
 SENTINEL = "\x04__HJW_SNAP_END__"
-# Manifests and registries are small; the bound keeps a wrong/huge path or device node out of memory.
-MAX_BYTES = 1 << 20
+MAX_BYTES = 1 << 20  # keeps a wrong/huge path or device node out of memory
+# Oldest install forwarded to (artifact guard, no snapshot dependency); older-install compat goes when it rises.
+SUPPORTED_FLOOR = "2.22.0"
 
 PLUGIN_KEY = "haejwo@haejwo"
 MANIFEST = os.path.join(".claude-plugin", "plugin.json")
-# Every helper BOTH entrypoints check before sourcing (a test keeps the three lists equal; they cannot read
-# it from unverified python). A destination missing one exits 3 after replacing this process, so completeness
-# is decided HERE; forward.py on it keeps pre-2.18 installs (no hop-marker removal) from ever being a target.
+# Every helper BOTH entrypoints check before sourcing (a test keeps the three lists equal). A destination
+# missing one exits 3 after the exec, so completeness is decided HERE.
 REQUIRED_LIB = ("consult_common.sh", "bounded.py", "detect.py",
                 "config.py", "forward.py")
 # [origin: 2.22 review — 2.18-2.21 runners exit 3 without snapshot.py; 2.22+ ship it only as a tombstone]
 LEGACY_LIB = ("snapshot.py",)
 
 
-def _below_2_22(version):
-    """True unless `version` is a dotted numeric triple >= 2.22.0 (unparsable counts as legacy)."""
+def _below(version, floor=SUPPORTED_FLOOR):
+    """True unless `version` is a dotted numeric triple >= `floor` (unparsable counts as below)."""
     parts = version.split(".")
     try:
-        return len(parts) != 3 or tuple(int(p) for p in parts) < (2, 22, 0)
+        return len(parts) != 3 or tuple(int(p) for p in parts) < tuple(int(p) for p in floor.split("."))
     except Exception:
         return True
 
 
 def _contained(path, root_real):
-    """True when `path` RESOLVES inside `root_real` (normalization AND symlinks; the raw prefix test is
-    only a first filter). NOT atomic: check and exec are separate lookups — this guards misconfiguration
-    and casual tampering, not a hostile local user who already owns the runner."""
+    """True when `path` RESOLVES inside `root_real`. NOT atomic: guards misconfiguration, not a hostile owner."""
     if not root_real or root_real == os.sep:
         return False
     try:
@@ -57,7 +54,7 @@ def _contained(path, root_real):
 def _complete(install, version):
     """True when every helper ITS version requires is a regular readable file (half-deleted installs exist)."""
     lib = os.path.join(install, "scripts", "lib")
-    for name in REQUIRED_LIB + (LEGACY_LIB if _below_2_22(version) else ()):
+    for name in REQUIRED_LIB + (LEGACY_LIB if _below(version) else ()):
         path = os.path.join(lib, name)
         try:
             st = os.stat(path)
@@ -90,8 +87,7 @@ def _version(manifest_path):
 
 
 def _candidates(registry, cache_root, root_real):
-    """haejwo registry entries under THIS runner's own cache root; a list or a single object (both seen),
-    anything unusable dropped."""
+    """haejwo registry entries under THIS runner's cache root; a list or one object (both seen)."""
     plugins = registry.get("plugins") if isinstance(registry, dict) else None
     if not isinstance(plugins, dict):
         return []
@@ -127,8 +123,7 @@ def cmd_version(argv):
 
 
 def cmd_target(argv):
-    """Prints `<version><SENTINEL><target><SENTINEL>` when the invoked runner
-    is stale and a COMPLETE replacement is installed — otherwise nothing."""
+    """Prints `<version><SENTINEL><target><SENTINEL>` for a COMPLETE replacement, else nothing."""
     if len(argv) < 5:
         return
     registry_path, cache_root, own_version, self_path, name = argv[:5]
@@ -139,8 +134,7 @@ def cmd_target(argv):
         return
     root_real = os.path.realpath(cache_root)
     found = _candidates(registry, cache_root, root_real)
-    # EXACTLY ONE installation, or nothing: disagreeing entries are where a guess forwards to the wrong
-    # code; identical duplicates are not a disagreement.
+    # EXACTLY ONE installation (identical duplicates agree), or nothing: a guess forwards to the wrong code.
     if len({(v, os.path.normpath(p)) for v, p in found}) != 1:
         return
     version, install = found[0]
@@ -151,6 +145,9 @@ def cmd_target(argv):
     # The registry is bookkeeping, not proof: the target must agree on its version and be complete.
     if _version(os.path.join(install, MANIFEST)) != version:
         return
+    if _below(version):
+        sys.stdout.write(version + SENTINEL + "floor " + SUPPORTED_FLOOR + SENTINEL)
+        return
     if not _complete(install, version):
         return
     # The executable must resolve inside the cache root too (a contained dir may hold a symlinked runner).
@@ -160,8 +157,7 @@ def cmd_target(argv):
         st = os.stat(target)
         if not stat.S_ISREG(st.st_mode) or not os.access(target, os.X_OK):
             return
-        # Physical identity, not path equality: a symlinked installPath to this copy would re-exec it,
-        # with only the hop marker preventing a loop.
+        # Physical identity: a symlinked installPath to this copy would re-exec it (only the marker stops a loop).
         if os.path.realpath(target) == os.path.realpath(self_path):
             return
     except Exception:

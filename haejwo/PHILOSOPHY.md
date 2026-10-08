@@ -27,9 +27,11 @@ being true.**
    exactly where it compounds least; origin of the tier clause: the 2026-08-21
    configured-vs-actual worker-model mismatch (measured) and an owner-reported
    rework phase under cheaper workers (reported, not measured)]*
-3. **Enforce economics physically.** Prompts can guide; gates and budgets must
-   make expensive mistakes hard. *[instructions alone don't bind; the
-   PreToolUse gate does]*
+3. **Enforce economics with gates.** Prompts can guide; gates and budgets must
+   make expensive mistakes hard — heuristically, and never by approving a tool
+   call. *[instructions alone don't bind; the PreToolUse gate does; the
+   2026-10-08 cold audit found "physically" overstated it and found the gate's
+   allow-with-note auto-approving edits]*
 4. **Never brick the session.** Gates are plugin affordances, not security
    boundaries; on any error or ambiguity, fail open. *[failure-classifier design]*
 5. **Hard-gate only countable invariants.** Semantic judgments get norms and
@@ -102,4 +104,4 @@ amendment names its origin case and removes or merges any principle it
 duplicates. Wording changes bump the plugin patch version.
 
 History: 2026-09-28 completion audit — P13 compressed (thesis remains in the
-owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default. 2026-10-06 cold audit (no programmatic reader of the push registry was found; the owner never set it): P5 registries → explicit authorization for the action; the push command deleted (2.23.0, a tightening under P13 — owner decision + cross-vendor review). 2026-10-08 cold loop cycle 1 (two fresh evaluators found enforcement claims stronger than the code): P7 gains "an enforcement claim names its mechanism and its exemptions" (2.25.0).
+owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default. 2026-10-06 cold audit (no programmatic reader of the push registry was found; the owner never set it): P5 registries → explicit authorization for the action; the push command deleted (2.23.0, a tightening under P13 — owner decision + cross-vendor review). 2026-10-08 cold loop cycle 1 (two fresh evaluators found enforcement claims stronger than the code): P7 gains "an enforcement claim names its mechanism and its exemptions" (2.25.0). 2026-10-08 cold loop cycle 3 (measured: the gate's allow-with-note auto-approved edits past the operator's permission prompt): P3 "physically" → "with gates … never by approving a tool call" (2.27.0).

@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
-# claude_consult.sh — headless Claude reviewer runner (haejwo's reviewer slot on a Codex host; mirror of
-# codex_consult.sh — there the different-model independent reviewer is Claude, principle 9 symmetry).
-# Feeds REVIEWER CONTRACT + a self-contained brief to `claude -p` on stdin and captures the final reply.
-# Consult (non-editing) only; the invoking directory is the work root. Options, env, exit codes: --help.
+# claude_consult.sh — headless Claude reviewer runner: haejwo's reviewer slot on a Codex host (principle 9).
+# Feeds REVIEWER CONTRACT + a brief to `claude -p` on stdin; consult only; cwd = work root; usage: --help.
 # Shared mechanics live in lib/consult_common.sh; this file owns the vendor policy: contract text, the
-# `claude -p` argv and its --disallowedTools, the timeout default, and the non-git policy (no sandbox
-# exists here, so a non-repo is always refused).
-# NEVER trust the exit code alone: rc=0 with no reply or a changed repository is never success; there is no
-# event classifier on this path; a failure reported only in prose is not detected. Edit/Write/NotebookEdit
-# are disallowed; Bash stays available and is covered by change detection, which is not a security
-# boundary (scope: lib/detect.py).
-# Config is host-relative: codex.model is read under /.codex/ and on a vendorless custom root (the runner
-# kind names the host, lib/config.py), ignored under /.claude/. The model is disclosed with its source.
+# `claude -p` argv and its --disallowedTools, the timeout default, and the non-git policy.
+# NEVER trust the exit code alone: rc=0 with no reply or a changed repository is never success; with no event
+# classifier, a failure reported only in prose is not detected. Edit/Write/NotebookEdit are disallowed; Bash
+# stays available, covered by change detection — not a security boundary (scope: lib/detect.py).
+# Config is host-relative: codex.model/effort are read under /.codex/ and on a vendorless custom root (the
+# runner kind names the host, lib/config.py), ignored under /.claude/. Both are disclosed with their source.
+# Effort: env HJW_CLAUDE_EFFORT > config codex.effort > unset = no --effort flag (CLI default). *[origin: Claude Code exports CLAUDE_EFFORT; measured 2026-10-08]*
 # *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex host's own reviewer model, read out of a claude-host config]*
 # *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]* *[origin: ship review Z4]*
 set -uo pipefail
 
-# ---- shared internals ----
-# $0 resolved to an ABSOLUTE PHYSICAL path (symlinked or relative invocation): realpath (the minimal-PATH
-# fixture has no readlink), else python3, else lexical $PWD. Every required file is checked before any
-# artifact exists: an incomplete install fails loudly, never half-runs a paid review.
+# $0 -> ABSOLUTE PHYSICAL path: realpath (the minimal-PATH fixture has no readlink), else python3, else $PWD.
+# Every required file is checked before any artifact exists: an incomplete install never half-runs a review.
 HJW_SELF="$(realpath "$0" 2>/dev/null)"
 case "$HJW_SELF" in
   /*) ;;
@@ -69,10 +64,11 @@ Mode:
   --snapshot: removed in 2.22 — review the live working copy; pause writes during the review, or review a worktree you prepared
   --mode implement: removed in 2.10 (cross-vendor worker routing is a non-goal)
 
-Env (env > config > default; empty = unset): CLAUDE_MODEL, CLAUDE_TIMEOUT (default 600; 0 = unlimited).
-Config key codex.model supplies the default model on a Codex host (a config path under /.codex/, or a
-  custom plugin root naming no vendor); under /.claude/ it describes the other vendor's reviewer and
-  is ignored. Env wins.
+Env (env > config > default; empty = unset): CLAUDE_MODEL, HJW_CLAUDE_EFFORT (low|medium|high|xhigh;
+  unset = no --effort flag, the CLI's default), CLAUDE_TIMEOUT (default 600; 0 = unlimited).
+Config keys codex.model/effort supply the defaults on a Codex host (a config path under /.codex/, or a
+  custom plugin root naming no vendor); under /.claude/ they describe the other vendor's reviewer and
+  are ignored. Env wins.
 
 Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed, change detection
   unavailable}; there is no event classifier on this path; a failure the reviewer reports only in
@@ -93,11 +89,9 @@ EFFECTIVE_BRIEF="$(mktemp "${TMPDIR:-/tmp}/claude_effective.XXXXXX.md")" || {
   echo "cannot create a temp file (is ${TMPDIR:-/tmp} writable?)" >&2; exit 4; }
 { printf '%s\n\n' "$REVIEWER_CONTRACT"; cat "$BRIEF"; } > "$EFFECTIVE_BRIEF"
 
-# ---- config (same path rules as codex_consult.sh) ----
-hjw_config_load
+hjw_config_load  # same path rules as codex_consult.sh
 
-# ---- model: env CLAUDE_MODEL > config codex.model > CLI default ----
-# A whitespace-only value counts as UNSET on both paths.
+# ---- model: env CLAUDE_MODEL > config codex.model > CLI default (whitespace-only = UNSET on both paths) ----
 ENV_MODEL="$(trim "${CLAUDE_MODEL:-}")"
 if [ -n "$ENV_MODEL" ]; then
   MODEL="$ENV_MODEL"; MODEL_SRC="env"
@@ -107,8 +101,23 @@ else
   MODEL=""; MODEL_SRC="cli-default"
 fi
 
+ENV_EFFORT="$(trim "${HJW_CLAUDE_EFFORT:-}")"; EFFORT=""; EFFORT_SRC=""
+if [ -n "$ENV_EFFORT" ]; then
+  case "$ENV_EFFORT" in
+    low|medium|high|xhigh) EFFORT="$ENV_EFFORT"; EFFORT_SRC="env" ;;
+    *) echo "invalid HJW_CLAUDE_EFFORT: $ENV_EFFORT (must be one of: low, medium, high, xhigh)" >&2; exit 2 ;;
+  esac
+elif [ -n "$CFG_EFFORT" ]; then
+  case "$CFG_EFFORT" in
+    low|medium|high|xhigh) EFFORT="$CFG_EFFORT"; EFFORT_SRC="config" ;;
+    *) echo "note: config codex.effort '$CFG_EFFORT' invalid; passing no effort flag (CLI default)" >&2 ;;
+  esac
+fi
+
 TIMEOUT="${CLAUDE_TIMEOUT:-600}"
 MODEL_FLAG=(); [ -n "$MODEL" ] && MODEL_FLAG=(--model "$MODEL")
+EFFORT_FLAG=(); EFFORT_DISP="effort=unset (CLI default)"
+[ -n "$EFFORT" ] && { EFFORT_FLAG=(--effort "$EFFORT"); EFFORT_DISP="effort=$EFFORT ($EFFORT_SRC)"; }
 
 if [ -n "$MODEL" ]; then MODEL_DISP="model=$MODEL ($MODEL_SRC)"
 else MODEL_DISP="model=cli-default (identity unverified)"; fi
@@ -116,7 +125,7 @@ else MODEL_DISP="model=cli-default (identity unverified)"; fi
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
 {
-  echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
 } > "$LOG"
 # After the header write (which truncates $LOG), so the foreign-CLAUDE_PLUGIN_DATA note survives with the header.
@@ -125,15 +134,13 @@ echo "# ---- claude -p ----" >> "$LOG"
 
 # ---- change detection (A5): file-backed before/after snapshots ----
 WORKDIR="$(pwd)"
-# $LOG cannot collide with the previous reply — the aliasing rule renamed it.
 rm -f "$OUT"
 hjw_git_preflight
 ARTIFACTS=("$OUT" "$LOG" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
-  # Not a git repo: the no-edit contract can never be verified, so refuse before the paid call (was a
-  # post-run failure that paid for a discarded result). `claude -p` has no sandbox, so no read-only exception:
-  # the codex runner's is a vendor capability, not shared policy. *[origin 2026-09-21 audit item 3]*
+  # Not a git repo: the no-edit contract is unverifiable, so refuse before the paid call. `claude -p` has no
+  # sandbox, so no read-only exception (a codex vendor capability). *[origin 2026-09-21 audit item 3]*
   REFUSE_MSG="consult outside a git repo — cannot verify the no-edit contract (claude -p is unsandboxed). Run inside a git repo."
   printf '# ---- precondition refused: %s ----\n' "$REFUSE_MSG" >> "$LOG" 2>/dev/null
   echo "$REFUSE_MSG" >&2
@@ -141,11 +148,10 @@ if ! hjw_detect_before; then
 fi
 
 # ---- run ----
-echo "→ Claude (mode=$MODE, $MODEL_DISP, timeout=${TIMEOUT}s, brief=$BRIEF) ..." >&2
-# Direct edit tools disabled — the reviewer analyzes and replies only.
-RUN=(claude -p "${MODEL_FLAG[@]}" --disallowedTools "Edit,Write,NotebookEdit")
+echo "→ Claude (mode=$MODE, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF) ..." >&2
+RUN=(claude -p "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" --disallowedTools "Edit,Write,NotebookEdit")
 START=$SECONDS
-echo "# ---- attempt 1: $MODEL_DISP ----" >> "$LOG"
+echo "# ---- attempt 1: $MODEL_DISP $EFFORT_DISP ----" >> "$LOG"
 echo "# ---- attempt 1 stderr ----" >> "$LOG"
 if [ "$TIMEOUT" != 0 ]; then
   bounded "$TIMEOUT" "${RUN[@]}" < "$EFFECTIVE_BRIEF" > "$OUT" 2>> "$LOG"
@@ -157,14 +163,11 @@ DUR=$((SECONDS - START))
 
 hjw_detect_after
 
-# ---- failure classifier ----
 if [ "$rc" -eq 124 ]; then fail "timed out after ${TIMEOUT}s (tune with CLAUDE_TIMEOUT)"
 elif [ "$rc" -ne 0 ]; then fail "claude exit code $rc"; fi
 
 [ -s "$OUT" ] || fail "empty reply (claude produced no final answer)"
 
-# ---- mode gate (side-effect verification) ----
-# GIT_OK is necessarily 1 here: the non-git case exits 2 in the preflight, before any reviewer call.
 hjw_change_verdict
 
 # ---- result ----
@@ -174,6 +177,6 @@ if [ "$FAILED" = 1 ]; then
 fi
 
 hjw_log_coverage_note
-echo "=== Claude reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP ===$COVERAGE_NOTE"
+echo "=== Claude reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP ===$COVERAGE_NOTE"
 cat "$OUT"
 exit 0

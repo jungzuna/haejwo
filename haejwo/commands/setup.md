@@ -3,7 +3,7 @@ description: Configure haejwo once (writes config) — model tiers, edit budget,
 argument-hint: "(no arguments)"
 ---
 
-You are the **haejwo host**. Configure the plugin — walk ALL steps, once per account. Data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted → `ls -d ~/.claude/plugins/data/*haejwo*`). Edit an existing `config.json`, never clobber it; disclose one that will not parse before writing — hooks are fail-open until it is repaired.
+You are the **haejwo host**. Configure the plugin — walk ALL steps, once per account. Data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted → `ls -d ~/.claude/plugins/data/*haejwo*`). Disclose a `config.json` that will not parse before writing — hooks are fail-open until it is repaired.
 
 **Persistence (every step):** write `config.json` IMMEDIATELY at each state transition (python3 read-modify-write; preserve unknown keys) — a stale `enabled:true` or `danger-full-access` consent from a PREVIOUS run must not survive a verification that just failed. Every failure/STOP branch first writes `codex.enabled=false` and REMOVES `consult_sandbox` / `danger_full_access_consented_at`. `codex` holds reviewer state on both hosts (on Codex, the claude reviewer).
 
@@ -25,17 +25,17 @@ Gate, bash-guard and tier answers persist with `"configured": true` in ONE write
 
 ## 3. Reviewer enabled → verify end-to-end (consent-gated)
 Before recording `verified_at`, confirm the log header's `config=<path>` is the file setup writes.
-0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`) so stored values are verified; the smoke pins `CODEX_EFFORT=low`, the repo-read probe runs under `env -u CODEX_EFFORT` to verify the stored effort.
+0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`); the smoke pins `CODEX_EFFORT=low`, the repo-read probe runs under `env -u CODEX_EFFORT`.
 1. **Self-contained smoke** — a tiny brief, no repo access. Claude Code host:
    ```
    printf 'MODE: consult\nReply with exactly: HAEJWO-OK\n' | env -u CODEX_MODEL CODEX_EFFORT=low CODEX_TIMEOUT=90 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh" --mode consult -
    ```
-   Codex host: same brief to `env -u CLAUDE_MODEL "${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh" --mode consult -` (CLAUDE_TIMEOUT=90). Exit != 0 or no HAEJWO-OK → persist disabled, report why and the fix, STOP — never ask the sandbox question.
+   Codex host: same brief to `env -u CLAUDE_MODEL HJW_CLAUDE_EFFORT=low "${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh" --mode consult -` (CLAUDE_TIMEOUT=90). Exit != 0 or no HAEJWO-OK → persist disabled, report why and the fix, STOP — never ask the sandbox question.
 2. **Repo-read probe** — temp git repo in a scratch dir under the cwd; a random nonce in a file whose NAME is unrelated to it; the nonce never appears in the brief, which carries ONLY that absolute path and "return the file's exact content", piped on stdin.
-3. **Run it.** Codex reviewer: `CODEX_SANDBOX=read-only` EXPLICITLY on attempt AND retry — otherwise a stored `consult_sandbox` leaks in; the claude runner takes no sandbox argument. Success → persist `consult_sandbox="read-only"`, `verified_at=<probe unix-ts>`, `enabled=true`; DONE. Failure → retry ONCE. Still failing → when the log beside the reply does not show the cause, report exactly "read-only workspace probe failed; sandbox or CLI/tool failure", NEVER "sandbox defect". Claude reviewer (no sandbox to escalate) → persist disabled, report, STOP.
+3. **Run it.** Codex reviewer: `CODEX_SANDBOX=read-only` EXPLICITLY on attempt AND retry; the claude runner takes no sandbox argument. Success → persist `consult_sandbox="read-only"`, `verified_at=<probe unix-ts>`, `enabled=true`; DONE. Failure → retry ONCE. Still failing → when the log beside the reply does not show the cause, report exactly "read-only workspace probe failed; sandbox or CLI/tool failure", NEVER "sandbox defect". Claude reviewer (no sandbox to escalate) → persist disabled, report, STOP.
 4. **`danger-full-access` — CODEX reviewer only, ONLY after step 3 failed, retry included.** ONE question: allow it for future reviewer runs? On hosts that break the CLI's sandboxing it is the only way to read the repo. The wording MUST state plainly: the reviewer runs with the user's own permissions; the standing REVIEWER CONTRACT and git-snapshot change detection reduce risk but are NOT a security boundary; package installs, MCP/user config changes, ignored or out-of-repo files and an edit-then-restore sequence are NOT caught. Refusal → persist disabled, report, STOP.
 5. **On consent** — re-run the same nonce probe with `CODEX_SANDBOX=danger-full-access` EXPLICITLY. Success → persist `consult_sandbox="danger-full-access"`, `danger_full_access_consented_at=<unix-ts>`, `verified_at=<probe unix-ts>`, `enabled=true`. Failure → persist disabled, report, STOP.
 6. **Re-run / revoke** — a re-run reuses a recorded consent only AFTER telling the user it exists, so they can revoke it; disabling the reviewer removes both keys.
 
 ## 4. Report
-A compact table of the saved choices (stored pins kept; unset roles take today's defaults).
+A compact table of the saved choices (stored pins kept; unset roles take today's defaults). The host uses your session effort; start from your model generation's vendor recommendation and compare accepted outcomes, cost and rework before raising it.

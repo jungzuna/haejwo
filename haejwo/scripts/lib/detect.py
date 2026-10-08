@@ -27,7 +27,8 @@ def cmd_snapshot(argv):
     artifacts = [p for p in argv[2:] if p]
 
     def git(*args):
-        r = subprocess.run(["git", "-C", workdir] + list(args), capture_output=True)
+        # *[origin: `git status` may refresh the reviewed repo's .git/index — an indirect write and lock contention]*
+        r = subprocess.run(["git", "--no-optional-locks", "-C", workdir] + list(args), capture_output=True)
         if r.returncode != 0:
             detail = r.stderr.decode("utf-8", "replace").strip() or ("rc=%d" % r.returncode)
             raise RuntimeError("git %s: %s" % (" ".join(args), detail))

@@ -465,17 +465,13 @@ hjw_config_load() {
   CFG_MODEL="$(printf '%s\n' "$values" | sed -n 's/^model=//p')"
   CFG_EFFORT="$(printf '%s\n' "$values" | sed -n 's/^effort=//p')"
   CFG_IGNORED="$(printf '%s\n' "$values" | sed -n 's/^ignored=//p')"
-  if [ "$HJW_RUNNER_KIND" = codex ]; then
-    if [ -n "$CFG_IGNORED" ]; then
-      old_ifs="$IFS"; IFS=','
-      for k in $CFG_IGNORED; do
-        [ -n "$k" ] && echo "note: config codex.$k ignored (not a string)" >&2
-      done
-      IFS="$old_ifs"
-    fi
-  else
-    # claude reads only codex.model, so only that key's note is actionable.
-    case ",$CFG_IGNORED," in *,model,*) echo "note: config codex.model ignored (not a string)" >&2 ;; esac
+  # Both runners read model and effort (2.24), so every non-string key's note is actionable.
+  if [ -n "$CFG_IGNORED" ]; then
+    old_ifs="$IFS"; IFS=','
+    for k in $CFG_IGNORED; do
+      [ -n "$k" ] && echo "note: config codex.$k ignored (not a string)" >&2
+    done
+    IFS="$old_ifs"
   fi
   return 0
 }
@@ -582,7 +578,7 @@ hjw_change_verdict() {
 }
 
 # ---- result / failure reporting ----
-# Built from explicit vendor fields; never guesses a vendor's disclosures (codex: effort/sandbox; claude: neither).
+# Built from explicit vendor fields; never guesses a vendor's disclosures (codex: effort/sandbox; claude: effort only).
 hjw_fail_header() {
   echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, ${DUR}s):${COVERAGE_NOTE:-}" >&2
   printf '%s' "$FAIL_MSG" >&2

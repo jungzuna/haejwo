@@ -20,7 +20,7 @@ haejwo makes **multiple models run well on top of Claude Code and Codex, automat
 - Temp paths are never code: anything under `/tmp`, `/var/tmp` or `tempfile.gettempdir()` is unclassified, so a repository cloned under one of them is gated by neither the edit budget nor the Bash guard's code-path checks — except that an in-place editor fanned out through `find`/`xargs` is denied whatever its paths (its targets are invisible to the guard).
 
 ## First run
-`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices for model tiers, edit budget, bash-guard and the independent reviewer; it probes the other CLI, smoke-tests the reviewer slot, and persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives updates). Before setup the safe defaults apply: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (the default) / `Budget` (Sonnet/Haiku; Haiku ignores effort) / `Custom`. `deep-reasoner` inherits your session's model; `Standard` runs both workers on Opus (default-worker high effort, task-worker low).
+`SessionStart` nudges once: run **`/haejwo:setup`** — interactive choices for model tiers, edit budget, bash-guard and the independent reviewer; it probes the other CLI, smoke-tests the reviewer slot, and persists to `${CLAUDE_PLUGIN_DATA}/config.json` (survives updates). Before setup the safe defaults apply: gate ON, 2 files/turn, bash-guard ON. Presets: `Standard` (default) / `Budget` (Sonnet/Haiku; Haiku ignores effort) / `Custom`.
 
 On Claude Code the workers run at their agent file's model unless one is passed explicitly; the delegation gate steers an omitted override that would miss a configured pin, but does not verify which model ran.
 
@@ -42,7 +42,7 @@ The name-integrity rule: the moment users must **understand or manage the plugin
 
 Gate fires are logged to `state/observations.jsonl`; `HAEJWO_GATE=off <cmd>` overrides one command.
 
-**Effort:** the host is always your session's model. Reviewer effort policy lives in the injected rules; `default-worker` pins `high` and `task-worker` `low` in their agent files; deep-reasoner and generic agents inherit the session's effort.
+**Effort:** The host uses your session effort; start from your model generation's vendor recommendation and compare accepted outcomes, cost and rework before raising it. Reviewer effort policy lives in the injected rules; `default-worker` pins `high` and `task-worker` `low` in their agent files; deep-reasoner and generic agents inherit the session's effort.
 
 ## Install
 See the [root README](../README.md) (both hosts). Codex: trust the hooks once via `/hooks` in interactive codex; commands surface as `@haejwo-*` skills (CI-only: `--dangerously-bypass-hook-trust`).
@@ -64,7 +64,7 @@ Hooks load at session start — restart after install or update. From 2.18 a run
 - **Artifact guard (2.21):** a reply, log, events or temp-brief path inside the worktree or its git dirs (lexically or via a symlink), or an existing hard-linked artifact, is refused with exit 2 before the first write and the paid call. Other worktrees of the same repository are not covered.
 - `codex_consult.sh` reads failures from codex's JSONL events (top-level `turn.failed`/`error` only) plus an anchored `ERROR codex_core` tracing scan with no opt-out. A model rejected before execution fails with one hint; it is not retried.
 - Fail-closed: a git error, unreadable snapshot or timeout fails the run (before the paid call when the BEFORE snapshot fails); unreadable files are disclosed (`some files unreadable: N`).
-- Everything runs under a python3 wall clock. The model (codex: and effort) prints with its source; the log header names the plugin version and config file.
+- Everything runs under a python3 wall clock. Model and effort print with their source; the log header names the plugin version and config file.
 
 **Not guaranteed**
 - **Not a security boundary:** Bash stays available to the reviewer.
@@ -74,7 +74,7 @@ Hooks load at session start — restart after install or update. From 2.18 a run
 - An unselected model is **`cli-default (identity unverified)`**; the Codex-host workflow is untested in the field.
 
 **Knobs and config**
-- Env wins over config; empty = unset. `CODEX_MODEL`, `CODEX_EFFORT` (`low`/`medium`/`high`/`xhigh`, runner default **`medium`**), `CODEX_SANDBOX` (`read-only` default / `workspace-write` / `danger-full-access`), `CODEX_TIMEOUT` (600s at every effort, `0` = unlimited); `CLAUDE_MODEL` / `CLAUDE_TIMEOUT` on the claude runner.
+- Env wins over config; empty = unset. `CODEX_MODEL`, `CODEX_EFFORT` (`low`/`medium`/`high`/`xhigh`, runner default **`medium`**), `CODEX_SANDBOX` (`read-only` default / `workspace-write` / `danger-full-access`), `CODEX_TIMEOUT` (600s at every effort, `0` = unlimited); `CLAUDE_MODEL`, `HJW_CLAUDE_EFFORT` (env > `codex.effort`, else no flag: CLI default), `CLAUDE_TIMEOUT` on the claude runner.
 - Keys: `codex.model`, `codex.effort`, `codex.consult_sandbox`. The `codex` block describes the reviewer of the **host that owns the data dir**: the codex runner ignores model/effort under `/.codex/` and the claude runner reads them there; under `/.claude/` the reverse; under a custom plugin root each runner reads its own block. A stored `fallback_model` is ignored.
 - Path, by ownership: the runner's own `<plugins>/data/haejwo-haejwo/config.json`, else `CLAUDE_PLUGIN_DATA` only when named `haejwo-haejwo` (a naming heuristic, not authentication), else `~/.claude|~/.codex/plugins/data/haejwo-haejwo/config.json`. A foreign value is ignored and disclosed once; a bad owner file never falls back elsewhere.
 

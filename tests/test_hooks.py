@@ -2468,7 +2468,7 @@ exit "$rc"
                 for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
                             "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
                             "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID",
-                            "CLAUDE_EFFORT"):
+                            "HJW_CLAUDE_EFFORT"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
                     env["CLAUDE_PLUGIN_DATA"] = empty_data_dir_named("nocfg-")
@@ -3188,6 +3188,27 @@ exit "$rc"
             check("change detection: artifacts in a new directory are excluded (-uall, not a collapsed dir)",
                   p.returncode == 0 and "changed=\n" in p.stdout, f"rc={p.returncode} out={p.stdout}")
 
+            # ---- (F4b) snapshot git calls take --no-optional-locks: a plain
+            # `git status` may refresh the reviewed repo's .git/index ----
+            nol_bin = os.path.join(runner_tmp, "bin-git-argv")
+            os.makedirs(nol_bin, exist_ok=True)
+            nol_log = os.path.join(runner_tmp, "git-argv.log")
+            with open(os.path.join(nol_bin, "git"), "w") as f:
+                f.write("#!/usr/bin/env bash\n"
+                        f"printf '%s\\n' \"$*\" >> '{nol_log}'\n"
+                        f"exec {shutil.which('git')} \"$@\"\n")
+            os.chmod(os.path.join(nol_bin, "git"), 0o755)
+            nol_env = dict(os.environ, PATH=nol_bin + os.pathsep + os.environ.get("PATH", ""))
+            p = subprocess.run(["python3", detect_py, "snapshot", newdir_repo,
+                                os.path.join(runner_tmp, "nol.json")],
+                               capture_output=True, text=True, env=nol_env)
+            nol_lines = (open(nol_log).read().splitlines() if os.path.isfile(nol_log) else [])
+            nol_sd = [l for l in nol_lines if " status " in f" {l} " or " diff " in f" {l} "]
+            check("change detection: every snapshot git status/diff runs with --no-optional-locks",
+                  p.returncode == 0 and len(nol_sd) == 3
+                  and all(l.startswith("--no-optional-locks ") for l in nol_sd),
+                  f"rc={p.returncode} calls={nol_lines} err={p.stderr}")
+
             # ---- (F5) per-path fingerprints: an already-dirty tracked file
             # edited AGAIN keeps its status but must still be named ----
             dirty_repo = make_repo("repo-dirty")
@@ -3446,6 +3467,91 @@ exit "$rc"
                   rc == 0 and bool(calls) and "--model" not in calls[0][0]
                   and "model=cli-default (identity unverified)" in out,
                   f"rc={rc} argv={calls[:1]} out={out}")
+
+            # ---- (o2) claude runner effort (2.24): env HJW_CLAUDE_EFFORT > config
+            # codex.effort > UNSET = no --effort flag at all. Unlike the codex
+            # runner there is NO runner default: unset must never imply a known
+            # effort, so the CLI's own default (and its settings) applies. ----
+            def claude_effort_run(label, env_extra):
+                e_bin = os.path.join(runner_tmp, f"bin-claude-effort-{label}")
+                e_cap = os.path.join(runner_tmp, f"cap-claude-effort-{label}")
+                make_stub(e_bin, "claude", e_cap)
+                env = {"PATH": e_bin + os.pathsep + os.environ.get("PATH", "")}
+                env.update(env_extra)
+                e_brief = brief_file(f"claude-effort-{label}.md")
+                e_rc, e_out, e_err = run_script(claude_script, [e_brief], env)
+                e_log_path = os.path.splitext(e_brief)[0] + ".reply.log"
+                e_log = (open(e_log_path, encoding="utf-8").read()
+                         if os.path.isfile(e_log_path) else "")
+                e_calls = read_calls(e_cap)
+                return e_rc, e_out, e_err, (e_calls[0][0] if e_calls else None), e_log
+
+            rc, out, err, argv, log = claude_effort_run("env", {"HJW_CLAUDE_EFFORT": " high "})
+            check("claude effort: env HJW_CLAUDE_EFFORT (trimmed) -> --effort high in argv",
+                  rc == 0 and argv is not None and argv_value(argv, "--effort") == "high",
+                  f"rc={rc} argv={argv}")
+            check("claude effort: (env) source on the progress line, log header and result line",
+                  "effort=high (env)" in err and "effort=high (env)" in log.splitlines()[0]
+                  and "effort=high (env)" in out, f"err={err} log={log[:300]} out={out}")
+
+            rc, out, err, argv, log = claude_effort_run("env-invalid", {"HJW_CLAUDE_EFFORT": "insane"})
+            check("claude effort: invalid ENV -> exit 2 with the codex-shaped message",
+                  rc == 2 and "invalid HJW_CLAUDE_EFFORT: insane (must be one of: low, medium, high, xhigh)" in err,
+                  f"rc={rc} err={err}")
+            check("claude effort: invalid ENV -> claude never invoked", argv is None, argv)
+
+            # Claude Code exports CLAUDE_EFFORT (the HOST's session effort) to
+            # every child — measured 2026-10-08. It must never reach the runner.
+            rc, out, err, argv, log = claude_effort_run("inherited-host", {"CLAUDE_EFFORT": "max"})
+            check("claude effort: an inherited CLAUDE_EFFORT=max is IGNORED -> no --effort, unset disclosed",
+                  rc == 0 and argv is not None and "--effort" not in argv
+                  and "effort=unset (CLI default)" in log.splitlines()[0]
+                  and "effort=unset (CLI default)" in out, f"rc={rc} argv={argv} err={err}")
+
+            claude_effort_cfg = cfg_dir_with(
+                os.path.join("host-codex-claude-effort", ".codex", "plugins", "data"),
+                {"codex": {"effort": "xhigh"}})
+            rc, out, err, argv, log = claude_effort_run("config", {"CLAUDE_PLUGIN_DATA": claude_effort_cfg})
+            check("claude effort: codex-host config codex.effort -> --effort xhigh, (config) disclosed",
+                  rc == 0 and argv is not None and argv_value(argv, "--effort") == "xhigh"
+                  and "effort=xhigh (config)" in out and "effort=xhigh (config)" in log,
+                  f"rc={rc} argv={argv} out={out}")
+
+            claude_bad_effort_cfg = cfg_dir_with(
+                os.path.join("host-codex-claude-effort-bad", ".codex", "plugins", "data"),
+                {"codex": {"effort": "insane"}})
+            rc, out, err, argv, log = claude_effort_run("config-invalid",
+                                                        {"CLAUDE_PLUGIN_DATA": claude_bad_effort_cfg})
+            check("claude effort: invalid CONFIG -> one note, NO --effort flag, run continues",
+                  rc == 0 and "note: config codex.effort 'insane' invalid; passing no effort flag (CLI default)" in err
+                  and argv is not None and "--effort" not in argv
+                  and "effort=unset (CLI default)" in out, f"rc={rc} err={err} argv={argv} out={out}")
+
+            rc, out, err, argv, log = claude_effort_run("unset", {})
+            check("claude effort: unset -> NO --effort flag; header says effort=unset (CLI default)",
+                  rc == 0 and argv is not None and "--effort" not in argv
+                  and "effort=unset (CLI default)" in log.splitlines()[0]
+                  and "effort=unset (CLI default)" in out, f"rc={rc} argv={argv} log={log[:300]}")
+
+            claude_host_effort_cfg = cfg_dir_with(
+                os.path.join("host-claude-effort", ".claude", "plugins", "data"),
+                {"codex": {"effort": "xhigh"}})
+            rc, out, err, argv, log = claude_effort_run("wrong-host",
+                                                        {"CLAUDE_PLUGIN_DATA": claude_host_effort_cfg})
+            check("claude effort: a /.claude/ HOST config's codex.effort is IGNORED (ownership) -> unset",
+                  rc == 0 and argv is not None and "--effort" not in argv
+                  and "effort=unset (CLI default)" in out, f"rc={rc} argv={argv} out={out}")
+
+            claude_junk_cfg = cfg_dir_with(
+                os.path.join("host-codex-claude-junk", ".codex", "plugins", "data"),
+                {"codex": {"model": 123, "effort": []}})
+            rc, out, err, argv, log = claude_effort_run("config-nonstring",
+                                                        {"CLAUDE_PLUGIN_DATA": claude_junk_cfg})
+            check("claude config: non-string model AND effort -> one note per key, nothing passed",
+                  rc == 0 and "note: config codex.model ignored (not a string)" in err
+                  and "note: config codex.effort ignored (not a string)" in err
+                  and argv is not None and "--effort" not in argv and "--model" not in argv,
+                  f"rc={rc} err={err} argv={argv}")
 
             # ---- --mode implement removed (both runners, both flag forms) ----
             for label, script in (("codex", codex_script), ("claude", claude_script)):
@@ -4930,7 +5036,7 @@ exit "$rc"
                 t13_env = dict(os.environ)
                 for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
                             "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
-                            "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT"):
+                            "CLAUDE_CODE_SESSION_ID", "HJW_CLAUDE_EFFORT"):
                     t13_env.pop(var, None)
                 t13_env.update({
                     "PATH": t13_bin + os.pathsep + os.environ.get("PATH", ""),

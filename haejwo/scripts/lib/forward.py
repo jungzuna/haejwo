@@ -27,8 +27,6 @@ MANIFEST = os.path.join(".claude-plugin", "plugin.json")
 # missing one exits 3 after the exec, so completeness is decided HERE.
 REQUIRED_LIB = ("consult_common.sh", "bounded.py", "detect.py",
                 "config.py", "forward.py")
-# [origin: 2.22 review — 2.18-2.21 runners exit 3 without snapshot.py; 2.22+ ship it only as a tombstone]
-LEGACY_LIB = ("snapshot.py",)
 
 
 def _below(version, floor=SUPPORTED_FLOOR):
@@ -51,10 +49,10 @@ def _contained(path, root_real):
     return real.startswith(root_real.rstrip(os.sep) + os.sep)
 
 
-def _complete(install, version):
-    """True when every helper ITS version requires is a regular readable file (half-deleted installs exist)."""
+def _complete(install):
+    """True when every required helper is a regular readable file (half-deleted installs exist)."""
     lib = os.path.join(install, "scripts", "lib")
-    for name in REQUIRED_LIB + (LEGACY_LIB if _below(version) else ()):
+    for name in REQUIRED_LIB:
         path = os.path.join(lib, name)
         try:
             st = os.stat(path)
@@ -148,7 +146,7 @@ def cmd_target(argv):
     if _below(version):
         sys.stdout.write(version + SENTINEL + "floor " + SUPPORTED_FLOOR + SENTINEL)
         return
-    if not _complete(install, version):
+    if not _complete(install):
         return
     # The executable must resolve inside the cache root too (a contained dir may hold a symlinked runner).
     if not _contained(target, root_real):

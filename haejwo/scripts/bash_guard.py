@@ -68,9 +68,9 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    allow, command_name, config_ignored_note_once, deny, gate_disabled_by_env,
-    is_code_file, is_subagent, load_config_with_status, malformed_note_once,
-    observe, on_codex_host, paths, read_payload, with_note,
+    CODEX_SPAWN_WORKER, allow, command_name, config_ignored_note_once, deny,
+    gate_disabled_by_env, is_code_file, is_subagent, load_config_with_status,
+    malformed_note_once, observe, on_codex_host, paths, read_payload, with_note,
 )
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\|")
@@ -186,6 +186,8 @@ def unresolved(word):
 def code_words(segment, cfg, cwd="", mask=None):
     """(literal code paths, unresolved words) for the in-place-editor scan:
     every code-extension match is first expanded to its whole shell word."""
+    if not cfg["code_extensions"]:
+        return [], []  # nothing counts as code (hjw_common._validate_types)
     if mask is None:
         mask = protected_spans(segment)
     ext_alt = "|".join(re.escape(e) for e in cfg["code_extensions"])
@@ -263,8 +265,12 @@ def _decide(payload, data, root=""):
 
 def _decide_loaded(payload, cfg, on_codex):
     """_decide past the config load: the guard decision proper."""
-    # Codex spells the commands as skills (cold-loop F11); Claude text as was.
+    # Codex spells the commands as skills (cold-loop F11) and delegates via
+    # spawn_agent — its manifest ships no agents (cycle 3 F4); Claude text as
+    # was.
     override = command_name("gate off", on_codex)
+    worker = CODEX_SPAWN_WORKER if on_codex else "'haejwo:default-worker'"
+    edit_tools = "apply_patch" if on_codex else "Edit/Write"  # cycle 3 F16
     if not (cfg["gate"]["enabled"] and cfg["gate"]["bash_guard"]):
         return "allow", "gate-off", None, None, None
 
@@ -300,8 +306,8 @@ def _decide_loaded(payload, cfg, on_codex):
                 if target != "/dev/null" and is_code_file(target, cfg, cwd):
                     return "deny", via, target, (
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
-                        f"The main agent must not modify code via Bash — use Edit/Write "
-                        f"within the turn budget, or delegate to 'haejwo:default-worker'. "
+                        f"The main agent must not modify code via Bash — use {edit_tools} "
+                        f"within the turn budget, or delegate to {worker}. "
                         f"Emergency override: {override}."
                     ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
@@ -315,13 +321,15 @@ def _decide_loaded(payload, cfg, on_codex):
                 hits, skipped = code_words(segment, cfg, cwd, mask)
                 if first_unresolved is None and skipped:
                     first_unresolved = skipped[0]
-                if hits or FANOUT.search(segment):
+                # An empty code_extensions means nothing counts as code
+                # (incl. an invalid list, cycle 3 B2): no fan-out deny either.
+                if hits or (FANOUT.search(segment) and cfg["code_extensions"]):
                     shown = hits[:3] if hits else "files fanned out via find/xargs"
                     return "deny", ("inplace" if hits else "fanout"), \
                         (hits[0] if hits else None), (
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
                             f"The main agent must not modify code via Bash — use "
-                            f"Edit/Write within budget, or delegate to 'haejwo:default-worker'. "
+                            f"{edit_tools} within budget, or delegate to {worker}. "
                             f"Emergency override: {override}."
                         ), None
     # Precedence: a literal code target always wins (it returned a deny

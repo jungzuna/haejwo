@@ -8,7 +8,12 @@
 A mirror `codex-skills/haejwo-<name>/SKILL.md` is its command
 `commands/<name>.md` with the frontmatter rewritten for the Codex host (a
 `name:` line, the same `description:` line, no `argument-hint:`) and a
-do-not-edit banner; the body is byte-identical. Drift is a differing mirror,
+do-not-edit banner; the body is the command's with ONE host substitution:
+every `/haejwo:<cmd>` reference becomes `@haejwo-<cmd>`, the Codex skill name
+(never inside a URL).
+`${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `$ARGUMENTS` are NOT
+substituted (their Codex behaviour is unmeasured; the commands handle an
+unresolved placeholder themselves). Drift is a differing mirror,
 a missing mirror, or an ORPHAN mirror with no command. `--write` never deletes
 an orphan: it reports it and exits 1, and the maintainer removes it.
 The test suite's drift canary calls `drift()` from here — never `--write`.
@@ -27,6 +32,20 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.join(os.path.dirname(HERE), "haejwo")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+# A slash command at a token start; a path or agent name (`x/haejwo:y`, `haejwo:default-worker`) is not one.
+SLASH_CMD = re.compile(r"(?<![\w./~-])/haejwo:([a-z][a-z0-9-]*)")
+
+
+def rewrite_commands(text):
+    """Every `/haejwo:<cmd>` -> `@haejwo-<cmd>`, except inside a URL: a match
+    whose whitespace-delimited token has a `://` before it is left as written
+    (`https://[::1]/haejwo:setup`, `?next=/haejwo:plan`)."""
+    def sub(m):
+        i = m.start()
+        while i > 0 and not text[i - 1].isspace():
+            i -= 1
+        return m.group(0) if "://" in text[i:m.start()] else "@haejwo-" + m.group(1)
+    return SLASH_CMD.sub(sub, text)
 
 
 def expected_mirror(name, cmd_text):
@@ -40,7 +59,7 @@ def expected_mirror(name, cmd_text):
             "<!-- MIRROR of commands/%s.md for the Codex host — do not edit by hand;\n"
             "     edit commands/%s.md and run `python3 tests/mirrors.py --write`.\n"
             "     Drift is canary-tested. -->\n\n"
-            % (name, desc[0], name, name)) + cmd_text[m.end():]
+            % (name, desc[0], name, name)) + rewrite_commands(cmd_text[m.end():])
 
 
 def expected_mirror_bytes(name, cmd_bytes):

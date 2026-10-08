@@ -1,8 +1,8 @@
 {
   "name": "haejwo",
   "displayName": "haejwo (해줘)",
-  "description": "해줘 — \"just handle it.\" Cold-start plugin for Claude Code and Codex: the user writes the ask, the host plans and delegates across model tiers, a different vendor's model reviews when available, and a PreToolUse gate keeps expensive judgment from becoming cheap execution. No commands required mid-run; commands are settings, plus one host-invoked plan skill.",
-  "version": "2.27.0",
+  "description": "해줘 — \"just handle it.\" Cold-start plugin for Claude Code and Codex: the user writes the ask, the host plans and delegates across model tiers, a different vendor's model reviews when available, and a PreToolUse gate keeps the expensive model on judgment, not execution. No commands required mid-run; commands are settings, plus one host-invoked plan skill.",
+  "version": "2.28.0",
   "author": {
     "name": "jungzuna",
     "url": "https://github.com/jungzuna"

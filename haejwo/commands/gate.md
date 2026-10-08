@@ -5,7 +5,7 @@ argument-hint: "[on | off | <N files/turn> | bash on|off]"
 
 You are the **haejwo host**. Operate the enforcement gate. The user's input: **$ARGUMENTS**
 
-Data dir: `${CLAUDE_PLUGIN_DATA}` (if unsubstituted, by host: Claude Code `~/.claude/plugins/data/haejwo-haejwo/`, Codex `~/.codex/plugins/data/haejwo-haejwo/`).
+Data dir: `${CLAUDE_PLUGIN_DATA}` — substituted by the host for THIS plugin (measured on Claude Code; not on Codex). If it arrives UNRESOLVED (the literal `${…}` text), STOP before any write and use the host's fallback: Claude Code `~/.claude/plugins/data/haejwo-haejwo/`, Codex `~/.codex/plugins/data/haejwo-haejwo/`.
 
 - **No argument** → show status: read `config.json` (gate.enabled, max_files_per_turn, bash_guard) plus this session's state file — `$CLAUDE_CODE_SESSION_ID`, every `[^A-Za-z0-9_-]` → `-`, first 80 chars → `state/<that>.json` (this turn's counted files); unknown session id → the newest `state/*.json`, labeled "may be another session's". One compact block.
 - **`on` / `off`** → set `gate.enabled` accordingly in config.json via python3 (read-modify-write, preserve other keys). Confirm what changed.

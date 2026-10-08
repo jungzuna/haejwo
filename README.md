@@ -16,7 +16,7 @@
 
 haejwo is a hooks-and-rules plugin for [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex): it injects orchestration rules at session start, denies the main agent's code edits past a per-turn budget so implementation goes to worker subagents, and, once enabled, sends plans to the other vendor's model for review. It is for people already on one of those harnesses who want the session model kept on judgment.
 
-You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on — no configuration or workflow commands.
+You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on — no workflow commands; setup is optional and nudged until configured.
 
 ## Install
 
@@ -27,7 +27,7 @@ Requires `python3` (CI tests 3.10); the reviewer runners also use Bash and git.
 /plugin marketplace add jungzuna/haejwo
 /plugin install haejwo@haejwo
 /reload-plugins   # only if a session is open (reloads hooks and commands; rules need a restart)
-/haejwo:setup     # optional — defaults already work; a nudge repeats each session until configured
+/haejwo:setup     # optional — defaults already work
 ```
 
 **Codex CLI** (same hooks; compatibility measured live, not yet field-tested):
@@ -37,7 +37,7 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills.
 
-Hooks load at session start; restart the session after install. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
+Hooks load at session start; restart after install. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
 
 ## What you get
 

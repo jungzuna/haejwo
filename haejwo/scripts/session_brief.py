@@ -60,6 +60,22 @@ def host_core(core, on_codex):
     """The core text for this host; the Claude text is returned unchanged."""
     return core.replace(_CLAUDE_WORKERS, "via " + CODEX_SPAWN_WORKER) if on_codex else core
 
+
+# Codex ships no agents, so the rules' tier identifiers are rewritten AT
+# INJECTION on a Codex host (cycle 4 F1/D1) — only these three names; the
+# rules file stays single-source and the Claude injection is unchanged.
+CODEX_TIER_NAMES = tuple(
+    (f"haejwo:{t}", f"spawn_agent ({t} tier)")
+    for t in ("default-worker", "task-worker", "deep-reasoner"))
+
+
+def host_rules(text, on_codex):
+    """The rules text for this host; the Claude text is returned unchanged."""
+    if on_codex:
+        for name, codex in CODEX_TIER_NAMES:
+            text = text.replace(name, codex)
+    return text
+
 # A config.json that exists but cannot be parsed is a THIRD state, and the
 # unconfigured nudge is actively wrong there: it would advertise "gate ON,
 # bash-guard ON" while this very status makes every hook fail open. Say what
@@ -88,12 +104,14 @@ def resolve_plugin_root(text, root):
     return text
 
 
-def read_rules(root):
-    """The full orchestration rules text, or None when it can't be trusted."""
+def read_rules(root, on_codex):
+    """The full orchestration rules text as injected on this host (tier names
+    rewritten on Codex BEFORE any MAX_LEN check), or None when it can't be
+    trusted."""
     try:
         with open(os.path.join(root, "rules", "orchestration.md"),
                   encoding="utf-8-sig") as f:
-            return resolve_plugin_root(f.read().strip(), root)
+            return host_rules(resolve_plugin_root(f.read().strip(), root), on_codex)
     except Exception:
         return None
 
@@ -134,8 +152,15 @@ def _budget(n):
     return f"{n} files/turn" if n is not None else "invalid (edit gate OFF)"
 
 
+def _verified(codex):
+    """True when the reviewer probe recorded a positive unix-ts verified_at
+    (the status_collect.reviewer_line test)."""
+    v = codex.get("verified_at") if isinstance(codex, dict) else None
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
 def render_summary(g, models, on_codex, configured, reviewer_on, label="",
-                   env_off=False):
+                   env_off=False, reviewer_verified=True):
     """The ONE `[haejwo config]` line — gate, tiers, reviewer — for both the
     configured summary and the not-configured defaults summary (cold-loop B6:
     the two used to be rendered twice). `label` prefixes the gate fields
@@ -160,6 +185,8 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
     `OFF (env)`; a stored gate OFF turns both guards OFF too (they run only
     while the gate is on); delegation_guard is shown so the key is not a
     hidden switch — on Codex it reads `n/a (spawn_agent not hooked)`.
+    The reviewer reads "enabled (unverified)" when `reviewer_verified` is
+    false (cycle 4 F7: plan.md requires enabled AND verified).
     The whole line is bounded by SUMMARY_MAX.
     """
     fork = ("effort overrides need a fresh or partial context fork "
@@ -221,7 +248,8 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
         f"bash_guard={_flag(g['bash_guard'] and g['enabled'], env_off)} "
         f"delegation_guard={CODEX_DG if on_codex else _flag(dg and g['enabled'], env_off)}"
         f" | {tiers} | "
-        f"{reviewer_label}: {'enabled' if reviewer_on else fallback}"
+        f"{reviewer_label}: "
+        f"{fallback if not reviewer_on else 'enabled' if reviewer_verified else 'enabled (unverified)'}"
     )
 
 
@@ -291,7 +319,7 @@ def main():
             + ("(the setup procedure — the @haejwo-setup skill; " if on_codex else
                "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
                "skill in Codex; ")
-            + "the user only answers 4 quick choices and never needs "
+            + "the user only answers a few quick choices and never needs "
             "to type a command). " + active + "Delegation targets: " + targets
         )
         # Defaults summary: the same fields the configured summary carries,
@@ -301,7 +329,7 @@ def main():
             dg, defaults, on_codex, False,
             DEFAULT_CONFIG["codex"].get("enabled"),
             f"{'stored gate settings' if stored else 'defaults'} — not configured: ",
-            env_off)
+            env_off, _verified(DEFAULT_CONFIG["codex"]))
         malformed = cfg_status == "malformed"
         if malformed:
             # A config file that exists but cannot be parsed is NOT a fresh
@@ -313,7 +341,7 @@ def main():
                      if on_codex else MALFORMED_NOTICE)  # F11
             summary = ("[haejwo config] config.json unreadable — "
                        "fail-open defaults active")
-        rules = read_rules(root)
+        rules = read_rules(root, on_codex)
         context = "\n\n".join((rules, nudge, summary)).strip() if rules else ""
         if not rules or len(context) > MAX_LEN:
             # Same explicit degrade as the configured branch — never a
@@ -327,13 +355,14 @@ def main():
                            summary))
             context = "\n\n".join(parts).strip()
     else:
-        rules = read_rules(root)
+        rules = read_rules(root, on_codex)
         if rules is None:
             rules = host_core(EMERGENCY_CORE, on_codex)
         g = cfg["gate"]
         models = cfg.get("models_codex", {}) if on_codex else cfg["models"]
         summary = render_summary(g, models, on_codex, True,
-                                 cfg["codex"].get("enabled"), env_off=env_off)
+                                 cfg["codex"].get("enabled"), env_off=env_off,
+                                 reviewer_verified=_verified(cfg["codex"]))
         context = (rules + "\n\n" + summary).strip()
         if len(context) > MAX_LEN:
             # Explicit degrade, never a mid-text cut: the full rules text

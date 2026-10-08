@@ -8,8 +8,9 @@ edit budget. Known residual gap (undetectable by regex, accepted for a
 delegation gate): `python -c`, `node -e`, project scripts that write files.
 The injected rules text covers those by instruction.
 
-Observation record (v2): the decision is computed FIRST, then observed
-exactly once, then emitted — the audit trail can never claim an outcome the
+Observation record (v2): one record per well-formed call; malformed input
+(an empty or non-JSON payload) exits before observing. The decision is
+computed FIRST, then observed exactly once, then emitted — the audit trail can never claim an outcome the
 hook didn't produce, and an observation failure never changes the decision.
 `via` is the reason the decision was reached. Precedence is evaluated PER
 SEGMENT, in this order within each segment (redirect/tee before in-place),

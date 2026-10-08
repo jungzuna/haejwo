@@ -2,7 +2,7 @@
 
 haejwo was built through real incidents; these are the rules that survived
 contact. Read this BEFORE changing anything — code, prompts, or docs. It is
-constitutional, not archival: each principle carries the reason it exists.
+constitutional: each principle carries the reason it exists; the History paragraph records amendments only.
 
 ## Identity
 haejwo (해줘 — English: "just handle it") is the **cold-start plugin** for
@@ -43,7 +43,8 @@ being true.**
 7. **Verify side effects in the real environment.** rc=0, stale docs, and
    confident claims are not proof. An enforcement claim names its mechanism
    and its exemptions. *[sandboxes can fail silently at rc=0; every hook
-   behavior here was proven live before shipping; the 2026-10-08 cold audit
+   path here was proven live on both hosts before shipping (Codex project
+   use is still unverified); the 2026-10-08 cold audit
    found "physically", "hermetic", "once" and "every call" each stronger than
    the code]*
 8. **Field observation beats speculation.** Watch real sessions, fix what

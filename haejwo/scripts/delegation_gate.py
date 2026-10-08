@@ -30,65 +30,27 @@ be able to follow (P6): it is allowed as "skip:pin-not-passable" with a
 once-per-session note. An unreadable config or unreadable/malformed
 frontmatter SKIPS the check (never deny on state we could not read).
 
-Envelope field semantics (v2) — one line per field:
-  v                — envelope schema version; bump only on incompatible
-                     field changes, never for additive ones.
-  hook             — always "delegation"; distinguishes these records from
-                     gate/bash_guard records in observations.jsonl.
-  subagent_type    — the requested delegation target, verbatim from
-                     tool_input (may be null or a non-string).
-  requested_model  — the explicit model override requested, or null if
-                     none/blank/"inherit" (all treated as non-explicit).
-                     Same normalization the decision itself uses, so this
-                     field can never disagree with what was enforced.
-  plan_marker_kind — "plan" | "no_plan" | "none": which plan marker (if
-                     any) the prompt text carries, checked in that order —
-                     "Plan:" wins over "No plan because" if both appear.
-  decision         — "allow" | "deny": the final PreToolUse decision this
-                     hook actually emitted (recorded once, after deciding).
-  tier_pin_check   — why the tier pin check decided what it did (additive
-                     field; existing fields unchanged):
-                     "deny"                      pin differs from the agent
-                                                 file default, model omitted
-                     "pass:explicit-model"       an explicit model was passed
-                     "pass:pin-matches-default"  pin == agent file default
-                     "pass:pin-inherit"          no explicit pin configured
-                     "pass:not-a-tier"           the check did not apply:
-                                                 subagent_type is not a tier
-                                                 (or not a string), the gate/
-                                                 guard is off, the call came
-                                                 from a subagent, or the host
-                                                 is Codex (whose spawn_agent
-                                                 never hits this matcher)
-                     "skip:config-malformed"     config.json is unparseable:
-                                                 the WHOLE hook fails open,
-                                                 including the generic-agent
-                                                 deny (origin 2026-09-21
-                                                 audit item 1)
-                     "skip:frontmatter-unreadable" agent file missing or its
-                                                 frontmatter is malformed
-                     "skip:pin-not-passable"     pin differs from the agent
-                                                 file default but is not in
-                                                 the measured passable alias
-                                                 set; allowed (the pin is not
-                                                 enforced) with a once-per-
-                                                 session note
-                     "skip:fail-open"            an exception in the decision
-                                                 path (allowed, as always)
-  agent_type       — non-null only when this call originates inside a
-                     subagent (the depth-1 exemption check).
-  agent_id         — the subagent's id, present alongside agent_type; null
-                     for the main agent.
-  sid              — session_id truncated to 12 chars, to correlate
-                     records without carrying a full session identifier.
-
-Envelope derivation (marker/byte-count helpers, the observe() call itself)
-is fail-open exactly like the decision path: a non-string or malformed-
-Unicode prompt, or an observation failure, can never raise past this hook —
-the already-computed decision still gets emitted.
-
-Extending this envelope or adding event kinds requires stating why existing
-fields don't fit (justify-before-extend).
+Envelope (v2, one observations.jsonl record per call, written once after
+deciding; derivation and observe() fail open — the decision is emitted
+regardless). Extending it requires stating why existing fields don't fit.
+  v                — schema version; bump only on incompatible changes.
+  hook             — always "delegation".
+  subagent_type    — the requested target, verbatim (may be null/non-string).
+  requested_model  — the explicit override, or null for none/blank/"inherit";
+                     the same normalization the decision uses.
+  plan_marker_kind — "plan" | "no_plan" | "none" (telemetry, see
+                     _plan_marker_kind; "plan" wins when both appear).
+  decision         — "allow" | "deny", as emitted.
+  tier_pin_check   — "deny" | "pass:explicit-model" | "pass:pin-inherit" |
+                     "pass:pin-matches-default" | "pass:not-a-tier" (not a
+                     tier, gate/guard off, subagent call, or Codex host) |
+                     "skip:config-malformed" (the whole hook fails open,
+                     origin 2026-09-21 audit item 1) |
+                     "skip:frontmatter-unreadable" | "skip:pin-not-passable"
+                     (allowed, once-per-session note) | "skip:fail-open".
+  agent_type       — non-null only inside a subagent (depth-1 exemption).
+  agent_id         — the subagent's id alongside agent_type, else null.
+  sid              — session_id truncated to 12 chars.
 """
 import os
 import re
@@ -342,7 +304,9 @@ def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default):
         f"session's Agent tool offers it."
     )
     try:
-        with state_lock(data_dir, session_id):
+        with state_lock(data_dir, session_id) as lk:
+            if not lk.acquired:
+                return note  # bounded lock missed: no unlocked write; repeat
             state = load_state(data_dir, session_id)
             noted = state.get("pin_unpassable_noted")
             noted = list(noted) if isinstance(noted, list) else []
@@ -355,26 +319,16 @@ def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default):
         return note
 
 
-# A plan marker is a LABEL AT THE HEAD OF A LINE, and hosts write that label
-# the way markdown writes labels: `Plan:`, `**Plan**:`, `**Plan:**`,
-# `## Plan (합의본 — …)`, `Plan —`, or `Plan` alone on a heading line. The
-# substring match alone recorded plan_marker_kind=none for a brief that DID
-# embed the agreed plan under a heading (measured 2026-09-28), so the label
-# forms are recognized too.
-#
-# Line-local by construction: `[ \t]` never matches a newline, so a "Plan"
-# on one line can never be joined to a separator on the next — `\s` would
-# have done exactly that. The separator set is `:`, `(`, a dash followed by
-# space or end of line, or end of line; a bare `Plan ` followed by prose is
-# NOT a marker ("Plan to investigate" is a sentence, not a label), and `\b`
-# keeps "Planning notes" out.
-# A leading list bullet is part of how hosts write the label too — a brief's
-# plan line often arrives as `- **Plan**: body`. `[-*]` must be followed by
-# whitespace, so `**Plan**` itself can never be read as a bullet.
+# A plan marker is a LABEL AT THE HEAD OF A LINE, written the way markdown
+# writes labels: `Plan:`, `**Plan**:`, `**Plan:**`, `- **Plan**: …`,
+# `## Plan (합의본 — …)`, `Plan —`, or `Plan` alone on a line (origin
+# 2026-09-28: a brief with the agreed plan under a heading recorded "none").
+# Line-local: `[ \t]` never crosses a newline. Separators are `:`, `(`, a dash
+# then space/EOL, or EOL — "Plan to investigate" is prose, `\b` keeps
+# "Planning" out, and a bullet `[-*]` needs trailing whitespace so `**Plan**`
+# is never read as one.
 _MARKER_HEAD = r"^[ \t]*(?:[-*][ \t]+)?(?:\#{1,6}[ \t]*)?(?:\*\*[ \t]*)?"
-# After the label: an optional closing `**` on either side of the colon, then
-# one separator. Ordered so `**Plan:**` (colon inside the bold) and
-# `**Plan**:` (colon outside) both land.
+# After the label: an optional closing `**` either side of the colon.
 _MARKER_TAIL = (r"[ \t]*(?::[ \t]*(?:\*\*)?"
                 r"|\*\*[ \t]*(?::|\(|[\u2014\u2013-](?=[ \t]|$)|$)"
                 r"|\(|[\u2014\u2013-](?=[ \t]|$)|$)")
@@ -384,21 +338,12 @@ _NO_PLAN_LABEL_RE = re.compile(
 
 
 def _plan_marker_kind(prompt):
-    """Never raises: a str() guard means a non-string prompt (None, dict,
-    number, ...) short-circuits to "none" rather than being stringified and
-    substring-matched. The legacy substring matches are KEPT alongside the
-    label forms — a brief that says "No plan because mechanical rename" in
-    prose still counts. Precedence unchanged: a plan marker wins over "No
-    plan because" when a prompt somehow carries both.
-
-    Line endings are NORMALIZED first: `^`/`$` treat a CRLF brief's `\r` as
-    part of the line, so `## Plan\r\nbody` matched nothing at all.
-
-    TELEMETRY ONLY: this records which marker the brief CARRIES, never that a
-    plan was actually agreed. KNOWN LIMITATION, accepted for telemetry: fenced
-    code blocks are NOT excluded, so an example `## Plan` inside ``` counts as
-    a marker — and, by the precedence above, can outrank a genuine "No plan
-    because" elsewhere in the same brief."""
+    """TELEMETRY ONLY — which marker the brief CARRIES, never that a plan
+    was agreed. Never raises (a non-string prompt is "none"). The legacy
+    substrings ("Plan:", "No plan because" anywhere) count alongside the
+    label forms; "plan" wins when both kinds appear. CRLF/CR are normalized
+    first (`$` would otherwise stop at `\r`). Known limitation, accepted: a
+    marker inside a fenced code block counts too."""
     if not isinstance(prompt, str):
         return "none"
     text = prompt.replace("\r\n", "\n").replace("\r", "\n")

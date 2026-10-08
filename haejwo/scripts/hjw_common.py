@@ -5,9 +5,11 @@ On any ambiguity or internal error the hooks FAIL OPEN (allow) so a broken
 gate can never brick a session. All state lives under CLAUDE_PLUGIN_DATA,
 keyed by session_id, so concurrent sessions never collide.
 """
+import errno
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -33,7 +35,9 @@ DEFAULT_CONFIG = {
     ],
     # Directory COMPONENTS that never count as project code (metadata dirs).
     # Temp files are exempted by resolved-prefix against the system tempdir,
-    # NOT by substring — a repo's own tmp/ subdir still counts as code.
+    # NOT by substring — a repo's own tmp/ subdir still counts as code — and
+    # ONLY outside the active project (its git toplevel, else cwd): a repo
+    # cloned under /tmp is gated like any other (is_code_file).
     "exempt_dir_components": [".git", "node_modules", ".claude", ".codex"],
     # Owner policy (2026-09-21, effort revised 2.14 and 2.20): EXECUTION
     # defaults to Opus and the roles differ by reasoning EFFORT, not by model
@@ -172,7 +176,17 @@ def load_state(data_dir, session_id):
     return {"prompt_id": None, "files": [], "updated_at": 0}
 
 
+def _err_name(exc):
+    """A short, stable label for a persistence failure: the errno name
+    (EACCES, EISDIR, ...) when there is one, else the exception type."""
+    code = getattr(exc, "errno", None)
+    return errno.errorcode.get(code, type(exc).__name__) if code else type(exc).__name__
+
+
 def save_state(data_dir, session_id, state):
+    """Persist the session state. Returns None on success, or a short error
+    label (errno name) on failure — never raises (fail open, P4); callers
+    that count the budget surface the label (state_not_persisted_note)."""
     try:
         path = state_file(data_dir, session_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -181,8 +195,18 @@ def save_state(data_dir, session_id, state):
         with open(tmp, "w") as f:
             json.dump(state, f)
         os.replace(tmp, path)
-    except Exception:
-        pass  # fail open
+        return None
+    except Exception as e:
+        return _err_name(e)
+
+
+def state_not_persisted_note(err):
+    """Said on EVERY call whose budget bookkeeping did not land (origin
+    2026-10-08 cold-loop D15: save failures were swallowed, so an operator
+    never learned the budget had stopped counting). Deliberately NOT a
+    once-note: the once-flag would live in the same unwritable state."""
+    return (f"[haejwo gate] state not persisted ({err}); the edit budget is "
+            f"not being counted")
 
 
 def carry_session_flags(prev, state):
@@ -224,7 +248,9 @@ def malformed_note_once(data_dir, session_id):
     off.
     """
     try:
-        with state_lock(data_dir, session_id):
+        with state_lock(data_dir, session_id) as lk:
+            if not lk.acquired:
+                return CONFIG_MALFORMED_NOTE  # no unlocked read/write; repeat
             state = load_state(data_dir, session_id)
             if state.get("cfg_malformed_noted"):
                 return None
@@ -358,15 +384,70 @@ def canonical(path, cwd=""):
         return path
 
 
+_PROJECT_ROOTS = {}  # cwd -> resolved project root (or None); per hook process
+
+
+def _project_root(cwd):
+    """The active project's root: the git toplevel of `cwd` (bounded 2 s
+    probe), else `cwd` itself when git fails, is absent or times out. None
+    when there is no usable cwd — the caller then keeps the temp exemption
+    (uncertainty fails open, P4). Cached per process: one probe per hook."""
+    if cwd in _PROJECT_ROOTS:
+        return _PROJECT_ROOTS[cwd]
+    root = None
+    try:
+        if cwd and os.path.isabs(cwd) and os.path.isdir(cwd):
+            root = os.path.realpath(cwd)
+            try:
+                # The probe asks about cwd, so an inherited GIT_DIR /
+                # GIT_WORK_TREE must not answer for some other repository.
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ("GIT_DIR", "GIT_WORK_TREE")}
+                p = subprocess.run(
+                    ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=2,
+                    stdin=subprocess.DEVNULL, env=env)
+                top = p.stdout.strip()
+                if p.returncode == 0 and top and os.path.isabs(top):
+                    root = os.path.realpath(top)
+            except Exception:
+                pass  # git absent / timed out: the cwd itself is the project
+    except Exception:
+        root = None
+    _PROJECT_ROOTS[cwd] = root
+    return root
+
+
+def _temp_exempt(cpath, cwd):
+    """A resolved path under a temp prefix is exempt ONLY when it lies outside
+    the active project. Origin 2026-10-08 cold-loop D1: any repository under
+    /tmp was ungated, CI workspaces included; the exemption exists for the
+    session scratchpad, which sits outside the project. A project root that
+    IS a temp dir the path is under, or an ancestor of one (cwd=/tmp,
+    cwd=/), is not a project boundary — the exemption then stands as
+    before."""
+    probe = cpath.rstrip("/") + "/"
+    prefixes = _temp_prefixes()
+    hit = [pre for pre in prefixes if probe.startswith(pre)]
+    if not hit:
+        return False
+    root = _project_root(cwd)
+    if not root:
+        return True
+    root_s = root.rstrip("/") + "/"
+    if any(pre.startswith(root_s) for pre in hit):
+        return True
+    return not probe.startswith(root_s)
+
+
 def is_code_file(path, cfg, cwd=""):
     if not path:
         return False
     cpath = canonical(path, cwd)
-    # temp locations: exempt by resolved PREFIX only (not substring)
-    probe = cpath.rstrip("/") + "/"
-    for prefix in _temp_prefixes():
-        if probe.startswith(prefix):
-            return False
+    # temp locations: exempt by resolved PREFIX only (not substring), and
+    # only outside the active project (_temp_exempt)
+    if _temp_exempt(cpath, cwd):
+        return False
     # metadata dirs: exempt by exact path component
     parts = set(cpath.split("/"))
     if parts & set(cfg["exempt_dir_components"]):
@@ -376,27 +457,60 @@ def is_code_file(path, cfg, cwd=""):
 
 class state_lock:
     """Advisory per-session lock so concurrent hook processes can't race the
-    read-check-write of the counter (undercount). Fail-open on any error."""
+    read-check-write of the counter (undercount).
+
+    BOUNDED: LOCK_NB with retries for at most LOCK_WAIT seconds (origin
+    2026-10-08 cold-loop D10: a blocking flock let one stuck holder turn
+    every later call into a host-side hook timeout). When the lock is not
+    taken, `.acquired` is False and `.error` says why; the caller must then
+    ALLOW WITHOUT touching state — no unlocked read/check/write. Without
+    fcntl (non-POSIX) there is no lock to take: `.acquired` stays True and
+    callers proceed as before."""
+
+    LOCK_WAIT = 2.0
 
     def __init__(self, data_dir, session_id):
         self.path = state_file(data_dir, session_id) + ".lock"
         self.fh = None
+        self.acquired = False
+        self.error = None
 
     def __enter__(self):
+        if not fcntl:
+            self.acquired = True
+            return self
         try:
-            if fcntl:
-                os.makedirs(os.path.dirname(self.path), exist_ok=True)
-                self.fh = open(self.path, "w")
-                fcntl.flock(self.fh, fcntl.LOCK_EX)
-        except Exception:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self.fh = open(self.path, "w")
+        except Exception as e:
+            self.fh, self.error = None, _err_name(e)
+            return self
+        deadline = time.monotonic() + self.LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.acquired = True
+                return self
+            except BlockingIOError:
+                if time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
+                self.error = "lock busy"
+            except Exception as e:
+                self.error = _err_name(e)
+            try:
+                self.fh.close()
+            except Exception:
+                pass
             self.fh = None
-        return self
+            return self
 
     def __exit__(self, *exc):
         try:
             if self.fh:
                 fcntl.flock(self.fh, fcntl.LOCK_UN)
                 self.fh.close()
+                self.fh = None
         except Exception:
             pass
         return False

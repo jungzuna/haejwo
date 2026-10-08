@@ -3,7 +3,7 @@ description: Configure haejwo once (writes config) — model tiers, edit budget,
 argument-hint: "(no arguments)"
 ---
 
-You are the **haejwo host**. Configure the plugin — walk ALL steps, once per account. Data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted → `ls -d ~/.claude/plugins/data/*haejwo*`). Disclose a `config.json` that will not parse before writing — hooks are fail-open until it is repaired.
+You are the **haejwo host**. Configure the plugin — walk ALL steps, once per account. Data dir `${CLAUDE_PLUGIN_DATA}` (unsubstituted, by host: Claude Code `~/.claude/plugins/data/haejwo-haejwo/`, Codex `~/.codex/plugins/data/haejwo-haejwo/`). Disclose a `config.json` that will not parse before writing — hooks are fail-open until it is repaired.
 
 **Persistence (every step):** write `config.json` IMMEDIATELY at each state transition (python3 read-modify-write; preserve unknown keys) — a stale `enabled:true` or `danger-full-access` consent from a PREVIOUS run must not survive a verification that just failed. Every failure/STOP branch first writes `codex.enabled=false` and REMOVES `consult_sandbox` / `danger_full_access_consented_at`. `codex` holds reviewer state on both hosts (on Codex, the claude reviewer).
 

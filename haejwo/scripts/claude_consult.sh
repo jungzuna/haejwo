@@ -12,6 +12,7 @@
 # *[origin: a live smoke launched claude with `--model gpt-6-astra`, the codex host's own reviewer model, read out of a claude-host config]*
 # *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]* *[origin: ship review Z4]*
 set -uo pipefail
+umask 077  # every artifact (reply, log, events, temp files) is private to the invoking user
 
 # $0 -> ABSOLUTE PHYSICAL path: realpath (the minimal-PATH fixture has no readlink), else python3, else $PWD.
 # Every required file is checked before any artifact exists: an incomplete install never half-runs a review.

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# consult_common.sh — shared internals of haejwo's two reviewer runners (codex_consult.sh on a Claude
-# host, claude_consult.sh on a Codex host). SOURCING DOES NOTHING: only constants and functions; every
-# side effect is a function the entrypoint calls, and hjw_common_init is the ONE owner of the traps.
+# consult_common.sh — shared internals of haejwo's two reviewer runners. SOURCING DOES NOTHING: only constants
+# and functions; every side effect is a function the entrypoint calls; hjw_common_init is the ONE trap owner.
 # The entrypoint sets, all BEFORE hjw_forward_if_stale (the pre-forward guard derives the same paths):
 #   HJW_LIB this directory;  HJW_SELF its own absolute physical path ($HJW_LIB derives from it)
 #   HJW_RUNNER_KIND   codex|claude — temp prefixes, host-relative config, usage and failure labels
 #   HJW_OUT_SIBLINGS  suffixes derived from ${OUT%.*} (codex: its events streams; claude: none)
-#   HJW_OUT_APPENDS   suffixes appended to the whole $OUT (codex: `.tmp`, written only by an older
-#                     install a hop may reach; claude: none)
+#   HJW_OUT_APPENDS   suffixes appended to the whole $OUT (codex: `.tmp`, from an older install; claude: none)
 # and OWNS: the REVIEWER CONTRACT, print_help, the CLI argv and redirections, the effective brief, the
 # timeout default, codex's classifier/stderr scan/effort/sandbox, the non-git policy, and ARTIFACTS.
 # This library never invents a vendor's artifact paths (claude has no events stream).
@@ -42,9 +40,8 @@ bounded() {
 # *[origin: field defect 2026-09-28 (khnp-rag): `/reload-plugins` did not re-inject the SessionStart brief,
 # the host kept invoking the literal 2.16.1 path (old cache versions stay on disk) and three consults ran
 # with the 2.16.1 defect]* Instruction-following failed, so the RUNNER forwards itself to the installed version.
-# FAIL OPEN at every step: any missing/ambiguous/invalid input or a failed exec means "run locally".
-# HOST-SCOPED: the registry derives from the invoked runner's own <plugins> prefix — a documented no-op on
-# a Codex host (no registry there), never a cross-host read.
+# FAIL OPEN at every step (missing/ambiguous/invalid input or a failed exec = run locally). HOST-SCOPED: the
+# registry derives from the runner's own <plugins> prefix — a no-op on a Codex host, never a cross-host read.
 HJW_PLUGIN_VERSION=""
 HJW_PLUGIN_VERSION_LOADED=0
 
@@ -80,8 +77,7 @@ hjw_forward_if_stale() {
   hjw_plugin_version_load
   [ -n "$HJW_PLUGIN_VERSION" ] || return 0
 
-  # (3) Structural gate: exactly <plugins>/cache/haejwo/haejwo/<ver>/scripts/<runner>; a development
-  # checkout is never redirected.
+  # (3) Structural gate: exactly <plugins>/cache/haejwo/haejwo/<ver>/scripts/<runner>; a dev checkout never hops.
   dir="${HJW_SELF%/*}"                      # .../<ver>/scripts
   name="${HJW_SELF##*/}"
   [ -n "$name" ] || return 0
@@ -93,8 +89,7 @@ hjw_forward_if_stale() {
   # A real install is never at the filesystem root.
   [ -n "$plugins" ] || return 0
 
-  # (4,5) Candidate selection + target validation in one bounded helper (a hung or huge JSON must not
-  # stall); prints the winner or nothing.
+  # (4,5) Candidate selection + target validation in one bounded helper; prints the winner or nothing.
   raw="$(bounded 20 python3 "$HJW_LIB/forward.py" target \
            "$plugins/installed_plugins.json" "$dir" "$HJW_PLUGIN_VERSION" \
            "$HJW_SELF" "$name" 2>/dev/null)" || return 0
@@ -119,8 +114,7 @@ hjw_forward_if_stale() {
   printf '# runner %s is stale — forwarding to %s (%s)\n' \
     "$esc_own" "$esc_ver" "$esc_target" >&2
   export HJW_FORWARDED=1
-  # `execfail`: a failed exec returns instead of exiting, so a broken cache entry still reviews locally.
-  # bash then also prints its own unescaped error; the tests assert only our hop and fallback lines.
+  # `execfail`: a failed exec returns, so a broken cache entry still reviews locally (bash adds its own error).
   shopt -s execfail
   exec "$target" "$@"
   shopt -u execfail
@@ -221,9 +215,8 @@ cleanup() {
 }
 
 hjw_common_init() {
-  # Called ONCE, right after parsing: shared state, traps, a stdin brief materialized to TMPBRIEF (deleted
-  # on exit), $OUT/$LOG derived, every artifact inside the reviewed repository refused. SNAPDIR holds the
-  # change-detection snapshots as files (a 2000-entry fingerprint set does not belong in argv/env).
+  # Called ONCE, right after parsing: shared state, traps, a stdin brief materialized to TMPBRIEF (deleted on
+  # exit), $OUT/$LOG derived, every artifact inside the reviewed repository refused. SNAPDIR: snapshot files.
   TMPBRIEF=""
   EFFECTIVE_BRIEF=""
   SNAPDIR=""
@@ -243,10 +236,8 @@ hjw_common_init() {
   FAILED=0
   FAIL_MSG=""
   ARTIFACTS=()
-  # Armed HERE — before any temp file exists.
-  trap cleanup EXIT
-  # bash does not fire EXIT on an uncaught INT/TERM: exit through cleanup with the runner's OWN status;
-  # cleanup is idempotent, so re-entering it via the EXIT trap is safe.
+  trap cleanup EXIT  # armed HERE, before any temp file exists
+  # bash does not fire EXIT on an uncaught INT/TERM: exit through (idempotent) cleanup with the runner's status.
   trap 'cleanup; exit 130' INT
   trap 'cleanup; exit 143' TERM
   if [ "$BRIEF" = "-" ]; then
@@ -304,14 +295,12 @@ hjw_artifact_set() {
 }
 
 # ---- artifact guard (2.21): never write inside the reviewed repository ----
-# GUARANTEE: every artifact (reply, log, events, temp and effective brief, plus the legacy `.events.2.jsonl`
-# and `$OUT.tmp` an older install still writes) lies outside the invoking worktree and its git dirs, judged
-# lexically and through symlinks. NOT covered: other worktrees of the repository, a hostile concurrent
-# replacement — it guards accidental paths (a typo in `-o`, a brief inside the repo with no `-o`).
-# It belongs to the INVOKED runner (2.21+) and holds across a hop, even to an older install without a
-# guard; a pre-2.21 runner invoked DIRECTLY is outside it. Argv-known paths and $TMPDIR are judged first; a
-# refusal exits 2 with ONE line before any paid call or truncation ($LOG included); a check that cannot run
-# refuses too. Relative paths resolve against the ORIGINAL cwd, hence before any chdir.
+# GUARANTEE: every artifact (reply, log, events, temp/effective brief, the legacy `.events.2.jsonl` and `$OUT.tmp`)
+# lies outside the invoking worktree and its git dirs, lexically and through symlinks. NOT covered: other
+# worktrees, a hostile concurrent replacement — it guards accidental paths (a typo in `-o`, an in-repo brief).
+# It holds across a hop, even to an older guardless install; a pre-2.21 runner invoked DIRECTLY is outside it.
+# A refusal exits 2 with ONE line before any paid call or truncation; a check that cannot run refuses too.
+# Relative paths resolve against the ORIGINAL cwd, hence before any chdir.
 # *[origin: `-o` naming a tracked file was silently overwritten — change detection excludes artifacts by design]*
 hjw_artifact_guard() {
   # $@ = artifact FILE paths.
@@ -343,11 +332,9 @@ hjw_artifact_check() {
 # <plugins>/data/haejwo-haejwo/config.json; env ignored) > env (CLAUDE_PLUGIN_DATA whose basename is exactly
 # haejwo-haejwo) > derived (${HOME}/.codex|.claude/plugins/data/haejwo-haejwo/config.json by /.codex/ in
 # $HJW_SELF) > none. NO further fallback: a missing or malformed owner file never yields another path, which
-# could resurrect a stale danger-full-access consent. Freshness was settled earlier by hjw_forward_if_stale.
-# A foreign CLAUDE_PLUGIN_DATA (judged on the variable alone) is ignored and disclosed once.
-# A naming heuristic, not authentication: whoever can choose these paths already chose this runner.
-# Derived in SHELL (a path may contain a newline; no command substitution); host detection reads the
-# selected path's TEXT, never its canonical target.
+# could resurrect a stale danger-full-access consent. A foreign CLAUDE_PLUGIN_DATA is ignored and disclosed once.
+# A naming heuristic, not authentication: whoever can choose these paths already chose this runner. Derived in
+# SHELL (a path may hold a newline); host detection reads the selected path's TEXT, never its canonical target.
 hjw_data_dir_basename() {
   # Sets HJW_BASENAME: $1's last component after stripping ALL trailing separators. *[origin: measured
   # 2026-09-28 — `${1%/}` stripped one, so `haejwo-haejwo//` fell through to `derived`]*
@@ -480,8 +467,7 @@ hjw_config_load() {
 # Attribution is NOT established: a concurrent save looks like a reviewer edit, so the failure says
 # "attribution unknown" and never proposes reverting.
 git_snapshot() {
-  # $1 = snapshot JSON; non-zero = detection unavailable (fail closed). JSON because filenames may hold
-  # newlines or tabs. $ARTIFACTS is the entrypoint's list of runner-owned paths.
+  # $1 = snapshot JSON (filenames may hold newlines); non-zero = detection unavailable. $ARTIFACTS: runner-owned.
   bounded 60 python3 "$HJW_LIB/detect.py" snapshot "$WORKDIR" "$1" "${ARTIFACTS[@]}"
 }
 
@@ -517,8 +503,7 @@ hjw_git_preflight() {
 
 # Fail BEFORE spending a reviewer run: a consult whose no-edit contract cannot be verified is worthless.
 detect_fail_now() {
-  # Bypasses fail(): no report block, only this message and git's own explanation, which also goes to
-  # $LOG (opened before the preflight) for a caller who keeps only the log.
+  # Bypasses fail(): only this message and git's own explanation, also into $LOG for a log-only caller.
   [ -n "$SNAPDIR" ] && [ -s "$SNAPDIR/detect.err" ] && { echo "# ---- change detection stderr ----"; cat "$SNAPDIR/detect.err"; } >> "$LOG"
   echo "✗ ${HJW_RUNNER_KIND}_consult FAILED (mode=$MODE, 0s):${COVERAGE_NOTE:-}" >&2
   echo "  - $DETECT_MSG" >&2

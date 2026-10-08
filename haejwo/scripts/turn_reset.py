@@ -23,8 +23,13 @@ def main():
     # The turn counter resets; SESSION-scoped once-note flags must survive it
     # (hjw_common.carry_session_flags). Held under the same session lock the
     # other writers use, so a concurrent gate/delegation write between our
-    # read and save cannot be lost.
-    with state_lock(data, sid):
+    # read and save cannot be lost. A lock not taken within its bound means
+    # no session-bookkeeping write at all — not even the prune (never
+    # unlocked); gate.py's lazy prompt_id/turn_id reset still starts the
+    # new turn.
+    with state_lock(data, sid) as lk:
+        if not lk.acquired:
+            sys.exit(0)
         state = carry_session_flags(
             load_state(data, sid),
             {"prompt_id": payload.get("prompt_id"), "files": []})

@@ -1932,8 +1932,9 @@ def main():
               "haejwo config" in ctx and "delegate" in ctx.lower())
         check("claude host summary has no codex-tiers leakage",
               "codex tiers" not in ctx and "models:" in ctx and "codex reviewer" in ctx)
-        check("claude host: default deep-reasoner='inherit' renders as inherit(session) + clarifier",
-              "deep-reasoner=inherit(session)" in ctx
+        check("claude host: default deep-reasoner='inherit' renders as inherit(session) with "
+              "the default-worker floor + clarifier",
+              "deep-reasoner=inherit(session; floor: default-worker)" in ctx
               and "(inherit = omit the model override)" in ctx, ctx)
         check("claude host: configured summary names the agent-file effort pins",
               "default-worker=opus (effort high), task-worker=opus (effort low) — "
@@ -2378,7 +2379,8 @@ def main():
                                   "default_worker": "claude-opus-5-5",
                                   "task_worker": "inherit"}, False, True, False)
               == "[haejwo config] gate=ON budget=2 files/turn bash_guard=ON "
-                 "delegation_guard=ON | models: deep-reasoner=inherit(session), "
+                 "delegation_guard=ON | models: deep-reasoner=inherit(session; floor: "
+                 "default-worker), "
                  "default-worker="
                  "claude-opus-5-5 (not passable via the Agent tool — set an alias) "
                  "(effort high), task-worker=agent-file default (effort low) — pass "

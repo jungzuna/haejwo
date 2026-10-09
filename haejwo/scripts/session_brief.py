@@ -219,7 +219,8 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
             def tier(k, worker=False):
                 v = models[k]
                 if v == "inherit":
-                    return "agent-file default" if worker else "inherit(session)"
+                    return ("agent-file default" if worker
+                            else "inherit(session; floor: default-worker)")
                 if isinstance(v, str) and v.strip() not in PASSABLE_MODEL_ALIASES:
                     return f"{v} (not passable via the Agent tool — set an alias)"
                 return v

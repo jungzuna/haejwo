@@ -7,14 +7,14 @@ haejwo keeps the main model on **judgment** and sends **execution** to worker ti
 | Layer | Artifact | What it does |
 |---|---|---|
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the rules (a minimal core if unreadable or over budget), a setup nudge until configured, and the config summary |
-| Roles | `agents/` | `deep-reasoner` (session model and effort) · `default-worker` (opus, high effort) · `task-worker` (opus, low effort) + the reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
+| Roles | `agents/` | `deep-reasoner` (session model and effort, never below default-worker) · `default-worker` (opus, high effort) · `task-worker` (opus, low effort) + the reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
 | Criteria | `rules/orchestration.md` | When the main agent delegates |
 | **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) | Main agent: edits past **N distinct code files per turn** (default 2), Bash writes to code (heuristic) and generic-agent (general-purpose / Explore) delegation without an explicit model are **denied** |
 
 ## Gate semantics
 - Counts **distinct code files** (config extension list) per user turn; re-editing is free. **Subagents are exempt** (payload `agent_id`/`agent_type`).
 - Turn state is per session id, sanitized and cut to 80 chars: ids alike in those chars, or absent (`unknown`), share a counter.
-- Denials name the budget and the delegate; the last allowed edit warns the budget is full.
+- Denials name the budget and delegate; the last allowed edit warns the budget is full.
 - **Fail-open**: any hook error or ambiguity ⇒ no objection. haejwo never approves a tool call, only denies or annotates, so your permission settings still apply. An affordance, not a security boundary (P4): editing `config.json` (not code) turns the gate off; dynamically written code is invisible to the guard.
 - Temp-dir paths (`/tmp`, `/var/tmp`, `tempfile.gettempdir()`) outside the active project (git toplevel, else cwd) are not code; a temp-dir repository that IS the project is gated unless its root is a temp dir or ancestor (`/tmp`, `/`). In-place editors run via `find`/`xargs` are denied on any path.
 
@@ -38,7 +38,7 @@ Gate fires log to `state/observations.jsonl`. `HAEJWO_GATE=off` works only in th
 ## Install
 See the [root README](../README.md); Codex in headless CI only: `--dangerously-bypass-hook-trust`.
 
-`/reload-plugins` (Claude Code) refreshes hooks, commands and agents, not the injected rules — restart after install or update.
+`/reload-plugins` (Claude Code) refreshes hooks, commands and agents, not the injected rules — restart after install/update.
 
 **Support floor:** runners support installs >= 2.22.0; a 2.26+ runner never forwards below it (says so, runs locally). Pre-floor installs are unsupported as sources too: without the `snapshot.py` tombstone, a pre-floor runner stays local.
 
@@ -73,7 +73,7 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 
 ## By design
 Rejected recurring objections:
-- The host's budget applies despite same-model workers: it keeps implementation out of the host's context (it limits growth from edits, not session length or model price).
+- The host's budget applies despite same-model workers: it steers implementation toward workers by capping the code files edited per turn — not context size or model price.
 - The budget counts allowed attempts, not successful edits: one hook.
 - Runners do not check `enabled`/`verified_at`: the host is the policy gate, the runner a tool.
 - A stored `danger-full-access` consent persists; every run header discloses it. The Claude reviewer keeps Bash for tests and greps; detected repository changes fail the run (documented exclusions apply).

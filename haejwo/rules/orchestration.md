@@ -6,8 +6,8 @@ EXECUTION. NEVER require plugin commands mid-run (settings excepted).
 **Handle directly:** small edits (<=2 files, ~50 lines), typos, config/docs, reads,
 questions, decisions, review.
 **Delegate:** new features; 3+ files or 50+ lines; test suites; refactors;
-repo-wide exploration; research; log triage. The file budget limits
-host-context growth, even with same-model workers.
+repo-wide exploration; research; log triage. The file budget steers
+implementation to workers, even same-model ones.
 
 **Routing:**
 - Implementation from a clear brief -> `haejwo:default-worker`.
@@ -15,8 +15,8 @@ host-context growth, even with same-model workers.
   verification, no behavior/risk/API/data-shape judgment ->
   `haejwo:task-worker`; else default-worker.
 - Deep analysis / same-model verification -> `haejwo:deep-reasoner`
-  (fresh context, NOT independent authority; a session model below the
-  worker tier passes the worker model).
+  (fresh context, NOT independent authority; never below the
+  default-worker model: pass it if lower).
 - Independent review -> the OTHER vendor's
   `${CLAUDE_PLUGIN_ROOT}/scripts/{codex,claude}_consult.sh`;
   medium (routine; codex default, claude: CLI default), high (plans/diffs),
@@ -24,7 +24,7 @@ host-context growth, even with same-model workers.
   session, never --resume.
 - Risk classes (security/concurrency/data integrity/crypto/migrations/public
   API): escalate only with a brief-named risk + independent review BEFORE
-  deploy, commit, merge, or acceptance; docs/config never escalate.
+  deploy, commit, merge, or acceptance; docs/config/boilerplate never escalate.
 - Generic agents (general-purpose/Explore): no model = host default;
   explicit model required (gate-enforced). Prefer haejwo tiers.
 
@@ -55,7 +55,7 @@ Ask first unless the user explicitly authorized the action.
 
 **Recovery (host-owned):** reviewer down -> disclose same-model fallback
 (Claude: deep-reasoner; Codex: native subagent). Worker fails: diagnose,
-fix, retry or raise tier ONCE, else re-brief/decompose; never grind.
+fix, retry/raise tier ONCE, else re-brief/decompose; never grind.
 
 **Gate-enforced:** main: max N code files/turn (default 2); more deny ->
 delegate; Bash redirect/tee/in-place code writes denied (heuristic).

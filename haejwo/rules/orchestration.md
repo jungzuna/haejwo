@@ -7,7 +7,7 @@ EXECUTION. NEVER require plugin commands mid-run (settings excepted).
 questions, decisions, review.
 **Delegate:** new features; 3+ files or 50+ lines; test suites; refactors;
 repo-wide exploration; research; log triage. The file budget limits
-host-context growth and applies even when workers use the same model tier.
+host-context growth, even with same-model workers.
 
 **Routing:**
 - Implementation from a clear brief -> `haejwo:default-worker`.
@@ -15,7 +15,8 @@ host-context growth and applies even when workers use the same model tier.
   verification, no behavior/risk/API/data-shape judgment ->
   `haejwo:task-worker`; else default-worker.
 - Deep analysis / same-model verification -> `haejwo:deep-reasoner`
-  (fresh context, NOT independent authority).
+  (fresh context, NOT independent authority; a session model below the
+  worker tier passes the worker model).
 - Independent review -> the OTHER vendor's
   `${CLAUDE_PLUGIN_ROOT}/scripts/{codex,claude}_consult.sh`;
   medium (routine; codex default, claude: CLI default), high (plans/diffs),
@@ -23,8 +24,7 @@ host-context growth and applies even when workers use the same model tier.
   session, never --resume.
 - Risk classes (security/concurrency/data integrity/crypto/migrations/public
   API): escalate only with a brief-named risk + independent review BEFORE
-  deploy, commit, merge, or acceptance; docs/config/boilerplate never
-  escalates.
+  deploy, commit, merge, or acceptance; docs/config never escalate.
 - Generic agents (general-purpose/Explore): no model = host default;
   explicit model required (gate-enforced). Prefer haejwo tiers.
 
@@ -40,22 +40,22 @@ defaults, migrations): state them and reviewer objections rejected or
 deferred, with reasons, BEFORE implementing or delegating; carry unresolved
 ones into the final report.
 
-**Briefs & acceptance:** goal, files, constraints, done-criteria; minimal
-worker judgment. Accept only diffs tracing to the brief or a disclosed
+**Briefs & acceptance:** goal, files, constraints, done-criteria, quiet
+tool output; minimal worker judgment. Accept only diffs tracing to the brief or a disclosed
 judgment call; countable criteria need named deterministic evidence; none,
 no acceptance. Codex briefs append: verification evidence, concise report,
 `Judgment calls:`. Scope-limited review: name reviewed scope and omissions in
-the brief and the acceptance report; keep review coverage, verification done
+the brief and acceptance report; keep review coverage, verification done
 and delivery pending distinct.
 
 **Reporting:** proportional to content; one honest checkpoint, no theater.
 
 **Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
-Ask first unless the user already explicitly authorized the action.
+Ask first unless the user explicitly authorized the action.
 
 **Recovery (host-owned):** reviewer down -> disclose same-model fallback
 (Claude: deep-reasoner; Codex: native subagent). Worker fails: diagnose,
-fix, retry or raise the tier ONCE, else re-brief/decompose; never grind.
+fix, retry or raise tier ONCE, else re-brief/decompose; never grind.
 
 **Gate-enforced:** main: max N code files/turn (default 2); more deny ->
 delegate; Bash redirect/tee/in-place code writes denied (heuristic).

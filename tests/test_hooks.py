@@ -1886,11 +1886,14 @@ def main():
               listed.returncode == 0 and bool(tracked_paths) and not push_offenders,
               f"rc={listed.returncode} scanned={len(tracked_paths)} offenders={push_offenders[:10]}")
         # d. Shipped sentences that word-cap edits have dropped twice (2.29.0): the
-        # 2.24.0 host-effort advice must survive in the plugin README and in setup.
+        # 2.24.0 host-effort advice must survive in the plugin README and in setup;
+        # so must the 2.30.0 context-cost advice (autoCompactWindow) in both.
         for rel, needle in (("haejwo/README.md", "vendor recommendation"),
-                            ("haejwo/commands/setup.md", "vendor's recommendation")):
+                            ("haejwo/commands/setup.md", "vendor's recommendation"),
+                            ("haejwo/README.md", "autoCompactWindow"),
+                            ("haejwo/commands/setup.md", "autoCompactWindow")):
             text = open(os.path.join(repo, rel), encoding="utf-8").read()
-            check(f"docs pin: host-effort advice present in {rel}", needle in text, needle)
+            check(f"docs pin: {needle!r} advice present in {rel}", needle in text, needle)
 
         print("== session_brief.py ==")
         rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, data)

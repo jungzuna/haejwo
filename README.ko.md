@@ -41,7 +41,7 @@ codex plugin add haejwo@haejwo
 
 **리뷰는 다른 회사 모델이.** `/haejwo:setup`으로 켜고 검증하면(기본 꺼짐) 리뷰어는 상대 회사 모델(Claude Code에선 codex, Codex에선 claude). CLI나 검증 없으면 같은 계열 `deep-reasoner`가 대신합니다(독립성 약함). 켜면 브리프와 리뷰어가 읽는 저장소 내용이 상대 회사로 전송됩니다([고지](haejwo/commands/setup.md)).
 
-자세히: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
+자세히: [`haejwo/README.md`](haejwo/README.md)(반복 반론의 답은 [By design](haejwo/README.md#by-design)) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
 
 ### 조합별로 얻는 것
 
@@ -70,22 +70,6 @@ codex plugin add haejwo@haejwo
 - 워크플로 DSL이나 온톨로지 프레임워크
 - 두 번째 운영 아키텍처(값싼 메인의 어드바이저 모드)
 - 판단 사항 하드 게이트(plan 마커, 보고 길이): 훅 게이트 없음. 마커 없는 워커는 한 번 묻고, 실행 가능한 계획·사유 없으면 blocked 보고
-
-## 설계상 의도
-
-반복되는 반론의 답([상세](haejwo/README.md#by-design)):
-
-- 같은 모델 워커에도 호스트 예산 적용: 컨텍스트 절약용.
-- 예산은 허용된 시도를 셈: 단순한 훅 하나.
-- 러너는 `enabled`/`verified_at`을 안 봄: 정책은 호스트, 러너는 도구.
-- 저장된 `danger-full-access` 동의는 유지·실행마다 헤더 표시. Claude 리뷰어는 테스트·grep용 Bash 유지, 감지된 저장소 변경은 실패(문서화된 예외 제외).
-- 오래된 캐시 경로 호출은 설치 버전으로: 재시작 요구는 호스트 결함 떠넘기기.
-- 러너의 산출물 보호·변경 감지 유지: status/diff엔 그 계약 없음.
-- bash 가드는 리다이렉트·`tee`·제자리 편집기만: `cp`/`mv`/`patch` 휴리스틱과 확장자 추가는 오탐 비용으로 제외. 알려진 공백: 따옴표 리다이렉트 대상 허용, `tee`는 첫 대상만.
-- Fable 호스트의 Explore는 `opus` 별칭(Claude Code 문서): 모델 명시해도 비용 동일.
-- 위임 수단(Agent 도구/`spawn_agent`) 없는 세션은 설계 밖·감지 불가: 멈추고 다음 사용자 턴에 재개하거나 비상 해제.
-- plan 마커 집계·이상 탐지는 소유자가 읽는 현장 관찰(P8).
-- 문서 문장 고정 테스트가 콜드 감사 4회를 수정으로 바꿈(P7).
 
 ## 검증
 

@@ -16,6 +16,8 @@ boilerplate, formatting, renames, simple find/replace-grade edits, doc updates.
 - Match the surrounding code style exactly.
 - Do not expand scope; do not "improve" things you weren't asked to touch.
 - NEVER push, deploy, or publish — outward actions are host-owned.
+- Tool output discipline: quiet modes and targeted excerpts; judge by the
+  UNPIPED exit status, then read only what failed.
 - Report back briefly, proportional to the task: what you did, files touched,
   verification evidence (the deterministic check you ran and its result),
   anything skipped and why — ending with `Judgment calls:` (bullets for any behavioral choice you

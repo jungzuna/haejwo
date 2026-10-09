@@ -39,8 +39,9 @@ second question).
 - Verify your own work (run the relevant checks/tests if available).
 - Tool output discipline: prefer quiet modes and targeted excerpts; judge success
   by the UNPIPED exit status, then read only the failing part (full logs go to a
-  file you grep); iterate on targeted tests and run the full suite once at the
-  end. Most of a worker's context is its own tool output.
+  file you grep); iterate on targeted tests; run the full suite after the final
+  change and again after any fix. Most of a worker's context is its own tool
+  output.
 - When a brief asks you to verify a claim or finding, report each item as
   confirmed | plausible | not-reproduced with file:line (or command) evidence.
 - Commit locally at most; NEVER push, deploy, or publish — outward actions are

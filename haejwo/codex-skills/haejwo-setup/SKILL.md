@@ -8,7 +8,7 @@ description: Configure haejwo once (writes config) — model tiers, edit budget,
      Drift is canary-tested. -->
 
 
-You are the **haejwo host**. Configure the plugin — walk ALL steps, once per account. `${CLAUDE_PLUGIN_DATA}` and `${CLAUDE_PLUGIN_ROOT}` are substituted by the host for THIS plugin (measured on Claude Code; not on Codex). UNRESOLVED (literal `${…}`) → STOP before any write; use the fallback — data: Claude Code `~/.claude/plugins/data/haejwo-haejwo/`, Codex `~/.codex/plugins/data/haejwo-haejwo/`; root: this file's plugin directory. Disclose an unparseable `config.json` before writing (hooks fail open until repaired).
+You are the **haejwo host**. Configure the plugin: walk ALL steps, once per account. `${CLAUDE_PLUGIN_DATA}` and `${CLAUDE_PLUGIN_ROOT}` are substituted by the host for THIS plugin (measured on Claude Code; not on Codex). UNRESOLVED (literal `${…}`) → STOP before any write; use the fallback — data: Claude Code `~/.claude/plugins/data/haejwo-haejwo/`, Codex `~/.codex/plugins/data/haejwo-haejwo/`; root: this file's plugin directory. Disclose an unparseable `config.json` before writing (hooks fail open until repaired).
 
 **Persistence (every step):** write `config.json` IMMEDIATELY at each state transition (python3 read-modify-write; preserve unknown keys) — no earlier `enabled:true` or consent survives a failed verification. Every failure/STOP branch first writes `codex.enabled=false` and REMOVES `consult_sandbox` / `danger_full_access_consented_at`. `codex` holds reviewer state on both hosts (on Codex, the claude reviewer).
 
@@ -17,9 +17,9 @@ The OTHER model's CLI: Claude Code → `codex login status`; Codex → `claude -
 
 ## 2. Ask (one call; follow-ups only where needed)
 Claude Code: AskUserQuestion. Codex: selection UI, else numbered choices.
-1. **Preset** — deep-reasoner / default-worker / task-worker. Say `Standard` runs when setup is skipped.
+1. **Preset** — deep-reasoner (never below default-worker) / default-worker / task-worker. Say `Standard` runs when setup is skipped.
    - Claude Code: `Standard (default)` session model / opus (effort high) / opus (effort low); `Budget` session model / sonnet / haiku; `Custom` per-role.
-   - Codex (`models_codex`; offer the account's current lineup): `Standard (default)` host model for all three, deep-reasoner at the HOST's effort (omit `reasoning_effort`), default-worker `medium`, task-worker `low` (omit the model on `spawn_agent`); `Budget` host model / gpt-5.6-terra / gpt-5.6-luna; `Custom` per-role. Measured 2026-09-21: overrides need a fresh or partial context fork.
+   - Codex (`models_codex`; offer the account's current lineup): `Standard (default)` host model for all three, deep-reasoner at the HOST's effort (omit `reasoning_effort`), default-worker `medium`, task-worker `low` (omit the model on `spawn_agent`); `Budget` host model / gpt-5.6-terra / gpt-5.6-luna; `Custom` per-role. Measured 2026-09-21: overrides need a fresh/partial context fork.
    - `Custom` → one question per role (default: stored value, else `Standard`). Claude Code accepts only Agent-tool aliases (sonnet/opus/haiku, plus any the session lists); full ids only on Codex.
 2. **Edit budget (files/turn)** — `2 (Recommended)` / `3` / `5` / `Gate off` (rules only).
 3. **Bash-guard** — `On (Recommended)` blocks main-agent Bash writes to code files; `Off` = rules only.

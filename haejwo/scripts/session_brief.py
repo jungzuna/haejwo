@@ -12,13 +12,15 @@ Injects the operating layer into every session:
   nudge: nothing is enforced) + an "unreadable" summary
 """
 import json
+import math
 import os
 import sys
+import time
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    CODEX_SPAWN_WORKER, DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES,
-    gate_disabled_by_env,
+    CODEX_SPAWN_WORKER, DEFAULT_CONFIG, PASSABLE_MODEL_ALIASES, STALE_DAYS,
+    command_name, gate_disabled_by_env,
     load_config_with_status, on_codex_host, paths, read_payload,
 )
 
@@ -152,15 +154,22 @@ def _budget(n):
     return f"{n} files/turn" if n is not None else "invalid (edit gate OFF)"
 
 
-def _verified(codex):
-    """True when the reviewer probe recorded a positive unix-ts verified_at
-    (the status_collect.reviewer_line test)."""
+def _verified_days(codex):
+    """Whole days since the reviewer probe's verified_at, or None when no
+    positive unix-ts is recorded (the status_collect.reviewer_line test).
+    Non-finite or >300 s future stamps (status's anomaly) read as unverified."""
     v = codex.get("verified_at") if isinstance(codex, dict) else None
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+    if (not isinstance(v, (int, float)) or isinstance(v, bool)
+            or (isinstance(v, float) and not math.isfinite(v)) or v <= 0):
+        return None
+    now = time.time()
+    if v > now + 300:
+        return None
+    return max(int((now - v) // 86400), 0)
 
 
 def render_summary(g, models, on_codex, configured, reviewer_on, label="",
-                   env_off=False, reviewer_verified=True):
+                   env_off=False, reviewer_verified=True, verified_days=None):
     """The ONE `[haejwo config]` line — gate, tiers, reviewer — for both the
     configured summary and the not-configured defaults summary (cold-loop B6:
     the two used to be rendered twice). `label` prefixes the gate fields
@@ -186,7 +195,10 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
     while the gate is on); delegation_guard is shown so the key is not a
     hidden switch — on Codex it reads `n/a (spawn_agent not hooked)`.
     The reviewer reads "enabled (unverified)" when `reviewer_verified` is
-    false (cycle 4 F7: plan.md requires enabled AND verified).
+    false (cycle 4 F7: plan.md requires enabled AND verified), and names the
+    age and the re-verify command when `verified_days` exceeds STALE_DAYS
+    (2.31.0, 2026-10-12 field: a verification 38 days stale went unseen —
+    nobody ran status, so the cold-start line has to show it).
     The whole line is bounded by SUMMARY_MAX.
     """
     fork = ("effort overrides need a fresh or partial context fork "
@@ -242,6 +254,15 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
                           "file's default; pass an explicit model to override it.")
         reviewer_label = "codex reviewer"
         fallback = "disabled (fallback: deep-reasoner)"
+    if not reviewer_on:
+        reviewer = fallback
+    elif not reviewer_verified:
+        reviewer = "enabled (unverified)"
+    elif verified_days is not None and verified_days > STALE_DAYS:
+        reviewer = (f"enabled (last verified {verified_days}d ago; "
+                    f"re-verify: {command_name('setup', on_codex)})")
+    else:
+        reviewer = "enabled"
     dg = g.get("delegation_guard", DEFAULT_CONFIG["gate"]["delegation_guard"])
     return _bounded(
         f"[haejwo config] {label}gate={_flag(g['enabled'], env_off)} "
@@ -249,8 +270,7 @@ def render_summary(g, models, on_codex, configured, reviewer_on, label="",
         f"bash_guard={_flag(g['bash_guard'] and g['enabled'], env_off)} "
         f"delegation_guard={CODEX_DG if on_codex else _flag(dg and g['enabled'], env_off)}"
         f" | {tiers} | "
-        f"{reviewer_label}: "
-        f"{fallback if not reviewer_on else 'enabled' if reviewer_verified else 'enabled (unverified)'}"
+        f"{reviewer_label}: {reviewer}"
     )
 
 
@@ -326,11 +346,12 @@ def main():
         # Defaults summary: the same fields the configured summary carries,
         # from DEFAULT_CONFIG — what is ACTUALLY enforced right now, labelled
         # as defaults (or the stored gate values) rather than as a choice.
+        days = _verified_days(DEFAULT_CONFIG["codex"])
         summary = render_summary(
             dg, defaults, on_codex, False,
             DEFAULT_CONFIG["codex"].get("enabled"),
             f"{'stored gate settings' if stored else 'defaults'} — not configured: ",
-            env_off, _verified(DEFAULT_CONFIG["codex"]))
+            env_off, days is not None, days)
         malformed = cfg_status == "malformed"
         if malformed:
             # A config file that exists but cannot be parsed is NOT a fresh
@@ -361,9 +382,11 @@ def main():
             rules = host_core(EMERGENCY_CORE, on_codex)
         g = cfg["gate"]
         models = cfg.get("models_codex", {}) if on_codex else cfg["models"]
+        days = _verified_days(cfg["codex"])
         summary = render_summary(g, models, on_codex, True,
                                  cfg["codex"].get("enabled"), env_off=env_off,
-                                 reviewer_verified=_verified(cfg["codex"]))
+                                 reviewer_verified=days is not None,
+                                 verified_days=days)
         context = (rules + "\n\n" + summary).strip()
         if len(context) > MAX_LEN:
             # Explicit degrade, never a mid-text cut: the full rules text

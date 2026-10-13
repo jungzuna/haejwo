@@ -48,6 +48,7 @@ REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify file
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
 reply — the host decides.
+End your reply with a closing statement: material read, verification run, material omissions.
 ---'
 
 print_help() {
@@ -183,12 +184,16 @@ if ! hjw_detect_before; then
 fi
 
 # ---- event-stream classifier (provenance: codex's own JSONL events) ----
+# *[origin: 2026-10-12 field — three acceptance reports omitted the reviewer's own "no shell access" disclosure;
+# the runner's six event streams that day held zero command_execution items]* — the shell count is a fact, not a coverage claim.
 CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0
 CLS_FAIL_TYPE=""; CLS_FAIL_MSG=""; CLS_MODEL_UNAVAIL=0; CLS_PRE_EXEC=0
+CLS_CMD_DONE=0; CLS_CMD_NONZERO=0; CLS_CMD_OPEN=0
 classify_events() {
   # $1 = events file, $2 = requested model. Sets the CLS_* globals.
   CLS_PARSED=0; CLS_KNOWN=0; CLS_MALFORMED=0
   CLS_FAIL_TYPE=""; CLS_FAIL_MSG=""; CLS_MODEL_UNAVAIL=0; CLS_PRE_EXEC=0
+  CLS_CMD_DONE=0; CLS_CMD_NONZERO=0; CLS_CMD_OPEN=0
   local raw
   raw="$(bounded 60 python3 - "$1" "$2" <<'PY'
 import json, re, sys
@@ -205,6 +210,10 @@ fail_type = fail_msg = ""
 seen_item_started = False
 pre_exec = 0
 model_unavail = 0
+# command_execution items: completed count, ids for matching, nonzero = int (not bool) exit_code != 0.
+cmd_done = cmd_nonzero = 0
+cmd_started_ids, cmd_done_ids = set(), set()
+cmd_ids_complete = True
 
 try:
     fh = open(path, encoding="utf-8", errors="replace")
@@ -230,6 +239,23 @@ if fh is not None:
                 known += 1
             if etype == "item.started":
                 seen_item_started = True
+            item = ev.get("item")
+            if (etype in ("item.started", "item.completed") and isinstance(item, dict)
+                    and item.get("type") == "command_execution"):
+                iid = item.get("id")
+                has_id = isinstance(iid, str) and bool(iid)
+                if not has_id:
+                    cmd_ids_complete = False
+                if etype == "item.started":
+                    if has_id:
+                        cmd_started_ids.add(iid)
+                else:
+                    cmd_done += 1
+                    if has_id:
+                        cmd_done_ids.add(iid)
+                    code = item.get("exit_code")
+                    if isinstance(code, int) and not isinstance(code, bool) and code != 0:
+                        cmd_nonzero += 1
             # Only TOP-LEVEL failure objects count: a reviewer quoting an error string must not fail its own run.
             if not fail_type and etype in ("turn.failed", "error"):
                 fail_type = etype
@@ -246,10 +272,15 @@ if fh is not None:
                 if requested and requested in msg and MODEL_ERR.search(msg):
                     model_unavail = 1
 
+# With incomplete ids the unfinished claim is omitted; duplicate lifecycle events are not deduplicated
+# (deferred: codex emits one completion per item; no producer guarantee on record).
+cmd_open = len(cmd_started_ids - cmd_done_ids) if cmd_ids_complete else 0
+
 sys.stdout.write(
     "parsed=%d\nknown=%d\nmalformed=%d\nfail_type=%s\n"
-    "pre_exec=%d\nmodel_unavail=%d\nfail_msg=%s\n"
-    % (parsed, known, malformed, fail_type, pre_exec, model_unavail, fail_msg))
+    "pre_exec=%d\nmodel_unavail=%d\ncmd_done=%d\ncmd_nonzero=%d\ncmd_open=%d\nfail_msg=%s\n"
+    % (parsed, known, malformed, fail_type, pre_exec, model_unavail,
+       cmd_done, cmd_nonzero, cmd_open, fail_msg))
 PY
 )"
   CLS_PARSED="$(printf '%s\n' "$raw" | sed -n 's/^parsed=//p')"
@@ -259,9 +290,13 @@ PY
   CLS_PRE_EXEC="$(printf '%s\n' "$raw" | sed -n 's/^pre_exec=//p')"
   CLS_MODEL_UNAVAIL="$(printf '%s\n' "$raw" | sed -n 's/^model_unavail=//p')"
   CLS_FAIL_MSG="$(printf '%s\n' "$raw" | sed -n 's/^fail_msg=//p')"
+  CLS_CMD_DONE="$(printf '%s\n' "$raw" | sed -n 's/^cmd_done=//p')"
+  CLS_CMD_NONZERO="$(printf '%s\n' "$raw" | sed -n 's/^cmd_nonzero=//p')"
+  CLS_CMD_OPEN="$(printf '%s\n' "$raw" | sed -n 's/^cmd_open=//p')"
   CLS_PARSED="${CLS_PARSED:-0}"; CLS_KNOWN="${CLS_KNOWN:-0}"
   CLS_MALFORMED="${CLS_MALFORMED:-0}"
   CLS_PRE_EXEC="${CLS_PRE_EXEC:-0}"; CLS_MODEL_UNAVAIL="${CLS_MODEL_UNAVAIL:-0}"
+  CLS_CMD_DONE="${CLS_CMD_DONE:-0}"; CLS_CMD_NONZERO="${CLS_CMD_NONZERO:-0}"; CLS_CMD_OPEN="${CLS_CMD_OPEN:-0}"
 }
 
 # ---- run ----
@@ -287,6 +322,10 @@ DUR=$((SECONDS - START))
 
 # A pre-execution model rejection is not retried (2.22): it fails with codex's own error plus one hint.
 classify_events "$EVENTS" "$MODEL"
+# A countable fact from the event stream, kept apart from COVERAGE_NOTE (change detection).
+SHELL_NOTE="shell: ${CLS_CMD_DONE} completed commands"
+[ "$CLS_CMD_NONZERO" -gt 0 ] 2>/dev/null && SHELL_NOTE="$SHELL_NOTE, $CLS_CMD_NONZERO exited nonzero"
+[ "$CLS_CMD_OPEN" -gt 0 ] 2>/dev/null && SHELL_NOTE="$SHELL_NOTE, $CLS_CMD_OPEN unfinished"
 
 hjw_detect_after
 
@@ -302,6 +341,7 @@ elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
 
 # (iii) codex's own failure events
 echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($EVENTS) ----" >> "$LOG"
+echo "# ---- shell: ${SHELL_NOTE#shell: } ----" >> "$LOG"
 if [ -n "$CLS_FAIL_TYPE" ]; then
   fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
 fi
@@ -343,7 +383,7 @@ if [ "$FAILED" = 1 ]; then
 fi
 
 hjw_log_coverage_note
-echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===$COVERAGE_NOTE"
+echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===${COVERAGE_NOTE} | $SHELL_NOTE"
 [ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"
 cat "$OUT"
 exit 0

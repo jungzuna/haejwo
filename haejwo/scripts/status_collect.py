@@ -23,8 +23,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hjw_common import (  # noqa: E402
-    _safe_sid, command_name, gate_disabled_by_env, load_config_with_status,
-    on_codex_host, state_file,
+    STALE_DAYS, _safe_sid, command_name, gate_disabled_by_env,
+    load_config_with_status, on_codex_host, state_file,
 )
 
 MAX_BYTES = 4 << 20  # observe() rotates at 200KB; anything larger is not ours
@@ -40,7 +40,6 @@ KNOWN_KEYS = {
     "delegation": BASE_KEYS | {"subagent_type", "requested_model",
                                "plan_marker_kind", "tier_pin_check"},
 }
-STALE_DAYS = 30
 
 
 def _stamp(ts):

@@ -6,8 +6,7 @@ EXECUTION. NEVER require plugin commands mid-run (settings excepted).
 **Handle directly:** small edits (<=2 files, ~50 lines), typos, config/docs, reads,
 questions, decisions, review.
 **Delegate:** new features; 3+ files or 50+ lines; test suites; refactors;
-repo-wide exploration; research; log triage. The file budget steers
-implementation to workers, even same-model ones.
+repo-wide exploration; research; log triage.
 
 **Routing:**
 - Implementation from a clear brief -> `haejwo:default-worker`.
@@ -24,7 +23,10 @@ implementation to workers, even same-model ones.
   session, never --resume.
 - Risk classes (security/concurrency/data integrity/crypto/migrations/public
   API): escalate only with a brief-named risk + independent review BEFORE
-  deploy, commit, merge, or acceptance; docs/config/boilerplate never escalate.
+  deploy, commit, merge, or acceptance; `No plan because:` does not waive
+  it; a fix that changes the named risk's behavior is re-reviewed against
+  the fixed diff, otherwise verify the fix; docs/config/boilerplate without
+  a named risk never escalate.
 - Generic agents (general-purpose/Explore): no model = host default;
   explicit model required (gate-enforced). Prefer haejwo tiers.
 
@@ -36,22 +38,25 @@ changes; host decides with rationale. Briefs EMBED
 neither.
 
 **Decisions made for the user** (added scope, API removals, security
-defaults, migrations): state them and reviewer objections rejected or
-deferred, with reasons, BEFORE implementing or delegating; carry unresolved
-ones into the final report.
+defaults, standing access or credentials, migrations): state them and
+reviewer objections rejected or deferred, with reasons, BEFORE implementing,
+delegating, or asking the user to grant access; carry unresolved ones into
+the final report.
 
 **Briefs & acceptance:** goal, files, constraints, done-criteria, quiet
 tool output; minimal worker judgment. Accept only diffs tracing to the brief or a disclosed
 judgment call; countable criteria need named deterministic evidence; none,
 no acceptance. Codex briefs append: verification evidence, concise report,
 `Judgment calls:`. Scope-limited review: name reviewed scope and omissions in
-the brief and acceptance report; keep review coverage, verification done
-and delivery pending distinct.
+the brief, and carry the reviewer's closing statement (material read,
+verification run, omissions) into the acceptance report; keep review
+coverage, verification done and delivery pending distinct.
 
 **Reporting:** proportional to content; one honest checkpoint, no theater.
 
 **Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
-Ask first unless the user explicitly authorized the action.
+Ask first unless the user explicitly authorized the outward action and its
+scope; a deploy that needs a push says so when asking.
 
 **Recovery (host-owned):** reviewer down -> disclose same-model fallback
 (Claude: deep-reasoner; Codex: native subagent). Worker fails: diagnose,

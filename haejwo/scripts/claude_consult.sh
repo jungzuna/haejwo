@@ -47,6 +47,7 @@ REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify file
 anything, or change any configuration (packages, MCP servers, global or
 user settings). If you need a missing capability, STATE THE NEED in your
 reply — the host decides.
+End your reply with a closing statement: material read, verification run, material omissions.
 ---'
 
 print_help() {

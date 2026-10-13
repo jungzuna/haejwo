@@ -50,7 +50,7 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 **Exit codes:** `0` accepted · `1` failed check (empty reply, failure event, tracing error, repository changed, detection unavailable) · `2` usage error, missing brief, bad env value, refused artifact path, non-git directory · `3` CLI or library missing · `4` no writable temp dir · `124` timeout; other statuses pass through.
 
 **Guarantees**
-- A standing non-editing REVIEWER CONTRACT is prepended to every brief; `claude_consult.sh` also disallows Edit/Write/NotebookEdit.
+- A standing non-editing REVIEWER CONTRACT is prepended to every brief and asks for a closing statement (material read, verification run, omissions); `claude_consult.sh` also disallows Edit/Write/NotebookEdit.
 - Post-run change detection FAILS the run when the repository changed: HEAD, tracked files, untracked files (contents for the first 2000). Runner artifacts are excluded.
 - **Artifact guard:** a reply, log, events or temp-brief path inside the worktree or its git dirs (lexically or via a symlink), or an existing hard-linked artifact, is refused (exit 2) before any write or paid call. Other worktrees of the repository are not covered.
 - A codex model rejected before execution fails with one hint, unretried.
@@ -60,7 +60,7 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 **Not guaranteed**
 - **Not a security boundary:** Bash stays available to the reviewer.
 - Never covered: package installs, MCP / user / global config, ignored or out-of-repo files, edit-then-restore. Under concurrent writers a change has **attribution unknown**.
-- **Review coverage is what the reviewer could read.** Without repo access it sees only the brief; a scope-limited review names its scope and omissions.
+- **Review coverage is what the reviewer read.** Without repo access it sees only the brief; a scope-limited review names its scope and omissions. The codex result line reports completed shell commands (`shell: N completed commands`); the count does not establish review coverage.
 - A failure reported only in prose is NOT detected (measured 2026-09-21); the host reads every reply. `claude_consult.sh` has no event classifier.
 - An unselected model is **`cli-default (identity unverified)`**; the Codex-host workflow is field-untested.
 - The `codex` block names the reviewer of the data dir's host — on a Codex host `codex.model` is a Claude model; a rename is deferred as schema debt.

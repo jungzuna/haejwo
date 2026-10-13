@@ -963,12 +963,15 @@ def main():
                 cond = phrase in rules_text
             check(f"canary: {name}", cond)
 
-        # diet budget — target 3000, actual 3190 at 2.10.0 (task-worker litmus
-        # relaxation); consensus-kept host contracts cost the overage;
-        # re-audit at next rules change
+        # diet budget — 2.31.0 field round 1: four clauses from 2026-10-12
+        # field cases (risk review not waived by `No plan because:`, fix
+        # re-review against the fixed diff, outward authorization names action
+        # and scope, standing access as a decision made for the user); one
+        # duplicate sentence (file-budget rationale, lives in README By design)
+        # removed. Actual 3603.
         rules_size = os.path.getsize(rules_path)
-        check("rules file size within diet budget (<=3300 bytes)",
-              rules_size <= 3300, f"size={rules_size}")
+        check("rules file size within diet budget (<=3700 bytes)",
+              rules_size <= 3700, f"size={rules_size}")
 
         print("== turn_reset.py ==")
         rc, _ = run("turn_reset.py",
@@ -1817,7 +1820,7 @@ def main():
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
         for rel, cap in (("README.md", 740), ("README.ko.md", 650),
-                         ("haejwo/README.md", 1470),
+                         ("haejwo/README.md", 1500),
                          ("haejwo/commands/plan.md", 490),
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
@@ -1840,8 +1843,8 @@ def main():
             {f for f in os.listdir(os.path.join(SCRIPTS, "lib"))
              if f.endswith((".sh", ".py"))}
             - {f[len("lib/"):] for f in runner_stack if f.startswith("lib/")})
-        check("line ratchet: runner stack (7 files) <= 1790 lines",
-              not stack_missing and not stack_unlisted and stack_lines <= 1790,
+        check("line ratchet: runner stack (7 files) <= 1830 lines",
+              not stack_missing and not stack_unlisted and stack_lines <= 1830,
               f"lines={stack_lines} missing={stack_missing} unlisted_lib={stack_unlisted}")
 
         # c. Retired surfaces stay retired, across every tracked doc, script and
@@ -2323,6 +2326,12 @@ def main():
                   and "- Implementation from a clear brief -> "
                       "`spawn_agent (default-worker tier)`." in c4_rules_x,
                   c4_ctx["configured"][1][:300])
+            check("2.31 Codex unconfigured: the FULL rules ship (no emergency core), "
+                  "within MAX_LEN",
+                  "emergency core" not in c4_ctx["unconfigured"][1]
+                  and "`spawn_agent (default-worker tier)`" in c4_ctx["unconfigured"][1]
+                  and len(c4_ctx["unconfigured"][1]) <= MAX_LEN,
+                  f"len={len(c4_ctx['unconfigured'][1])}")
             check("F1/D1 Claude: the injection is the rules file unchanged "
                   "(tier names verbatim)",
                   c4_ctx["claude"][1].startswith(c4_rules_c)
@@ -2395,23 +2404,87 @@ def main():
               render_summary(_g, DEFAULT_CONFIG["models"], False, True, True,
                              reviewer_verified=False)
               .endswith("| codex reviewer: enabled (unverified)"))
+        # 2.31.0 (2026-10-12 field: a verification 38 days stale went unseen,
+        # nobody ran status): past STALE_DAYS the cold-start line names the
+        # age and the host's re-verify command.
+        check("2.31 render_summary: stale verification on Claude, exact tail",
+              render_summary(_g, DEFAULT_CONFIG["models"], False, True, True,
+                             verified_days=40)
+              .endswith("| codex reviewer: enabled (last verified 40d ago; "
+                        "re-verify: /haejwo:setup)"))
+        check("2.31 render_summary: stale verification on a Codex host, exact tail",
+              render_summary(_g, {}, True, True, True, verified_days=40)
+              .endswith("| claude reviewer: enabled (last verified 40d ago; "
+                        "re-verify: @haejwo-setup)"))
+        check("2.31 render_summary: verified within STALE_DAYS -> plain 'enabled'",
+              render_summary(_g, DEFAULT_CONFIG["models"], False, True, True,
+                             verified_days=30)
+              .endswith("| codex reviewer: enabled"))
         c4_rv = tempfile.mkdtemp(prefix="hjw-test-c4rv-")
         try:
             c4_rv_ctx = {}
             for c4_label, c4_codex in (("unverified", {"enabled": True}),
                                        ("verified", {"enabled": True,
-                                                     "verified_at": 1760000000})):
+                                                     "verified_at": int(time.time()) - 86400}),
+                                       ("stale", {"enabled": True,
+                                                  "verified_at": int(time.time()) - 40 * 86400}),
+                                       # json.dump writes NaN / Infinity as bare tokens,
+                                       # which json.load accepts back.
+                                       ("nan", {"enabled": True, "verified_at": float("nan")}),
+                                       ("inf", {"enabled": True, "verified_at": float("inf")}),
+                                       ("future", {"enabled": True,
+                                                   "verified_at": int(time.time()) + 86400}),
+                                       ("near-future", {"enabled": True,
+                                                        "verified_at": int(time.time()) + 100})):
                 with open(os.path.join(c4_rv, "config.json"), "w") as f:
                     json.dump({"configured": True, "codex": c4_codex}, f)
                 rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, c4_rv)
                 c4_rv_ctx[c4_label] = (out.get("hookSpecificOutput") or {}).get(
                     "additionalContext", "")
+            # Codex host: the data dir sits under /.codex/ (the codex block
+            # describes the Claude reviewer there).
+            c4_rv_x = os.path.join(c4_rv, "x", ".codex", "plugins", "data", "haejwo")
+            os.makedirs(c4_rv_x)
+            with open(os.path.join(c4_rv_x, "config.json"), "w") as f:
+                json.dump({"configured": True, "codex": {
+                    "enabled": True, "verified_at": int(time.time()) - 40 * 86400}}, f)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, c4_rv_x)
+            c4_rv_ctx["codex-stale"] = (out.get("hookSpecificOutput") or {}).get(
+                "additionalContext", "")
+            c4_rv_rules = c4_read_rules(PLUGIN, False)
+            for c4_label in ("nan", "inf"):
+                check(f"2.31 session_brief: verified_at {c4_label} -> FULL rules + "
+                      "'enabled (unverified)' (no crash, no emergency core)",
+                      c4_rv_ctx[c4_label].startswith(c4_rv_rules)
+                      and "emergency core" not in c4_rv_ctx[c4_label]
+                      and c4_rv_ctx[c4_label].rstrip().endswith(
+                          "codex reviewer: enabled (unverified)"),
+                      c4_rv_ctx[c4_label][-120:])
+            check("2.31 session_brief: verified_at a day in the future -> 'enabled (unverified)'",
+                  c4_rv_ctx["future"].rstrip().endswith("codex reviewer: enabled (unverified)"),
+                  c4_rv_ctx["future"][-120:])
+            check("2.31 session_brief: verified_at 100 s ahead (within 300 s) -> 'enabled'",
+                  c4_rv_ctx["near-future"].rstrip().endswith("codex reviewer: enabled"),
+                  c4_rv_ctx["near-future"][-120:])
+            check("2.31 session_brief: configured Codex host, verified 40 days ago -> "
+                  "stale tail naming @haejwo-setup",
+                  c4_rv_ctx["codex-stale"].rstrip().endswith(
+                      "claude reviewer: enabled (last verified 40d ago; "
+                      "re-verify: @haejwo-setup)"),
+                  c4_rv_ctx["codex-stale"][-160:])
             check("F7 session_brief: enabled + no verified_at -> 'enabled (unverified)'; "
                   "enabled + verified_at -> 'enabled'",
                   c4_rv_ctx["unverified"].rstrip().endswith(
                       "codex reviewer: enabled (unverified)")
                   and c4_rv_ctx["verified"].rstrip().endswith("codex reviewer: enabled"),
                   c4_rv_ctx["unverified"][-80:] + " || " + c4_rv_ctx["verified"][-80:])
+            check("2.31 session_brief: enabled + verified_at 40 days old -> stale tail",
+                  c4_rv_ctx["stale"].rstrip().endswith(
+                      "codex reviewer: enabled (last verified 40d ago; "
+                      "re-verify: /haejwo:setup)")
+                  and "emergency core" not in c4_rv_ctx["stale"]
+                  and len(c4_rv_ctx["stale"]) <= MAX_LEN,
+                  c4_rv_ctx["stale"][-120:])
         finally:
             shutil.rmtree(c4_rv, ignore_errors=True)
 
@@ -3637,6 +3710,10 @@ exit "$rc"
                 check(f"{label} file-brief: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
                 check(f"{label} file-brief: contract at top of captured stdin",
                       bool(calls) and calls[0][1].startswith(CONTRACT_HEAD), calls[:1])
+                # 2.31.0: the contract asks for a closing scope statement.
+                check(f"{label} file-brief: contract asks for a closing statement",
+                      bool(calls) and "End your reply with a closing statement: material "
+                      "read, verification run, material omissions." in calls[0][1], calls[:1])
 
                 cap2 = os.path.join(runner_tmp, f"cap-{label}-stdin")
                 make_stub(bin_dir, label, cap2)
@@ -3671,6 +3748,90 @@ exit "$rc"
             rc, out, err, calls = codex_run("nested-trace", {"STUB_EVENTS_FILE": ev})
             check("events: command_execution aggregated_output with a tracing line -> success",
                   rc == 0, f"rc={rc} err={err}")
+            # (c2) a completed command_execution WITHOUT exit_code counts as
+            # completed, never as nonzero.
+            check("2.31 shell: completed command without exit_code -> counted, not nonzero",
+                  rc == 0 and "| shell: 1 completed commands\n" in out, out[:400])
+
+            # ---- 2.31.0 shell count: the result line reports the reviewer's
+            # command_execution items as a countable fact (2026-10-12 field) ----
+            ev = events_file("ev-shell-commands.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"turn.started"}',
+                '{"type":"item.started","item":{"id":"c1","type":"command_execution","exit_code":null}}',
+                '{"type":"item.started","item":{"id":"c2","type":"command_execution","exit_code":null}}',
+                '{"type":"item.started","item":{"id":"c3","type":"command_execution","exit_code":null}}',
+                '{"type":"item.completed","item":{"id":"c1","type":"command_execution","exit_code":0}}',
+                '{"type":"item.completed","item":{"id":"c2","type":"command_execution","exit_code":1}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"fine"}}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("shell-commands", {"STUB_EVENTS_FILE": ev})
+            check("2.31 shell: 2 completed, 1 nonzero, 1 unfinished on the result line",
+                  rc == 0 and "| shell: 2 completed commands, 1 exited nonzero, "
+                  "1 unfinished\n" in out, f"rc={rc} out={out[:400]} err={err[-400:]}")
+            shell_log = os.path.join(runner_tmp, "brief-shell-commands.reply.log")
+            shell_log_text = (open(shell_log).read() if os.path.isfile(shell_log)
+                              else "<absent>")
+            check("2.31 shell: the log carries the shell line after the events line",
+                  re.search(r"# ---- events: [^\n]*\n# ---- shell: 2 completed commands, "
+                            r"1 exited nonzero, 1 unfinished ----\n", shell_log_text)
+                  is not None, shell_log_text[-600:])
+            rc, out, err, calls = codex_run("shell-default", {})
+            check("2.31 shell: the default stub stream (no commands) -> 0 completed",
+                  rc == 0 and "| shell: 0 completed commands\n" in out,
+                  f"rc={rc} out={out[:400]}")
+            # Unhashable ids must not kill the classifier (a later top-level
+            # failure is still detected), and without usable ids no unfinished
+            # count is claimed.
+            bad_id_cmds = [
+                '{"type":"item.started","item":{"id":[],"type":"command_execution"}}',
+                '{"type":"item.started","item":{"id":{},"type":"command_execution"}}',
+                '{"type":"item.completed","item":{"id":[],"type":"command_execution","exit_code":0}}',
+                '{"type":"item.completed","item":{"id":{},"type":"command_execution","exit_code":0}}',
+            ]
+            ev = events_file("ev-shell-badid-fail.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}', *bad_id_cmds,
+                '{"type":"turn.failed","error":{"message":"after malformed ids"}}',
+            ])
+            rc, out, err, calls = codex_run("shell-badid-fail", {"STUB_EVENTS_FILE": ev})
+            check("2.31 shell: unhashable ids keep the classifier alive (turn.failed still fails)",
+                  rc != 0 and "codex reported turn.failed" in err
+                  and "after malformed ids" in err, f"rc={rc} err={err[-400:]}")
+            ev = events_file("ev-shell-badid-ok.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}', *bad_id_cmds,
+                '{"type":"item.started","item":{"type":"command_execution"}}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("shell-badid-ok", {"STUB_EVENTS_FILE": ev})
+            check("2.31 shell: unhashable / missing ids -> completed count, no unfinished claim",
+                  rc == 0 and "| shell: 2 completed commands\n" in out
+                  and "unfinished" not in out, f"rc={rc} out={out[:400]} err={err[-400:]}")
+            # Only an int (not bool) exit_code != 0 counts as nonzero.
+            ev = events_file("ev-shell-exit-codes.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                *('{"type":"item.completed","item":{"id":"e%d","type":"command_execution",'
+                  '"exit_code":%s}}' % (i, code)
+                  for i, code in enumerate(("true", '"1"', "1.5", "null", "2"))),
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("shell-exit-codes", {"STUB_EVENTS_FILE": ev})
+            check("2.31 shell: bool / str / float / null exit codes are not nonzero; 2 is",
+                  rc == 0 and "| shell: 5 completed commands, 1 exited nonzero\n" in out,
+                  f"rc={rc} out={out[:400]}")
+            # A non-dict item is ignored, not a crash.
+            ev = events_file("ev-shell-item-shapes.jsonl", [
+                '{"type":"thread.started","thread_id":"stub"}',
+                '{"type":"item.started","item":"not-a-dict"}',
+                '{"type":"item.completed","item":"not-a-dict"}',
+                '{"type":"item.started","item":null}',
+                '{"type":"item.completed","item":null}',
+                '{"type":"turn.completed"}',
+            ])
+            rc, out, err, calls = codex_run("shell-item-shapes", {"STUB_EVENTS_FILE": ev})
+            check("2.31 shell: non-dict / null items are ignored, run succeeds",
+                  rc == 0 and "| shell: 0 completed commands\n" in out,
+                  f"rc={rc} out={out[:400]} err={err[-400:]}")
 
             # ---- (c/d) TOP-LEVEL failure events fail the run even at rc=0
             # with a non-empty reply (the silent-failure case) ----

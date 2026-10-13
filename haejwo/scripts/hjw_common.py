@@ -252,6 +252,11 @@ def command_name(cmd, on_codex):
     return ("@haejwo-" if on_codex else "/haejwo:") + cmd
 
 
+# A reviewer verification older than this many days reads as stale (status
+# and the session brief share it).
+STALE_DAYS = 30
+
+
 # The Codex next action wherever a Claude text names a haejwo agent: the
 # Codex manifest ships NO agents (skills + hooks only), so a Codex session
 # delegates with spawn_agent and the tier values setup wrote (cycle 3 F4).

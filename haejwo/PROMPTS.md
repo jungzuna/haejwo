@@ -22,7 +22,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
-- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Two limits, two roles: **3,300 bytes** is the diet ratchet `tests/test_hooks.py` pins on the rules file (the working budget); **4,300 chars** is a derived ceiling, not a checked one: 5,000 − the 600-char summary bound − the nudge; the code checks only the 5,000 total.
+- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Two limits, two roles: **3,900 bytes** is the diet ratchet `tests/test_hooks.py` pins on the rules file (the working budget; re-pinned 2.31.1 for the acceptance/outward record); the binding ceiling is the 5,000 total on the worst supported combination (Codex host with tier names rewritten, unconfigured with a stored budget, `HAEJWO_GATE=off`, an installed-cache root path), measured at 4,956 chars in 2.31.1 — 44 chars of headroom; measure every combination, never one path; the code checks only the 5,000 total. The record's two-line template lives ONLY in the rules; other surfaces point to it.
 
 ## Hook-emitted text (the model reads these verbatim)
 - Prefixes: `[haejwo gate]` for gate/bash-guard decisions; `[haejwo]` / `[haejwo config]` for session context.
@@ -39,7 +39,7 @@ Shapes are for the reader; P11 governs — use them when they fit, never as ritu
 - Batch plan (once, at start of long/multi-phase work): `phase | what | worker | expected`.
 - Milestone (per worker completion, when it fits): one line — `✓ <phase> — verified via <diff/tests> — commit <sha> — next: <phase>`.
 - Long-run checkpoint (past the stated ETA, when it fits): elapsed + active phase + "no result yet" + when the next update comes. Honest silence beats fake progress; never a timer loop.
-- Final scorecard (multi-phase/commit-bearing work only): shipped (user terms) / quality gates / commits / deviations from plan / pending decisions. Small work: two plain lines instead.
+- Final scorecard (multi-phase/commit-bearing work only): shipped (user terms) / quality gates / commits / deviations from plan / pending decisions. Small work: two plain lines instead. An acceptance report, and any report after an outward action, ends with the rules' two record lines (`Final-diff review:` / `Outward actions:`) — never other replies (P11).
 - Scale ceremony by scope; numeric thresholds are internal heuristics, never visible rules.
 
 ## Reasoning policy

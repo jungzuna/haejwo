@@ -157,20 +157,18 @@ SANDBOX_DISP="sandbox=$SANDBOX"
 
 command -v codex >/dev/null 2>&1 || { echo "codex CLI not installed (check codex --version)" >&2; exit 3; }
 
+# ---- change detection (A5): file-backed before/after snapshots; the probe precedes the header (scope=) ----
+WORKDIR="$(pwd)"
+rm -f "$OUT" "$EVENTS"  # $LOG cannot collide with the previous reply/events — the aliasing rule renamed it
+hjw_git_preflight
+ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 {
-  echo "# codex_consult  $HJW_PLUGIN_DISP  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# codex_consult  $HJW_PLUGIN_DISP  mode=$MODE $SANDBOX_DISP $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP $SCOPE_DISP  $(date 2>/dev/null)"
   printf '# codex '; bounded 20 codex --version 2>&1 | head -1
 } > "$LOG"
 # After the header write (which truncates $LOG), so the foreign-CLAUDE_PLUGIN_DATA note survives with the header.
 hjw_config_disclose
 echo "# ---- codex exec ----" >> "$LOG"
-
-# ---- change detection (A5): file-backed before/after snapshots ----
-WORKDIR="$(pwd)"
-# $LOG cannot collide with the previous reply/events — the aliasing rule renamed it.
-rm -f "$OUT" "$EVENTS"
-hjw_git_preflight
-ARTIFACTS=("$OUT" "$LOG" "$EVENTS" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
   if [ "$SANDBOX" != read-only ]; then
@@ -314,7 +312,7 @@ run_attempt() {
   fi
 }
 
-echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF) ..." >&2
+echo "→ Codex (mode=$MODE, $SANDBOX_DISP, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF, $SCOPE_DISP) ..." >&2
 START=$SECONDS
 run_attempt 1 "$EVENTS" codex exec --json -s "$SANDBOX" --skip-git-repo-check --cd "$WORKDIR" "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" -o "$OUT" -
 rc=$?
@@ -326,6 +324,8 @@ classify_events "$EVENTS" "$MODEL"
 SHELL_NOTE="shell: ${CLS_CMD_DONE} completed commands"
 [ "$CLS_CMD_NONZERO" -gt 0 ] 2>/dev/null && SHELL_NOTE="$SHELL_NOTE, $CLS_CMD_NONZERO exited nonzero"
 [ "$CLS_CMD_OPEN" -gt 0 ] 2>/dev/null && SHELL_NOTE="$SHELL_NOTE, $CLS_CMD_OPEN unfinished"
+# 0 commands = file access UNVERIFIED, not "no files read". *[origin: a demo app 2026-10-20, undisclosed 0-command reviews]*
+ACCESS_NOTE=""; [ "$CLS_CMD_DONE" = 0 ] && ACCESS_NOTE=" | file access unverified (0 shell commands)"
 
 hjw_detect_after
 
@@ -341,7 +341,7 @@ elif [ "$rc" -ne 0 ]; then fail "codex exit code $rc"; fi
 
 # (iii) codex's own failure events
 echo "# ---- events: parsed=$CLS_PARSED known=$CLS_KNOWN malformed=$CLS_MALFORMED ($EVENTS) ----" >> "$LOG"
-echo "# ---- shell: ${SHELL_NOTE#shell: } ----" >> "$LOG"
+echo "# ---- shell: ${SHELL_NOTE#shell: }${ACCESS_NOTE} ----" >> "$LOG"
 if [ -n "$CLS_FAIL_TYPE" ]; then
   fail "codex reported $CLS_FAIL_TYPE: $CLS_FAIL_MSG"
 fi
@@ -383,7 +383,7 @@ if [ "$FAILED" = 1 ]; then
 fi
 
 hjw_log_coverage_note
-echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===${COVERAGE_NOTE} | $SHELL_NOTE"
+echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===${COVERAGE_NOTE}${ACCESS_NOTE} | $SHELL_NOTE"
 [ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"
 cat "$OUT"
 exit 0

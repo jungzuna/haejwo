@@ -39,6 +39,7 @@ KNOWN_KEYS = {
     "bash_guard": BASE_KEYS | {"via", "target"},
     "delegation": BASE_KEYS | {"subagent_type", "requested_model",
                                "plan_marker_kind", "tier_pin_check"},
+    "report_check": BASE_KEYS | {"via"},
 }
 
 
@@ -142,9 +143,10 @@ def reviewer_line(cfg, on_codex, now):
 
 
 def load_observations(data):
-    """(records in file order across .1 then current, unparsable line count, notes)."""
+    """(records in file order across .3, .2, .1 then current, unparsable line count, notes)."""
     recs, bad, notes = [], 0, []
-    for name in ("observations.jsonl.1", "observations.jsonl"):
+    for name in ("observations.jsonl.3", "observations.jsonl.2",
+                 "observations.jsonl.1", "observations.jsonl"):
         path = os.path.join(data, "state", name)
         try:
             if os.path.getsize(path) > MAX_BYTES:
@@ -190,7 +192,7 @@ def observation_lines(recs, bad, sid12):
     lines = []
     ts = [_ts(r) for r in recs if _ts(r)]
     lines.append(
-        f"observations (machine-wide, both files): records={len(recs)} "
+        f"observations (machine-wide, 4 files): records={len(recs)} "
         f"span={_stamp(min(ts)) if ts else '-'}..{_stamp(max(ts)) if ts else '-'} "
         f"distinct_sids={len({r.get('sid') for r in recs})} "
         f"denies={sum(1 for r in recs if r.get('decision') == 'deny')} unparsable_lines={bad}")

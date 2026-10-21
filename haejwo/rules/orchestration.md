@@ -47,7 +47,7 @@ evidence; none, no acceptance. Codex briefs append: verification evidence,
 concise report, `Judgment calls:`. Scope-limited review names scope and
 omissions in the brief.
 
-**Record (acceptance; after outward actions):**
+**Record (acceptance; outward actions):**
 `Final-diff review: <change id; reply; closing statement | not run because: <reason>>`
 `Outward actions: <repo; branch; action; result> - authorized by: <user words, time | none>`
 Presence proves neither adequacy nor authorization.
@@ -57,7 +57,8 @@ Label observed/inferred/unverified/pending; a comment is not a control; a
 test covers only itself.
 
 **Outward (push/deploy/publish):** host-owned; workers NEVER push or deploy.
-Ask first unless the user explicitly authorized the action and its scope.
+Match repo, branch and action to the user's authorizing words; ask first
+unless they cover the action and its scope.
 
 **Recovery (host-owned):** reviewer down -> disclose same-model fallback
 (deep-reasoner; Codex: native subagent). Worker fails: diagnose,

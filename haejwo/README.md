@@ -9,7 +9,7 @@ haejwo keeps the main model on **judgment** and sends **execution** to worker ti
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the rules (a minimal core if unreadable or over budget), a setup nudge until configured, and the config summary |
 | Roles | `agents/` | `deep-reasoner` (session model and effort, never below default-worker) · `default-worker` (opus, high effort) · `task-worker` (opus, low effort) + the reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
 | Criteria | `rules/orchestration.md` | When the main agent delegates |
-| **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) | Main agent: edits past **N distinct code files per turn** (default 2), Bash writes to code (heuristic) and generic-agent (general-purpose / Explore) delegation without an explicit model are **denied** |
+| **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) + a Stop hook (`report_check.py`) | Main agent: edits past **N distinct code files per turn** (default 2), Bash writes to code (heuristic) and generic-agent (general-purpose / Explore) delegation without an explicit model are **denied**; on Claude Code, a final message after a detected main-agent `git push` request that lacks the two record labels is **blocked once** (presence only) |
 
 ## Gate semantics
 - Counts **distinct code files** (config extension list) per user turn; re-editing is free. **Subagents are exempt** (payload `agent_id`/`agent_type`).
@@ -17,6 +17,7 @@ haejwo keeps the main model on **judgment** and sends **execution** to worker ti
 - Denials name the budget and delegate; the last allowed edit warns the budget is full.
 - **Fail-open**: any hook error or ambiguity ⇒ no objection. haejwo never approves a tool call, only denies or annotates, so your permission settings still apply. An affordance, not a security boundary (P4): editing `config.json` (not code) turns the gate off; dynamically written code is invisible to the guard.
 - Temp-dir paths (`/tmp`, `/var/tmp`, `tempfile.gettempdir()`) outside the active project (git toplevel, else cwd) are not code; a temp-dir repository that IS the project is gated unless its root is a temp dir or ancestor (`/tmp`, `/`). In-place editors run via `find`/`xargs` are denied on any path.
+- **Record check (Stop, 2.32):** after the bash guard let a main-agent `git push` through this turn (noted to the model, recorded as `outward-attempt`), a final message lacking `Outward actions:` or `Final-diff review:` is blocked ONCE naming both labels; `not run because:` satisfies the review label. Presence only. Exempt: `HAEJWO_GATE=off`, `gate.enabled`/`gate.report_check` false, malformed config, subagents, Codex hosts (unmeasured), `stop_hook_active`, a nudge already given, a failed state write. Detection is a grammar, not the shell: dry-runs (`-n`, `--dry-run`) are not attempts; unlisted wrappers (`sudo git push`) are missed. A turn idle past the 2 h stale reset can be nudged twice. Measured on Claude Code 2.1.305: the block shows as a "Stop hook error" notification, then the model wrote both lines. Acceptance reports without a push are not checked (not countable).
 
 ## First run
 **`/haejwo:setup`** is optional, nudged each session until configured. It sets tiers, budget, bash-guard and the reviewer (probed, smoke-tested) in `${CLAUDE_PLUGIN_DATA}/config.json`. Before setup, defaults apply (gate ON, 2 files/turn, bash-guard ON) unless `/haejwo:gate` stored a value. Presets: `Standard` / `Budget` (Sonnet/Haiku) / `Custom`.
@@ -42,7 +43,7 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 
 **Support floor:** runners support installs >= 2.22.0; a 2.26+ runner never forwards below it (says so, runs locally). Pre-floor installs are unsupported as sources too: without the `snapshot.py` tombstone, a pre-floor runner stays local.
 
-**Dual-host parity (measured):** all but the delegation gate (Codex `spawn_agent` is unhooked) works on both hosts, the gate apply_patch-aware; Codex tiers ride `spawn_agent` parameters (`models_codex`).
+**Dual-host parity (measured):** all but the delegation gate (Codex `spawn_agent` is unhooked) and the Stop record check (exits silently on a Codex host; unmeasured there) works on both hosts, the gate apply_patch-aware; Codex tiers ride `spawn_agent` parameters (`models_codex`).
 
 ## Reviewer runners
 **Usage:** `<runner> [--mode consult] [-o out.md] brief.md`, or `echo … | <runner> --mode consult -` (stdin brief, deleted on exit), from the project root. Without `-o` the reply is `<brief>.reply.md`, the log beside it. For a stable tree, pause writes or review a prepared worktree.
@@ -60,7 +61,7 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 **Not guaranteed**
 - **Not a security boundary:** Bash stays available to the reviewer.
 - Never covered: package installs, MCP / user / global config, ignored or out-of-repo files, edit-then-restore. Under concurrent writers a change has **attribution unknown**.
-- **Review coverage is what the reviewer read.** Without repo access it sees only the brief; a scope-limited review names its scope and omissions. The codex result line reports completed shell commands (`shell: N completed commands`); the count does not establish review coverage.
+- **Review coverage is what the reviewer read.** Without repo access it sees only the brief; a scope-limited review names its scope and omissions. The codex result line reports completed shell commands (`shell: N completed commands`); the count does not establish review coverage. `file access unverified (0 shell commands)` there means file access is UNVERIFIED, not that no files were read; the runner header's `scope=` (`scope=none (change detection off)` outside git) is the root change detection covers, not what the reviewer read.
 - A failure reported only in prose is NOT detected (measured 2026-09-21); the host reads every reply. `claude_consult.sh` has no event classifier.
 - An unselected model is **`cli-default (identity unverified)`**; the Codex-host workflow is field-untested.
 - The `codex` block names the reviewer of the data dir's host — on a Codex host `codex.model` is a Claude model; a rename is deferred as schema debt.
@@ -79,7 +80,7 @@ Rejected recurring objections:
 - A stored `danger-full-access` consent persists; every run header discloses it. The Claude reviewer keeps Bash for tests and greps; detected repository changes fail the run (documented exclusions apply).
 - Stale cache-path runners forward to the installed version (Claude Code only): restarting pushes a measured host failure onto users; the support floor bounds the cost.
 - The runner stack keeps the artifact guard and change detection: plain status/diff checks omit their contracts.
-- The bash guard covers redirects, `tee` and in-place editors only — no `cp`/`mv`/`git apply`/`patch` heuristics, no longer extension list (json, yaml, html, css, tf are not code): each costs false positives (2.20). Known gaps: a quoted redirect target passes; `tee` checks its first target only.
+- The bash guard covers redirects, `tee` and in-place editors only — no `cp`/`mv`/`git apply`/`patch` heuristics, no longer extension list (json, yaml, html, css, tf are not code): each costs false positives (2.20). Known gaps: a quoted redirect target passes; `tee` checks its first target only; `$NAME` targets stay unresolved even after `NAME=/path` in the same command — the 2.32 resolver candidate (field: 42–45 of ~340 main-agent Bash records in one project M day) was withdrawn under its own stop condition after cross-vendor review reproduced wrong denies (`declare -n`, `trap … DEBUG`); reopens only with a real shell parser.
 - Explore runs on the `opus` alias under a Fable host, else inherits the session model (Claude Code docs): the explicit-model rule adds no cost.
 - A session that cannot delegate (no Agent tool / `spawn_agent`) is outside the gate's design and undetectable by it — stop until the next user turn, or use the emergency override.
 - Plan-marker counts and anomaly detection are field observation the owner reads (P8).

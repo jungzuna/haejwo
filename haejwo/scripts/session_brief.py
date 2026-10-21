@@ -337,11 +337,12 @@ def main():
         nudge = (
             "[haejwo] Installed but NOT configured yet (first use). Offer ONCE to "
             "configure right now, and if the user agrees RUN THE SETUP FLOW YOURSELF "
-            + ("(the setup procedure — the @haejwo-setup skill; " if on_codex else
-               "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
-               "skill in Codex; ")
-            + "the user only answers a few quick choices and never needs "
-            "to type a command). " + active + "Delegation targets: " + targets
+            + ("(the @haejwo-setup skill; " if on_codex else
+               "(/haejwo:setup in Claude Code, the @haejwo-setup skill in Codex; ")
+            # 2.32: 55 chars shorter — the unconfigured Codex-host injection
+            # sits ~50 chars under session_brief's 5,000 cap (measured).
+            + "the user only answers a few quick choices). "
+            + active + "Delegation targets: " + targets
         )
         # Defaults summary: the same fields the configured summary carries,
         # from DEFAULT_CONFIG — what is ACTUALLY enforced right now, labelled

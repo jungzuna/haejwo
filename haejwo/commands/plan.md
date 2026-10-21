@@ -6,7 +6,7 @@ argument-hint: "<topic to plan> [--reviewer codex|claude]"
 You are the **haejwo host**. Debate the plan BEFORE code — different models see different failure modes. The user's input: **$ARGUMENTS**
 
 ## 1. Scope and choose a shape (host)
-For material judgment-bearing feature/risk work only. Typo-tier work: say so and offer to skip; mechanical work states `No plan because: <reason>` in the brief. Shape **A** (default): host drafts, reviewer critiques. Shape **B**: independent drafts — for architecture-level forks or when the owner asks (double the cost).
+For material judgment-bearing feature/risk work only. Typo-tier work: say so and offer to skip; mechanical work states `No plan because: <reason>` in the brief. A rebuild whose acceptance is subjective (UI/UX, copy, design) names ONE representative screen and ONE flow the user confirms before the rest is built. *[origin: two full UI rebuilds rejected on 2026-10-20]* Shape **A** (default): host drafts, reviewer critiques. Shape **B**: independent drafts — for architecture-level forks or when the owner asks (double the cost).
 
 ## 2. Draft (host)
 Goal, key decisions with rationale, alternatives, risks, checklist — and your own uncertainties, so the reviewer attacks real tensions. Shape B: record this draft in the conversation BEFORE contacting the reviewer (that makes independence auditable).

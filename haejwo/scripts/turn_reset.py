@@ -23,7 +23,8 @@ def main():
     root, data = paths(sys.argv)
     sid = payload.get("session_id", "unknown")
     # The turn counter resets; SESSION-scoped once-note flags must survive it
-    # (hjw_common.carry_session_flags). Held under the same session lock the
+    # (hjw_common.carry_session_flags); TURN-scoped flags (`outward_attempt`,
+    # `report_nudged` — report_check.py) are not carried. Held under the same session lock the
     # other writers use, so a concurrent gate/delegation write between our
     # read and save cannot be lost. A lock not taken within its bound means
     # no session-bookkeeping write at all — not even the prune (never

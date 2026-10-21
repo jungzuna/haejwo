@@ -28,6 +28,9 @@ DEFAULT_CONFIG = {
         "max_files_per_turn": 2,
         "bash_guard": True,
         "delegation_guard": True,
+        # Stop-hook presence check of the record lines on a push turn
+        # (report_check.py).
+        "report_check": True,
     },
     "code_extensions": [
         "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "java", "go", "rs",
@@ -184,6 +187,8 @@ _TYPED_KEYS = (
     ("gate", "bash_guard", _is_bool, "true or false", False, "(bash-guard off)"),
     ("gate", "delegation_guard", _is_bool, "true or false", False,
      "(delegation guard off)"),
+    ("gate", "report_check", _is_bool, "true or false", False,
+     "(record check off)"),
     ("codex", "enabled", _is_bool, "true or false", False, "(default used)"),
 ) + tuple((sec, role, _is_str, "a string", DEFAULT_CONFIG[sec][role],
            "(default used)")
@@ -415,15 +420,20 @@ def with_note(note, context=None, reason=None):
     return (context + "\n" + note if context else note), reason
 
 
+_OBSERVATION_FILES = ("observations.jsonl", "observations.jsonl.1",
+                      "observations.jsonl.2", "observations.jsonl.3")
+
+
 def prune_state(data_dir, max_age_days=7):
     try:
         sdir = os.path.join(data_dir, "state")
         cutoff = time.time() - max_age_days * 86400
         for name in os.listdir(sdir):
-            # observations.jsonl / .jsonl.1 are size-bounded by observe()'s
-            # own rotation, not age-bounded here; .1 is retained P13 audit
-            # evidence and pruning it by age would defeat the rotation.
-            if name in ("observations.jsonl", "observations.jsonl.1"):
+            # observations.jsonl and its three prior generations (.1-.3) are
+            # size-bounded by observe()'s own rotation, not age-bounded here;
+            # they are retained P13 audit evidence and pruning them by age
+            # would defeat the rotation.
+            if name in _OBSERVATION_FILES:
                 continue
             p = os.path.join(sdir, name)
             if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
@@ -475,10 +485,12 @@ def _try_lock(path, timeout=0.3, interval=0.02):
 def observe(data_dir, record):
     """Best-effort empirical log (e.g. to answer: do hooks fire in subagents?).
 
-    observations.jsonl rotates to observations.jsonl.1 (overwriting any
-    previous .1) once it exceeds 200KB, instead of being unlinked, so the
-    prior generation survives as P13 audit evidence. Bound stays ~400KB
-    total (current file + one prior generation).
+    Once observations.jsonl exceeds 200KB it rotates .2 -> .3, .1 -> .2,
+    current -> .1 (the oldest generation is dropped), so three prior
+    generations survive as P13 audit evidence. Size-bounded (~800KB total,
+    four files), best-effort, no duration guarantee: how much time the files
+    span depends on how fast hooks write. Origin 2026-10-21 field round 2:
+    the 2026-10-19 records were already gone with one prior generation.
 
     The lock is NON-blocking with bounded retries; a busy lock means the
     append happens unlocked rather than the caller waiting (see _try_lock).
@@ -491,6 +503,9 @@ def observe(data_dir, record):
         try:
             try:
                 if os.path.exists(path) and os.path.getsize(path) > 200_000:
+                    for n in (2, 1):
+                        if os.path.exists(f"{path}.{n}"):
+                            os.replace(f"{path}.{n}", f"{path}.{n + 1}")
                     os.replace(path, path + ".1")
             except Exception:
                 pass  # rotation is best-effort; still append the record below

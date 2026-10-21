@@ -590,9 +590,9 @@ def config_host_summary_tests():
     try:
         rc, out = run("session_brief.py", SB, nd)
         check("nudge Claude text byte-identical (both hosts named, safe defaults ON)",
-              "(the setup procedure — /haejwo:setup in Claude Code, the @haejwo-setup "
-              "skill in Codex; the user only answers a few quick choices and never needs "
-              "to type a command). Until then safe defaults are ACTIVE: gate ON, max 2 "
+              "(/haejwo:setup in Claude Code, the @haejwo-setup skill in Codex; the "
+              "user only answers a few quick choices). "
+              "Until then safe defaults are ACTIVE: gate ON, max 2 "
               "distinct code files per turn for the main agent, bash-guard ON, "
               "subagents exempt. Delegation targets: " in ctx_of(out), ctx_of(out)[-900:])
         rc, out = run("session_brief.py", SB, nd, env_extra={"HAEJWO_GATE": "off"})
@@ -610,7 +610,7 @@ def config_host_summary_tests():
         rc, out = run("session_brief.py", SB, cx_data)
         c_ = ctx_of(out)
         check("F11 Codex nudge names only the @haejwo-setup skill",
-              "(the setup procedure — the @haejwo-setup skill; the user only answers"
+              "(the @haejwo-setup skill; the user only answers"
               in c_ and "/haejwo:" not in c_, c_[-900:])
         with open(os.path.join(cx_data, "config.json"), "w") as f:
             f.write("{not json")
@@ -1834,8 +1834,11 @@ def main():
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
         for rel, cap in (("README.md", 740), ("README.ko.md", 650),
-                         ("haejwo/README.md", 1520),  # 2.31.1: the record sentence
-                         ("haejwo/commands/plan.md", 490),
+                         # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
+                         # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
+                         # in a demo app went undisclosed) names both tokens
+                         ("haejwo/README.md", 1790),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens documented (P7: mechanism + exemptions)
+                         ("haejwo/commands/plan.md", 530),  # 2.32.0: the representative-screen checkpoint sentence
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
             words = len(open(os.path.join(repo, rel), encoding="utf-8").read().split())
@@ -6617,7 +6620,7 @@ exit "$rc"
                 "this turn: 2/3 code edits: /r/a.py, /r/b.py",
                 "reviewer (codex): enabled model=m1 effort=high sandbox=read-only consent=none "
                 "verified=never verified",
-                "observations (machine-wide, both files): records=8 span=1970-01-01 00:16..1970-01-01 "
+                "observations (machine-wide, 4 files): records=8 span=1970-01-01 00:16..1970-01-01 "
                 "00:33 distinct_sids=2 denies=3 unparsable_lines=1",
                 "observations (this session, sid sess-W39-sta): 7 records — bash_guard=2 "
                 "delegation=2 gate=3; subagent-origin records: haejwo:task-worker=1",
@@ -6763,7 +6766,19 @@ exit "$rc"
               "not necessarily a violation" in c3_md["status"]
               and "haejwo tiers only" not in c3_md["status"])
         check("F18 status.md: the observations log is disclosed as pruned by size, not by age",
-              "pruned by size, ~400 KB, not by age" in c3_md["status"])
+              "pruned by size, ~800 KB, four files, not by age" in c3_md["status"])
+
+        # 2.32.0 field round 2 sections live in sibling modules (one per
+        # worker, written in parallel): assignment resolution + push note,
+        # the Stop-hook record check, runner disclosure + retention.
+        # They `import test_hooks as T` for the helpers and the shared
+        # PASS/FAIL counters: alias this running module under that name
+        # first, or a second copy would count their checks out of sight.
+        sys.modules.setdefault("test_hooks", sys.modules[__name__])
+        import r2_a, r2_b, r2_c  # noqa: E402
+        r2_a.run_section()
+        r2_b.run_section()
+        r2_c.run_section()
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

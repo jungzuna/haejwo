@@ -62,17 +62,49 @@ reproduced allow outside this grammar, any previously denied executable
 code-write becoming allowed, any other decision changing, or a new parser
 dependency. Evidence: tests/test_hooks.py, the 54-row matrix and the
 seeded differential fuzzer in the private notes (guard-fuzz-20261004).
+
+Assignment resolution — withdrawn (2.32). Origin: field round 2 (project M, one
+day): 42-45 of ~340 main-agent Bash records were `$E/...`, `$D/...`,
+`$OUT/...` writes whose literal assignment sat in the same command
+(`D=/repo; cat > $D/a.py`), all allowed as unresolved-target. A point-of-use
+resolver was built and withdrawn under its own signed stop condition: Codex
+reproduced two WRONG DENIES, `declare -n D=T; D=/repo/a.py; T=/dev/null;
+printf x > $D` and `D=/repo/a.py; trap 'D=/dev/null' DEBUG; printf x > $D`
+(bash writes /dev/null in both). Reopen only with a shape that models
+variable attributes and traps — a real shell parser, which this heuristic is
+not; never with a blacklist of the counterexamples.
+
+Outward note (2.32). A main-agent `git push` attempt (command word `git` or
+`*/git` after `NAME=VALUE` words, a few reserved/wrapper words and `env`'s
+options; git global options skipped; first non-option word `push`; no
+`--dry-run` and no short option cluster containing `n`, e.g. `-n`, `-fn`)
+in a command whose decision is ALLOW (ok, unresolved-target, heredoc-data;
+never env-off, gate-off or config-malformed: haejwo is off there and
+report_check does not run) sets the per-turn `outward_attempt` flag in the
+session state (skipped when the state lock is not taken), appends a SECOND
+record `via: outward-attempt` (target `git push`) after the decision record,
+and adds the record-line note to the allow context — never a permission
+decision. A deny anywhere in the command wins: no flag, no record, no note.
+Quote-aware: `echo git push` and `printf "%s" "git push"` do not match.
+Lines after the first heredoc-opening line are not scanned (a heredoc body
+never matches). Known misses: a push after the heredoc's delimiter line,
+`sudo git push`, and other wrappers not named in _PUSH_PREFIX_WORDS.
 """
 import os
 import re
+import shlex
 import sys
+import time
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    CODEX_SPAWN_WORKER, allow, command_name, config_ignored_note_once, deny,
-    gate_disabled_by_env, is_code_file, is_subagent, load_config_with_status,
-    malformed_note_once, observe, on_codex_host, paths, read_payload, with_note,
+    CODEX_SPAWN_WORKER, allow, carry_session_flags, command_name,
+    config_ignored_note_once, deny, gate_disabled_by_env, is_code_file,
+    is_subagent, load_config_with_status, load_state, malformed_note_once,
+    observe, on_codex_host, paths, read_payload, save_state, state_lock,
+    with_note,
 )
+from gate import STALE_TURN_SECONDS  # noqa: E402  same turn reset as gate.py
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\|")
 # capture redirect targets:  > file  >> file  2> file  &> file
@@ -236,6 +268,125 @@ def heredoc_data_target(command, cfg, cwd=""):
     return target
 
 
+# --- Outward note (2.32; module docstring) ----------------------------------
+OUTWARD_NOTE = ("[haejwo] outward action requested (git push): the report "
+                "carries `Outward actions: <repo; branch; action; result> - "
+                "authorized by: <user words, time>`.")
+_ASSIGN_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_PUSH_PREFIX_WORDS = frozenset({"!", "{", "if", "then", "do", "else", "elif",
+                                "while", "until", "time", "command", "exec",
+                                "nohup"})
+_ENV_OPTS_WITH_ARG = frozenset({"-u", "--unset", "-C", "--chdir", "-S",
+                                "--split-string"})
+_GIT_OPTS_WITH_ARG = frozenset({"-C", "-c", "--git-dir", "--work-tree",
+                                "--namespace", "--super-prefix", "--config-env"})
+_DRY_RUN_CLUSTER = re.compile(r"-[A-Za-z]*n[A-Za-z]*")
+
+
+def _shell_segments(text):
+    """Split at `; | & ( )` and newlines OUTSIDE quotes; a word-start `#`
+    comments out the rest of its line."""
+    segs, cur, quote, i, n = [], [], None, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote == "'":
+            cur.append(ch)
+            if ch == "'":
+                quote = None
+        elif ch == "\\" and i + 1 < n:
+            cur.append(text[i:i + 2])
+            i += 1
+        elif quote == '"':
+            cur.append(ch)
+            if ch == '"':
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch == "#" and (not cur or cur[-1].isspace()):
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        elif ch in ";|&()\n":
+            segs.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    segs.append("".join(cur))
+    return segs
+
+
+def _is_push(words):
+    i, n = 0, len(words)
+    while i < n:
+        w = words[i]
+        if _ASSIGN_WORD.match(w) or w in _PUSH_PREFIX_WORDS:
+            i += 1
+        elif w == "env":
+            i += 1
+            while i < n and words[i].startswith("-"):
+                i += 2 if words[i] in _ENV_OPTS_WITH_ARG else 1
+        else:
+            break
+    if i >= n or not (words[i] == "git" or words[i].endswith("/git")):
+        return False
+    j = i + 1
+    while j < n and words[j].startswith("-"):
+        j += 2 if words[j] in _GIT_OPTS_WITH_ARG else 1
+    if j >= n or words[j] != "push":
+        return False
+    return not any(a == "--dry-run" or _DRY_RUN_CLUSTER.fullmatch(a)
+                   for a in words[j + 1:])
+
+
+def git_push_attempt(command):
+    """True when some shell segment of `command` is a `git push` attempt."""
+    text = command
+    m = re.search(r"<<(?!<)", text)
+    if m:
+        nl = text.find("\n", m.end())
+        if nl != -1:
+            text = text[:nl]
+    for seg in _shell_segments(text):
+        try:
+            words = shlex.split(seg)
+        except ValueError:
+            continue
+        if _is_push(words):
+            return True
+    return False
+
+
+def record_outward_attempt(payload, data, record):
+    """Per-turn flag (under the session lock; skipped when not taken) and the
+    outward-attempt record. Never raises."""
+    sid = payload.get("session_id", "unknown")
+    try:
+        with state_lock(data, sid) as lk:
+            if lk.acquired:
+                state = load_state(data, sid)
+                # the same turn boundary gate.py applies (gate._decide_loaded)
+                pid = payload.get("prompt_id") or payload.get("turn_id")
+                if pid and state.get("prompt_id") != pid:
+                    state = carry_session_flags(state, {"prompt_id": pid, "files": []})
+                elif (state.get("updated_at")
+                      and time.time() - state["updated_at"] > STALE_TURN_SECONDS):
+                    state = carry_session_flags(state, {"prompt_id": pid, "files": []})
+                state["outward_attempt"] = True
+                save_state(data, sid, state)
+    except Exception:
+        pass
+    try:
+        rec = {k: record[k] for k in ("v", "hook", "agent_type", "agent_id", "sid")
+               if k in record}
+        rec.update({"decision": "allow", "via": "outward-attempt",
+                    "target": "git push"})
+        observe(data, rec)
+    except Exception:
+        pass
+
+
 def _decide(payload, data, root=""):
     """Compute (decision, via, target, reason, context) without emitting."""
     if is_subagent(payload):
@@ -371,9 +522,23 @@ def main():
         record["target"] = str(target)[:200]
     # Observation failure must never change or block the decision.
     try:
-        observe(data, record)
+        observe(data, dict(record))
     except Exception:
         pass
+
+    # Outward note: main-agent allows only (a deny wins). Not on
+    # subagent-exempt / fail-open, nor on env-off (the emergency hatch:
+    # haejwo is off), gate-off or config-malformed (report_check.py exits
+    # silently there, so the note would promise a check that never runs).
+    if decision == "allow" and via not in ("subagent-exempt", "fail-open", "env-off",
+                                           "gate-off", "config-malformed"):
+        try:
+            command = (payload.get("tool_input") or {}).get("command") or ""
+            if isinstance(command, str) and git_push_attempt(command):
+                record_outward_attempt(payload, data, record)
+                context, _ = with_note(OUTWARD_NOTE, context)
+        except Exception:
+            pass
 
     if decision == "deny":
         deny(reason)

@@ -8,9 +8,8 @@
 # and OWNS: the REVIEWER CONTRACT, print_help, the CLI argv and redirections, the effective brief, the
 # timeout default, codex's classifier/stderr scan/effort/sandbox, the non-git policy, and ARTIFACTS.
 # This library never invents a vendor's artifact paths (claude has no events stream).
-# *[origin: 2.13 shared-internals extraction — the two runners had drifted apart once already
-# (host-relative config); the runner fixtures in tests/test_hooks.py exercise this library through
-# BOTH entrypoints and gate every change here]*
+# *[origin: 2.13 shared-internals extraction — the two runners had drifted apart once (host-relative config);
+# the runner fixtures in tests/test_hooks.py exercise this library through BOTH entrypoints and gate every change]*
 
 # Sentinel terminator for every path a helper hands back: command substitution strips trailing newlines
 # and a directory name may legally end in one. *[origin: ship review Z3/Z5 — lossless path transport]*
@@ -486,17 +485,19 @@ hjw_git_preflight() {
   SNAPDIR="$(mktemp -d "${TMPDIR:-/tmp}/${HJW_RUNNER_KIND}_snap.XXXXXX")" || SNAPDIR=""
   DETECT_OK=1
   [ -n "$SNAPDIR" ] || DETECT_OK=0
-  GIT_OK=0
+  GIT_OK=0; SCOPE_DISP="scope=none (change detection off)"
   GIT_PROBE_ERR="$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
     git -C "$WORKDIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null)"  # as detect.py GIT_ENV
   GIT_PROBE_RC=$?
   if [ "$GIT_PROBE_RC" -eq 0 ]; then
-    GIT_OK=1
+    GIT_OK=1  # scope= = change detection's snapshot root, not read scope *[origin: project M 2026-10-20, review from another repo]*
+    hjw_esc_display "$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)"
+    SCOPE_DISP="scope=${HJW_ESC:-unknown}"
   else
     case "$GIT_PROBE_RC:$GIT_PROBE_ERR" in
       128:*"not a git repository"*) GIT_OK=0 ;;
       *)
-        DETECT_OK=0
+        DETECT_OK=0; SCOPE_DISP="scope=unknown (git error)"
         [ -n "$SNAPDIR" ] && printf 'change detection: git rev-parse rc=%s: %s\n' \
           "$GIT_PROBE_RC" "$GIT_PROBE_ERR" >> "$SNAPDIR/detect.err"
         ;;

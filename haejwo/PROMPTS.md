@@ -1,6 +1,6 @@
 # haejwo prompt & style policy
 
-Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `delegation_gate.py`, `session_brief.py`, and the once-notes in `hjw_common.py`), the `status_collect.py` block the host reads, script comments/errors (`scripts/`), and README language that defines identity or behavior.
+Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `rules/*.md`, hook-emitted messages (`gate.py`, `bash_guard.py`, `delegation_gate.py`, `report_check.py`, `session_brief.py`, and the once-notes in `hjw_common.py`), the `status_collect.py` block the host reads, script comments/errors (`scripts/`), and README language that defines identity or behavior.
 
 ## Language
 - **English everywhere by default** — prompts, comments, error messages, docs.
@@ -22,7 +22,7 @@ Scope: **every LLM-facing text surface** — `commands/*.md`, `agents/*.md`, `ru
 
 ## Rules (`rules/orchestration.md`)
 - Bold section labels; compact labeled paragraphs or bullets. Every rule actionable.
-- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Two limits, two roles: **3,900 bytes** is the diet ratchet `tests/test_hooks.py` pins on the rules file (the working budget; re-pinned 2.31.1 for the acceptance/outward record); the binding ceiling is the 5,000 total on the worst supported combination (Codex host with tier names rewritten, unconfigured with a stored budget, `HAEJWO_GATE=off`, an installed-cache root path), measured at 4,956 chars in 2.31.1 — 44 chars of headroom; measure every combination, never one path; the code checks only the 5,000 total. The record's two-line template lives ONLY in the rules; other surfaces point to it.
+- `session_brief.py` caps the injected context (rules + the one-line config summary, plus the setup nudge before setup) at 5,000 chars. Past the cap — or with the rules file unreadable — it never truncates: the whole rules text is replaced by a trusted emergency core, and the nudge and config summary still follow. Two limits, two roles: **3,900 bytes** is the diet ratchet `tests/test_hooks.py` pins on the rules file (the working budget; re-pinned 2.31.1 for the acceptance/outward record); the binding ceiling is the 5,000 total on the worst supported combination (Codex host with tier names rewritten, unconfigured with a stored budget, `HAEJWO_GATE=off`, an installed-cache root path), measured at 4,956 chars in 2.31.1 — 44 chars of headroom; measure every combination, never one path; the code checks only the 5,000 total. The rules own the record's two-line template; docs point to it, and the one hook that nudges for it (`report_check.py`) repeats the two labels verbatim (its placeholders omit the `| none` alternative, which cannot apply after a push) — change both when either label changes.
 
 ## Hook-emitted text (the model reads these verbatim)
 - Prefixes: `[haejwo gate]` for gate/bash-guard decisions; `[haejwo]` / `[haejwo config]` for session context.

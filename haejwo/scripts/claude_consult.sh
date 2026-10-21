@@ -124,19 +124,18 @@ else MODEL_DISP="model=cli-default (identity unverified)"; fi
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not installed (check claude --version)" >&2; exit 3; }
 
+# ---- change detection (A5): file-backed before/after snapshots; the probe precedes the header (scope=) ----
+WORKDIR="$(pwd)"
+rm -f "$OUT"
+hjw_git_preflight
+ARTIFACTS=("$OUT" "$LOG" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 {
-  echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP  $(date 2>/dev/null)"
+  echo "# claude_consult  $HJW_PLUGIN_DISP  mode=$MODE $MODEL_DISP $EFFORT_DISP timeout=${TIMEOUT}s $CFG_DISP $SCOPE_DISP  $(date 2>/dev/null)"
   printf '# claude '; bounded 20 claude --version 2>&1 | head -1
 } > "$LOG"
 # After the header write (which truncates $LOG), so the foreign-CLAUDE_PLUGIN_DATA note survives with the header.
 hjw_config_disclose
 echo "# ---- claude -p ----" >> "$LOG"
-
-# ---- change detection (A5): file-backed before/after snapshots ----
-WORKDIR="$(pwd)"
-rm -f "$OUT"
-hjw_git_preflight
-ARTIFACTS=("$OUT" "$LOG" "$TMPBRIEF" "$EFFECTIVE_BRIEF")
 
 if ! hjw_detect_before; then
   # Not a git repo: the no-edit contract is unverifiable, so refuse before the paid call. `claude -p` has no
@@ -148,7 +147,7 @@ if ! hjw_detect_before; then
 fi
 
 # ---- run ----
-echo "→ Claude (mode=$MODE, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF) ..." >&2
+echo "→ Claude (mode=$MODE, $MODEL_DISP, $EFFORT_DISP, timeout=${TIMEOUT}s, brief=$BRIEF, $SCOPE_DISP) ..." >&2
 RUN=(claude -p "${MODEL_FLAG[@]}" "${EFFORT_FLAG[@]}" --disallowedTools "Edit,Write,NotebookEdit")
 START=$SECONDS
 echo "# ---- attempt 1: $MODEL_DISP $EFFORT_DISP ----" >> "$LOG"

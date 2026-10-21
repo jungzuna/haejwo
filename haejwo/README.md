@@ -24,7 +24,7 @@ haejwo keeps the main model on **judgment** and sends **execution** to worker ti
 On Claude Code a worker runs at its agent file's model unless one is passed; the delegation gate steers an omitted override that misses a configured pin but never verifies which model ran.
 
 ## Commands
-Normal use needs **none**: the host plans, delegates and asks before push/deploy (prior authorization counts).
+Normal use needs **none**: the host plans, delegates and asks before push/deploy (prior authorization for action and scope counts); acceptance and outward reports end with the rules' two-line record, whose presence proves neither adequacy nor authorization.
 
 | Command | Role |
 |---|---|

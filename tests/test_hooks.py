@@ -953,6 +953,8 @@ def main():
             ("workers NEVER", "push or deploy"),    # 11. outward-action ban
             "delegation signal",                    # 12. bash-write rule
             "never grind",                          # 13. retry stop-condition
+            "Final-diff review:",                   # 14. acceptance record label (2.31.1)
+            "Outward actions:",                     # 15. outward record label (2.31.1)
         ]
         for phrase in CANARIES:
             if isinstance(phrase, tuple):
@@ -968,10 +970,22 @@ def main():
         # re-review against the fixed diff, outward authorization names action
         # and scope, standing access as a decision made for the user); one
         # duplicate sentence (file-budget rationale, lives in README By design)
-        # removed. Actual 3603.
+        # removed. Actual 3603. 2.31.1 field round 2 (two-reviewer debate over
+        # the MOIS/demo-streamlit sessions of 2026-10-20): the acceptance/
+        # outward RECORD block (two labeled lines), scratch implementations
+        # named as delegation work, credential cases named, host denials as
+        # consent events, observed/inferred/unverified labels; routing and
+        # delegate lists compressed to pay for part of it. Cap re-pinned
+        # 3700 -> 3900 (actual 3781). The binding limit is NOT this ratchet but
+        # session_brief's 5,000-char injection cap on the worst SUPPORTED
+        # combination: Codex host (tier names rewritten), unconfigured with a
+        # stored budget (longer nudge), HAEJWO_GATE=off (env flags), an
+        # installed-cache root path — measured 4,956 chars for this file
+        # (44 headroom); the Codex F1/D1 tests below fail first when it is
+        # exceeded. Measure every combination, not one path (2.31.1 review).
         rules_size = os.path.getsize(rules_path)
-        check("rules file size within diet budget (<=3700 bytes)",
-              rules_size <= 3700, f"size={rules_size}")
+        check("rules file size within diet budget (<=3900 bytes)",
+              rules_size <= 3900, f"size={rules_size}")
 
         print("== turn_reset.py ==")
         rc, _ = run("turn_reset.py",
@@ -1820,7 +1834,7 @@ def main():
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
         for rel, cap in (("README.md", 740), ("README.ko.md", 650),
-                         ("haejwo/README.md", 1500),
+                         ("haejwo/README.md", 1520),  # 2.31.1: the record sentence
                          ("haejwo/commands/plan.md", 490),
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):

@@ -15,8 +15,13 @@ must understand or manage the plugin to get their work done, 해줘 stops
 being true.**
 
 ## Principles
-1. **Preserve the name promise.** The user never manages workflow; orchestration
-   and plugin failures are host-owned. *[first-run and recovery design]*
+1. **Preserve the name promise.** The user never manages plugin workflow;
+   orchestration and plugin failures are host-owned. The host completes
+   available preparation and states what higher-priority host policy,
+   permissions, or unavailable tools prevent; the name promise does not
+   override those boundaries. *[first-run and recovery design; MOIS
+   2026-10-20 classifier-denied deployment and demo-streamlit unavailable
+   deployment tools]*
 2. **Spend model budget where judgment compounds.** Planning, analysis, and
    review are the product; implementation is execution. Choose execution tiers
    by expected total cost per accepted outcome — verification and rework
@@ -34,10 +39,14 @@ being true.**
    allow-with-note auto-approving edits]*
 4. **Never brick the session.** Gates are plugin affordances, not security
    boundaries; on any error or ambiguity, fail open. *[failure-classifier design]*
-5. **Hard-gate only countable invariants.** Semantic judgments get norms and
-   nudges; outward or irreversible actions require explicit authorization for
-   the action. *[strict rules on judgment calls break the just-talk concept;
-   no programmatic reader of the push registry was found; the owner never set it]*
+5. **Hard-gate only countable invariants.** Semantic judgments get norms
+   and nudges. At acceptance or after an outward action, a countable
+   record names evidence or an explicit omission; checking its presence
+   establishes neither review adequacy nor authorization. Outward or
+   irreversible actions require explicit authorization for the action
+   and its scope. *[strict judgment gates break the just-talk concept;
+   the unread push registry was retired; MOIS and demo-streamlit
+   2026-10-20 fixed-diff review omissions and MOIS out-of-scope main push]*
 6. **A denial must steer.** Every deny tells the model exactly what to do
    instead. *[deny→delegate payload]*
 7. **Verify side effects in the real environment.** rc=0, stale docs, and
@@ -105,4 +114,4 @@ amendment names its origin case and removes or merges any principle it
 duplicates. Wording changes bump the plugin patch version.
 
 History: 2026-09-28 completion audit — P13 compressed (thesis remains in the
-owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default. 2026-10-06 cold audit (no programmatic reader of the push registry was found; the owner never set it): P5 registries → explicit authorization for the action; the push command deleted (2.23.0, a tightening under P13 — owner decision + cross-vendor review). 2026-10-08 cold loop cycle 1 (two fresh evaluators found enforcement claims stronger than the code): P7 gains "an enforcement claim names its mechanism and its exemptions" (2.25.0). 2026-10-08 cold loop cycle 3 (measured: the gate's allow-with-note auto-approved edits past the operator's permission prompt): P3 "physically" → "with gates … never by approving a tool call" (2.27.0).
+owner's notes). 2026-10-02 debate (field: a plan debate ran to 10 rounds): P10 deadlock split; rules plan-first = one critique by default. 2026-10-06 cold audit (no programmatic reader of the push registry was found; the owner never set it): P5 registries → explicit authorization for the action; the push command deleted (2.23.0, a tightening under P13 — owner decision + cross-vendor review). 2026-10-08 cold loop cycle 1 (two fresh evaluators found enforcement claims stronger than the code): P7 gains "an enforcement claim names its mechanism and its exemptions" (2.25.0). 2026-10-08 cold loop cycle 3 (measured: the gate's allow-with-note auto-approved edits past the operator's permission prompt): P3 "physically" → "with gates … never by approving a tool call" (2.27.0). 2026-10-21 field round 2 (two-reviewer debate, Claude × Codex, over the MOIS and demo-streamlit sessions of 2026-10-20: no fixed-diff re-review before six risk-fix deployments, one `main` push outside the authorized scope, a classifier denial split into smaller commands, two UI rebuilds rejected after full implementation; every observed gate steering succeeded): P1 names the host boundary the promise cannot override; P5 gains the acceptance/outward RECORD, whose presence is countable and whose content is not (2.31.1).

@@ -95,6 +95,14 @@ may join lines with backslash-newline and expand `$(...)`), continued or
 multiline heredoc headers, `$(...)` inside bodies, `EOF)` terminators inside
 substitutions, `sudo git push` and other wrappers not named in
 _PUSH_PREFIX_WORDS.
+
+Bundle B (2.33.0, field round 3): the outward-attempt state write also keeps
+the turn's `outward_calls` / `outward_ids` (tool_use ids for display, cap 8),
+the session counter `push_calls` and the session dedupe list `outward_seen`
+(cap 64) — no command text is stored; post_bash.py and report_check.py read
+them. `review_runner_invoked` (the same segment
+grammar, plus `timeout <duration>`) names a reviewer-runner invocation for
+post_bash.py; it never affects a decision here.
 """
 import os
 import re
@@ -107,8 +115,8 @@ from hjw_common import (  # noqa: E402
     CODEX_SPAWN_WORKER, allow, carry_session_flags, command_name,
     config_ignored_note_once, deny, gate_disabled_by_env, is_code_file,
     is_subagent, load_config_with_status, load_state, malformed_note_once,
-    observe, on_codex_host, paths, read_payload, save_state, state_lock,
-    with_note,
+    SESSION_IDS_CAP, observe, on_codex_host, paths, read_payload, save_state,
+    state_lock, with_note,
 )
 from gate import STALE_TURN_SECONDS  # noqa: E402  same turn reset as gate.py
 
@@ -346,7 +354,14 @@ def _shell_segments(text):
     return segs
 
 
-def _is_push(words):
+_TIMEOUT_OPTS_WITH_ARG = frozenset({"-s", "--signal", "-k", "--kill-after"})
+
+
+def _command_word_index(words, timeout=False):
+    """Index of the command word: past `NAME=VALUE` words, the reserved and
+    wrapper words in _PUSH_PREFIX_WORDS and `env` with its options; with
+    `timeout`, also past `timeout`, its options and its duration (the
+    review-runner matcher only — the push matcher never skipped it)."""
     i, n = 0, len(words)
     while i < n:
         w = words[i]
@@ -356,8 +371,19 @@ def _is_push(words):
             i += 1
             while i < n and words[i].startswith("-"):
                 i += 2 if words[i] in _ENV_OPTS_WITH_ARG else 1
+        elif timeout and w == "timeout":
+            i += 1
+            while i < n and words[i].startswith("-"):
+                i += 2 if words[i] in _TIMEOUT_OPTS_WITH_ARG else 1
+            i += 1  # the duration
         else:
             break
+    return i
+
+
+def _is_push(words):
+    n = len(words)
+    i = _command_word_index(words)
     if i >= n or not (words[i] == "git" or words[i].endswith("/git")):
         return False
     j = i + 1
@@ -514,10 +540,59 @@ def git_push_attempt(command):
     return False
 
 
+REVIEW_RUNNERS = ("codex_consult.sh", "claude_consult.sh")
+
+
+def review_runner_invoked(command):
+    """The runner basename when some shell segment of `command` invokes a
+    reviewer runner, else None (field round 3 bundle B; post_bash.py).
+
+    A segment invokes one when its command word (`_command_word_index` with
+    `timeout`: past `NAME=VALUE` words, `nohup` and the other prefix words,
+    `env` with its options, `timeout` with its options and duration) has
+    basename `codex_consult.sh` or `claude_consult.sh` and no word of the
+    segment is `--help`. Quoted-delimiter heredoc bodies are skipped exactly
+    as git_push_attempt skips them. Known misses (no line, fail-open):
+    `bash -c '...'`, an interpreter word (`bash <path>/codex_consult.sh`),
+    `sudo` and other wrappers not skipped above, and the push matcher's
+    heredoc misses."""
+    try:
+        for seg in _shell_segments(_skip_quoted_heredocs(command)):
+            try:
+                words = shlex.split(seg)
+            except ValueError:
+                continue
+            i = _command_word_index(words, timeout=True)
+            if i < len(words) and "--help" not in words:
+                base = os.path.basename(words[i])
+                if base in REVIEW_RUNNERS:
+                    return base
+    except Exception:
+        pass
+    return None
+
+
+OUTWARD_IDS_CAP = 8
+
+
 def record_outward_attempt(payload, data, record):
     """Per-turn flag (under the session lock; skipped when not taken) and the
-    outward-attempt record. Never raises."""
+    outward-attempt record. Never raises.
+
+    Bundle B (2.33.0): the same state write also keeps, on the FIRST sight
+    of a tool_use_id, `outward_calls` +1 (turn), `push_calls` +1 (session)
+    and the id in `outward_ids` (turn, display only, cap OUTWARD_IDS_CAP).
+    First sight is decided by the session list `outward_seen` (cap
+    SESSION_IDS_CAP; it stops growing there, so a later id is counted on
+    every replay — no dedupe — and post_bash.py gives it no return note);
+    an id already in `outward_seen` is a replay and changes no count (diff
+    review D2: the capped display list was the dedupe set, so a replayed 9th
+    id counted twice). No id: always counted. No command text
+    is stored. The turn boundary is applied before the save, as in gate.py,
+    so refreshing `updated_at` here is gate.py's own semantics."""
     sid = payload.get("session_id", "unknown")
+    tuid = payload.get("tool_use_id")
+    tuid = tuid if isinstance(tuid, str) and tuid else None
     try:
         with state_lock(data, sid) as lk:
             if lk.acquired:
@@ -530,6 +605,23 @@ def record_outward_attempt(payload, data, record):
                       and time.time() - state["updated_at"] > STALE_TURN_SECONDS):
                     state = carry_session_flags(state, {"prompt_id": pid, "files": []})
                 state["outward_attempt"] = True
+                ids, seen = ([x for x in v if isinstance(x, str)]
+                             if isinstance(v, list) else []
+                             for v in (state.get("outward_ids"),
+                                       state.get("outward_seen")))
+                if tuid is None or tuid not in seen:
+                    if tuid is not None:
+                        if len(seen) < SESSION_IDS_CAP:
+                            seen.append(tuid)
+                        if len(ids) < OUTWARD_IDS_CAP and tuid not in ids:
+                            ids.append(tuid)
+                    state["outward_ids"] = ids
+                    state["outward_seen"] = seen
+                    for key in ("outward_calls", "push_calls"):
+                        cur = state.get(key)
+                        state[key] = (cur if isinstance(cur, int)
+                                      and not isinstance(cur, bool)
+                                      and cur >= 0 else 0) + 1
                 save_state(data, sid, state)
     except Exception:
         pass

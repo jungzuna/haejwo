@@ -22,6 +22,14 @@ within its bound; no `outward_attempt` in this turn's state (including a
 state whose prompt_id/turn_id differs from the payload's); `report_nudged`
 already set; both labels present; the once-flag could not be saved.
 
+Facts (2.33.0, field round 3 bundle B): the reason ends with the turn's
+detected push-bearing tool calls, `Detected push-bearing tool calls this
+turn: N (id, ...; +k more).` — N is `outward_calls`, the ids are
+`outward_ids` (at most 8, bash_guard.py); a state carrying only the 2.32.0
+`outward_attempt` flag (no count) keeps the plain reason, and a count with no
+recorded id says "ids not recorded". The block observation carries `chars`
+(the reason's length: per-session exposure is countable, README).
+
 Scope: push-only pilot; the consensus trigger "acceptance report" is not
 countable and is NOT implemented. `outward_attempt` and `report_nudged` are
 TURN scoped: every turn reset rebuilds the state and carry_session_flags
@@ -46,6 +54,24 @@ REASON = (
     "review: <change id; reply; closing statement | not run because: "
     "<reason>>`."
 )
+
+
+FACTS = " Detected push-bearing tool calls this turn: {n} ({ids}{more})."
+
+
+def block_reason(state):
+    """REASON plus the turn's recorded push-bearing tool calls (FACTS)."""
+    ids = state.get("outward_ids")
+    ids = [x for x in ids if isinstance(x, str)][:8] \
+        if isinstance(ids, list) else []
+    n = state.get("outward_calls")
+    n = n if isinstance(n, int) and not isinstance(n, bool) else 0
+    n = max(n, len(ids))
+    if n == 0:
+        return REASON
+    more = f"; +{n - len(ids)} more" if ids and n > len(ids) else ""
+    return REASON + FACTS.format(n=n, ids=", ".join(ids) or "ids not recorded",
+                                 more=more)
 
 
 def missing_via(message):
@@ -98,12 +124,13 @@ def main():
         state["report_nudged"] = True
         if save_state(data, sid, state) is not None:
             sys.exit(0)  # the once-flag did not persist: no block
+        reason = block_reason(state)
     try:  # never load-bearing: an observation failure keeps the block
         observe(data, {"v": 2, "hook": "report_check", "decision": "block",
-                       "via": via, "sid": str(sid)[:12]})
+                       "via": via, "chars": len(reason), "sid": str(sid)[:12]})
     except Exception:
         pass
-    print(json.dumps({"decision": "block", "reason": REASON}))
+    print(json.dumps({"decision": "block", "reason": reason}))
     sys.exit(0)
 
 

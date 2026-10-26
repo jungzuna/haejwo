@@ -1846,8 +1846,8 @@ def main():
                          # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
                          # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
                          # in a demo app went undisclosed) names both tokens
-                         ("haejwo/README.md", 1890),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions)
-                         ("haejwo/commands/plan.md", 530),  # 2.32.0: the representative-screen checkpoint sentence
+                         ("haejwo/README.md", 2250),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
+                         ("haejwo/commands/plan.md", 560),  # 2.32.0: the representative-screen checkpoint sentence; 2.33.0: the brief names revision, permitted verification, runner settings and deadline (field: one timeout, a 601 s run)
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
             words = len(open(os.path.join(repo, rel), encoding="utf-8").read().split())
@@ -6818,6 +6818,9 @@ exit "$rc"
         r2_a.run_section()
         r2_b.run_section()
         r2_c.run_section()
+        # 2.33.0 field round 3 bundle B: the re-presentation layer.
+        import r3_a  # noqa: E402
+        r3_a.run_section()
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

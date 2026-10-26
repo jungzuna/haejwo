@@ -31,6 +31,9 @@ DEFAULT_CONFIG = {
         # Stop-hook presence check of the record lines on a push turn
         # (report_check.py).
         "report_check": True,
+        # The per-prompt turn checklist (turn_reset.py; 2.33.0 PILOT, default
+        # on). An invalid value turns ONLY the checklist off.
+        "turn_checklist": True,
     },
     "code_extensions": [
         "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "java", "go", "rs",
@@ -189,6 +192,8 @@ _TYPED_KEYS = (
      "(delegation guard off)"),
     ("gate", "report_check", _is_bool, "true or false", False,
      "(record check off)"),
+    ("gate", "turn_checklist", _is_bool, "true or false", False,
+     "(turn checklist off)"),
     ("codex", "enabled", _is_bool, "true or false", False, "(default used)"),
 ) + tuple((sec, role, _is_str, "a string", DEFAULT_CONFIG[sec][role],
            "(default used)")
@@ -296,14 +301,21 @@ def _err_name(exc):
     return errno.errorcode.get(code, type(exc).__name__) if code else type(exc).__name__
 
 
-def save_state(data_dir, session_id, state):
+def save_state(data_dir, session_id, state, touch=True):
     """Persist the session state. Returns None on success, or a short error
     label (errno name) on failure — never raises (fail open, P4); callers
-    that count the budget surface the label (state_not_persisted_note)."""
+    that count the budget surface the label (state_not_persisted_note).
+
+    `touch=False` keeps the state's `updated_at` as loaded: a write that is
+    not turn activity (the 2.33.0 session counters and id claims) must not
+    move gate.py's stale-turn reset (origin: bundle B diff review D1 — a
+    hand-back bump on a > 2 h state turned the next allowed edit into a
+    budget deny)."""
     try:
         path = state_file(data_dir, session_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        state["updated_at"] = time.time()
+        if touch:
+            state["updated_at"] = time.time()
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(state, f)
@@ -334,7 +346,85 @@ def carry_session_flags(prev, state):
         state["cfg_ignored_noted"] = True
     if isinstance(prev.get("pin_unpassable_noted"), list):
         state["pin_unpassable_noted"] = list(prev["pin_unpassable_noted"])
+    if prev.get("checklist_assigned"):
+        state["checklist_assigned"] = True
+    # Session counters (2.33.0): incremented by the bash guard and the
+    # PostToolUse hooks, never by a reset; read by the turn checklist.
+    for key in SESSION_COUNTERS:
+        if _is_count(prev.get(key)):
+            state[key] = prev[key]
+    for key in SESSION_ID_LISTS:
+        if isinstance(prev.get(key), list):
+            state[key] = [x for x in prev[key] if isinstance(x, str)][-SESSION_IDS_CAP:]
     return state
+
+
+# Session-scoped counters and the tool_use_id lists that dedupe them
+# (field round 3, bundle B). Carried across every turn reset. Caps:
+# `handback_ids` / `review_ids` keep the newest SESSION_IDS_CAP ids;
+# `outward_seen` (bash_guard.py) and `push_returned_ids` (post_bash.py) stop
+# growing at SESSION_IDS_CAP, so later push-bearing calls get no return note
+# and no dedupe (README discloses it).
+SESSION_COUNTERS = ("handbacks", "review_runs", "push_calls")
+SESSION_ID_LISTS = ("handback_ids", "review_ids", "outward_seen",
+                    "push_returned_ids")
+SESSION_IDS_CAP = 64
+
+
+def _is_count(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def bump_session_counter(data_dir, session_id, key, tool_use_id=None,
+                         ids_key=None):
+    """Add 1 to the session counter `key` under the session lock; True when
+    that bump was persisted, which is the caller's licence to emit its note.
+
+    With `ids_key` and a string `tool_use_id`, an id already in that list
+    (cap SESSION_IDS_CAP, oldest dropped) is a duplicate event: nothing
+    changes and False is returned. False too when the lock was not taken,
+    the save failed or anything raised — the claim that bounds the note to
+    one per tool call could not be established, so the PostToolUse hooks
+    stay silent (bundle B diff review D4). The save keeps `updated_at`
+    (touch=False: never turn freshness, D1). Never raises."""
+    try:
+        with state_lock(data_dir, session_id) as lk:
+            if not lk.acquired:
+                return False
+            state = load_state(data_dir, session_id)
+            if ids_key and isinstance(tool_use_id, str) and tool_use_id:
+                ids = state.get(ids_key)
+                ids = [x for x in ids if isinstance(x, str)] \
+                    if isinstance(ids, list) else []
+                if tool_use_id in ids:
+                    return False
+                state[ids_key] = (ids + [tool_use_id])[-SESSION_IDS_CAP:]
+            cur = state.get(key)
+            state[key] = (cur if _is_count(cur) else 0) + 1
+            return save_state(data_dir, session_id, state, touch=False) is None
+    except Exception:
+        return False
+
+
+_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_URL_CREDENTIALS = re.compile(r"://[^\s/]*@")
+
+
+def sanitize_quoted(text, limit=160):
+    """Shell output (or another untrusted value) made safe to quote in a
+    hook line (field round 3, ledger #7): ANSI CSI sequences and every other
+    non-printable character dropped, `://<anything>@` URL credentials
+    redacted to `://<redacted>@`, cut to `limit` chars including a trailing
+    "…" when cut. Never raises."""
+    try:
+        s = _ANSI_CSI.sub("", str(text))
+        s = "".join(ch for ch in s if ch.isprintable())
+        s = _URL_CREDENTIALS.sub("://<redacted>@", s).strip()
+        if len(s) > limit:
+            s = s[:limit - 1] + "\u2026"
+        return s
+    except Exception:
+        return ""
 
 
 # Tier-pin values the Claude Code Agent tool's `model` parameter accepted when
@@ -691,6 +781,20 @@ def allow(additional_context=None):
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
+                "additionalContext": additional_context,
+            }
+        }))
+    sys.exit(0)
+
+
+def emit_context(event, additional_context):
+    """Print `additional_context` as the hookSpecificOutput of `event`
+    (PostToolUse, UserPromptSubmit) and exit 0. A note only: never a
+    permission decision, never a block."""
+    if additional_context:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": event,
                 "additionalContext": additional_context,
             }
         }))

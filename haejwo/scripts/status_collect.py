@@ -39,7 +39,11 @@ KNOWN_KEYS = {
     "bash_guard": BASE_KEYS | {"via", "target"},
     "delegation": BASE_KEYS | {"subagent_type", "requested_model",
                                "plan_marker_kind", "tier_pin_check"},
-    "report_check": BASE_KEYS | {"via"},
+    "report_check": BASE_KEYS | {"via", "chars"},  # chars: 2.33.0
+    # 2.33.0 notes (one record per emitted line; `chars` counts exposure)
+    "post_bash": BASE_KEYS | {"via", "chars"},
+    "handback_nudge": BASE_KEYS | {"via", "chars"},
+    "turn_checklist": BASE_KEYS | {"via", "chars"},
 }
 
 

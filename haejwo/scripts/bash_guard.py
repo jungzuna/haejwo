@@ -86,9 +86,15 @@ record `via: outward-attempt` (target `git push`) after the decision record,
 and adds the record-line note to the allow context — never a permission
 decision. A deny anywhere in the command wins: no flag, no record, no note.
 Quote-aware: `echo git push` and `printf "%s" "git push"` do not match.
-Lines after the first heredoc-opening line are not scanned (a heredoc body
-never matches). Known misses: a push after the heredoc's delimiter line,
-`sudo git push`, and other wrappers not named in _PUSH_PREFIX_WORDS.
+Heredocs (field round 3; project M session e1ffebe1, 2026-10-22: 14 push-bearing
+commands, 4 detected, 10 missed): literal body text of a quoted-delimiter heredoc (`<<'EOF'`,
+`<<"EOF"`, `<<\\EOF`, `<<-`) is never classified as a push, and commands
+after its terminator line are. Known misses (fail-open): an unquoted-delimiter
+body and everything after it (the scan ends at its operator line: the body
+may join lines with backslash-newline and expand `$(...)`), continued or
+multiline heredoc headers, `$(...)` inside bodies, `EOF)` terminators inside
+substitutions, `sudo git push` and other wrappers not named in
+_PUSH_PREFIX_WORDS.
 """
 import os
 import re
@@ -283,6 +289,29 @@ _GIT_OPTS_WITH_ARG = frozenset({"-C", "-c", "--git-dir", "--work-tree",
 _DRY_RUN_CLUSTER = re.compile(r"-[A-Za-z]*n[A-Za-z]*")
 
 
+def _odd_backslashes_before(text, k):
+    j = k
+    while j > 0 and text[j - 1] == "\\":
+        j -= 1
+    return (k - j) % 2 == 1
+
+
+def _comment_starts(text, i):
+    """True when the unquoted `#` at `i` starts a comment: the previous
+    significant character is a word boundary (none, unescaped whitespace or
+    one of `;|&()`). A backslash-newline before it is a removed line
+    continuation and is skipped (`: \\<newline># x` is a comment); an
+    escaped space is a word character (`a\\ #x` is not). Callers only
+    reach it outside quotes."""
+    k = i - 1
+    while k >= 1 and text[k] == "\n" and _odd_backslashes_before(text, k):
+        k -= 2
+    if k < 0:
+        return True
+    return ((text[k].isspace() or text[k] in ";|&()")
+            and not _odd_backslashes_before(text, k))
+
+
 def _shell_segments(text):
     """Split at `; | & ( )` and newlines OUTSIDE quotes; a word-start `#`
     comments out the rest of its line."""
@@ -303,7 +332,7 @@ def _shell_segments(text):
         elif ch in "'\"":
             quote = ch
             cur.append(ch)
-        elif ch == "#" and (not cur or cur[-1].isspace()):
+        elif ch == "#" and _comment_starts(text, i):
             j = text.find("\n", i)
             i = n if j == -1 else j
             continue
@@ -340,15 +369,142 @@ def _is_push(words):
                    for a in words[j + 1:])
 
 
+_HEREDOC_WORD_END = frozenset(" \t\n;|&()<>")
+
+
+def _heredoc_delimiter(text, i):
+    """(value, quoted, end) for the delimiter word starting at `i`, or None
+    when this heuristic does not model it (empty word, `$`/backtick, a quote
+    left open). Quote removal only: bash expands nothing in a delimiter."""
+    val, quoted, quote, j, n = [], False, None, i, len(text)
+    while j < n:
+        ch = text[j]
+        if ch == "\n" and quote:
+            return None  # a delimiter spanning lines: not modeled
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                val.append(ch)
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch == "\\" and j + 1 < n and text[j + 1] in '"\\$`':
+                val.append(text[j + 1])
+                j += 1
+            else:
+                val.append(ch)
+        elif ch in "$`":
+            return None
+        elif ch in "'\"":
+            quote, quoted = ch, True
+        elif ch == "\\" and j + 1 < n and text[j + 1] != "\n":
+            quoted = True
+            val.append(text[j + 1])
+            j += 1
+        elif ch in _HEREDOC_WORD_END or ch == "\\":
+            break
+        else:
+            val.append(ch)
+        j += 1
+    if (quote is not None or not val or "$" in text[i:j]
+            or "`" in text[i:j]):
+        return None  # open quote, empty delimiter (`<<''`), expansion
+    return "".join(val), quoted, j
+
+
+def _skip_quoted_heredocs(text):
+    """`text` with the body and terminator line of every QUOTED-delimiter
+    heredoc (`<<'D'`, `<<"D"`, `<<\\D`, `<<-` too) removed; the operator line
+    and its newline stay, so an executable opening line is still scanned.
+    Same quote/escape/comment tracking as `_shell_segments`; `<<<` is not an
+    operator. A body ends at the first later physical line equal to the
+    delimiter (`<<-`: after stripping leading tabs only; no CR or space
+    normalization); several heredocs on one line take their bodies in order.
+    The scan ENDS (the rest is never classified, fail-open) at the end of the
+    line of an UNQUOTED delimiter (its body may join lines and expand
+    `$(...)`), at an unterminated quoted body, at a delimiter this does not
+    model, and at a header continued past its line (a newline inside quotes
+    or after a backslash once an operator was seen)."""
+    out, quote, i, n = [], None, 0, len(text)
+    pending, stop = [], False  # quoted (delimiter, dash) on this line
+    while i < n:
+        ch = text[i]
+        if ch == "\n" and (pending or stop) and (quote or stop):
+            break
+        if quote == "'":
+            out.append(ch)
+            if ch == "'":
+                quote = None
+        elif ch == "\\" and i + 1 < n:
+            if text[i + 1] == "\n" and (pending or stop):
+                break
+            out.append(text[i:i + 2])
+            i += 1
+        elif quote == '"':
+            out.append(ch)
+            if ch == '"':
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            out.append(ch)
+        elif ch == "#" and _comment_starts(text, i):
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(text[i:j])
+            i = j
+            continue
+        elif text.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        elif text.startswith("<<", i):
+            dash = text.startswith("<<-", i)
+            j = i + (3 if dash else 2)
+            while j < n and text[j] in " \t":
+                j += 1
+            word = _heredoc_delimiter(text, j)
+            if word is not None:
+                j = word[2]
+            if word is None or not word[1]:
+                stop = True  # unquoted or unmodeled: end at this line
+            else:
+                pending.append((word[0], dash))
+            out.append(text[i:j])
+            i = j
+            continue
+        elif ch == "\n" and pending:
+            out.append("\n")
+            pos = i + 1
+            for delim, dash in pending:
+                while True:
+                    if pos >= n:
+                        return "".join(out)  # unterminated: the scan ends
+                    nl = text.find("\n", pos)
+                    end = n if nl == -1 else nl
+                    line = text[pos:end]
+                    pos = end + 1
+                    if (line.lstrip("\t") if dash else line) == delim:
+                        break
+            pending = []
+            i = pos
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def git_push_attempt(command):
-    """True when some shell segment of `command` is a `git push` attempt."""
-    text = command
-    m = re.search(r"<<(?!<)", text)
-    if m:
-        nl = text.find("\n", m.end())
-        if nl != -1:
-            text = text[:nl]
-    for seg in _shell_segments(text):
+    """True when some shell segment of `command` is a `git push` attempt.
+
+    Guarantee: literal body text of a quoted-delimiter heredoc is never
+    classified as a push; commands after its terminator line are
+    (`_skip_quoted_heredocs`). Known misses (fail-open): an unquoted-delimiter
+    heredoc's body and everything after it, a continued or multiline heredoc
+    header, `$(...)` inside a body, an `EOF)` terminator inside a
+    substitution, and wrappers not in _PUSH_PREFIX_WORDS (`sudo git push`)."""
+    for seg in _shell_segments(_skip_quoted_heredocs(command)):
         try:
             words = shlex.split(seg)
         except ValueError:
@@ -458,9 +614,10 @@ def _decide_loaded(payload, cfg, on_codex):
                 if target != "/dev/null" and is_code_file(target, cfg, cwd):
                     return "deny", via, target, (
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
-                        f"The main agent must not modify code via Bash — use {edit_tools} "
-                        f"within the turn budget, or delegate to {worker}. "
-                        f"Emergency override: {override}."
+                        f"Bash code edits signal delegation. Delegate project-exercising "
+                        f"scripts, scratch implementations and other delegated work to "
+                        f"{worker}. For eligible direct work, use {edit_tools} within the "
+                        f"turn budget. Emergency override: {override}."
                     ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
         #    find/xargs where targets are invisible to regex (write intent).
@@ -480,8 +637,10 @@ def _decide_loaded(payload, cfg, on_codex):
                     return "deny", ("inplace" if hits else "fanout"), \
                         (hits[0] if hits else None), (
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
-                            f"The main agent must not modify code via Bash — use "
-                            f"{edit_tools} within budget, or delegate to {worker}. "
+                            f"Bash code edits signal delegation. Delegate "
+                            f"project-exercising scripts, scratch implementations and "
+                            f"other delegated work to {worker}. For eligible direct work, "
+                            f"use {edit_tools} within the turn budget. "
                             f"Emergency override: {override}."
                         ), None
     # Precedence: a literal code target always wins (it returned a deny

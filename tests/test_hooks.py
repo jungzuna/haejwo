@@ -507,15 +507,17 @@ def config_host_summary_tests():
         check("F11 bash_guard redirect deny on Codex, exact",
               reason_of(out) == (
                   "[haejwo gate] Bash output redirect writes to a code file (src/app.py). "
-                  "The main agent must not modify code via Bash — use apply_patch within "
-                  "the turn budget, or delegate to spawn_agent with the configured "
-                  "worker model and reasoning_effort (see @haejwo-setup). "
+                  "Bash code edits signal delegation. Delegate project-exercising "
+                  "scripts, scratch implementations and other delegated work to "
+                  "spawn_agent with the configured worker model and reasoning_effort "
+                  "(see @haejwo-setup). For eligible direct work, use apply_patch "
+                  "within the turn budget. "
                   "Emergency override: @haejwo-gate off."), reason_of(out))
         rc, out = run("bash_guard.py", bash_payload("sed -i 's/a/b/' src/app.py"), f11,
                       root=cx_root)
         check("F11 bash_guard in-place deny on Codex names @haejwo-gate off and apply_patch",
               decision(out) == "deny"
-              and "use apply_patch within budget" in reason_of(out)
+              and "use apply_patch within the turn budget" in reason_of(out)
               and reason_of(out).endswith("Emergency override: @haejwo-gate off."),
               reason_of(out))
         rc, out = run("delegation_gate.py", task_payload("general-purpose", sid="sess-F11D"),
@@ -825,8 +827,8 @@ def cycle3_hook_tests():
                   "Emergency override: @haejwo-gate off.") and "haejwo:" not in r, r)
         rc, out = run("bash_guard.py", bash_payload("sed -i s/a/b/ src/app.py"), cx)
         check("F4 Codex bash in-place deny names spawn_agent, no haejwo agent",
-              decision(out) == "deny" and "or delegate to spawn_agent with the configured "
-              "worker model" in reason_of(out) and "haejwo:" not in reason_of(out),
+              decision(out) == "deny" and "other delegated work to spawn_agent with the "
+              "configured worker model" in reason_of(out) and "haejwo:" not in reason_of(out),
               reason_of(out))
         cl = tempfile.mkdtemp(prefix="hjw-test-c3c-")
         try:
@@ -983,9 +985,14 @@ def main():
         # installed-cache root path — measured 4,956 chars for this file
         # (44 headroom); the Codex F1/D1 tests below fail first when it is
         # exceeded. Measure every combination, not one path (2.31.1 review).
+        # Field round 3 (project M 2026-10-21/22, root-cause consensus): the rules
+        # SHRINK while gaining the per-finding disposal norm and the
+        # list-and-order authorization wording; examples moved to README.
+        # Cap re-pinned 3900 -> 3750 (actual 3744); worst combination
+        # re-measured 4,857 chars (143 headroom) by the combined fixture below.
         rules_size = os.path.getsize(rules_path)
-        check("rules file size within diet budget (<=3900 bytes)",
-              rules_size <= 3900, f"size={rules_size}")
+        check("rules file size within diet budget (<=3750 bytes)",
+              rules_size <= 3750, f"size={rules_size}")
 
         print("== turn_reset.py ==")
         rc, _ = run("turn_reset.py",
@@ -1182,14 +1189,16 @@ def main():
         BASH_DENY_TEXT = (
             ("echo 'x' >> src/app.py",
              "[haejwo gate] Bash output redirect writes to a code file (src/app.py). "
-             "The main agent must not modify code via Bash — use Edit/Write within "
-             "the turn budget, or delegate to 'haejwo:default-worker'. "
-             "Emergency override: /haejwo:gate off.", "redirect"),
+             "Bash code edits signal delegation. Delegate project-exercising scripts, "
+             "scratch implementations and other delegated work to "
+             "'haejwo:default-worker'. For eligible direct work, use Edit/Write within "
+             "the turn budget. Emergency override: /haejwo:gate off.", "redirect"),
             ("sed -i 's/a/b/' src/app.py",
              "[haejwo gate] Bash in-place edit (sed -i) targets ['src/app.py']. "
-             "The main agent must not modify code via Bash — use Edit/Write within "
-             "budget, or delegate to 'haejwo:default-worker'. "
-             "Emergency override: /haejwo:gate off.", "in-place edit"),
+             "Bash code edits signal delegation. Delegate project-exercising scripts, "
+             "scratch implementations and other delegated work to "
+             "'haejwo:default-worker'. For eligible direct work, use Edit/Write within "
+             "the turn budget. Emergency override: /haejwo:gate off.", "in-place edit"),
         )
         for cmd, want, label in BASH_DENY_TEXT:
             rc, out = run("bash_guard.py", bash_payload(cmd), data)
@@ -1837,7 +1846,7 @@ def main():
                          # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
                          # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
                          # in a demo app went undisclosed) names both tokens
-                         ("haejwo/README.md", 1790),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens documented (P7: mechanism + exemptions)
+                         ("haejwo/README.md", 1890),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions)
                          ("haejwo/commands/plan.md", 530),  # 2.32.0: the representative-screen checkpoint sentence
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
@@ -2070,6 +2079,36 @@ def main():
                 shutil.rmtree(long_data, ignore_errors=True)
         finally:
             shutil.rmtree(long_root_base, ignore_errors=True)
+
+        # (c2) combined worst case (field round 3 plan ledger #4): every
+        # dimension that lengthens the injection at once - a 52-char Codex
+        # cache root (substituted into every ${CLAUDE_PLUGIN_ROOT}), Codex tier
+        # names, unconfigured with a stored gate budget (the long nudge), and
+        # HAEJWO_GATE=off. The full rules must survive under the 5000 cap.
+        worst_base = tempfile.mkdtemp(prefix="hjw-cx-")
+        try:
+            prefix = os.path.join(worst_base, ".codex", "plugins", "cache", "haejwo", "")
+            worst_root = prefix + "v" * max(1, 52 - len(prefix))
+            os.makedirs(os.path.join(worst_root, "rules"), exist_ok=True)
+            with open(os.path.join(worst_root, "rules", "orchestration.md"),
+                      "w", encoding="utf-8") as f:
+                f.write(open(os.path.join(PLUGIN, "rules", "orchestration.md"),
+                             encoding="utf-8-sig").read())
+            worst_data = os.path.join(worst_base, "data")
+            os.makedirs(worst_data)
+            with open(os.path.join(worst_data, "config.json"), "w") as f:
+                json.dump({"gate": {"max_files_per_turn": 3}}, f)
+            rc, out = run("session_brief.py", {"hook_event_name": "SessionStart"}, worst_data,
+                          env_extra={"HAEJWO_GATE": "off"}, root=worst_root)
+            ctx_w = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            check(f"combined worst case (Codex 52-char root, stored budget, unconfigured, "
+                  f"HAEJWO_GATE=off): full rules kept, measured {len(ctx_w)}/{MAX_LEN} chars",
+                  rc == 0 and len(worst_root) == 52 and "Final-diff review:" in ctx_w
+                  and "emergency core" not in ctx_w and "STORED gate settings" in ctx_w
+                  and "@haejwo-setup" in ctx_w and len(ctx_w) <= MAX_LEN,
+                  f"root={len(worst_root)} len={len(ctx_w)} {ctx_w[:120]!r}")
+        finally:
+            shutil.rmtree(worst_base, ignore_errors=True)
 
         # (d) codex-host branch: root ITSELF (not just data) containing
         # "/.codex/" must also get substitution.

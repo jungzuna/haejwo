@@ -56,8 +56,8 @@ print_help() {
 codex_consult.sh — feed a self-contained brief to codex exec; capture reply.
 
 Usage:
-  codex_consult.sh [--mode consult] [-o out.md] brief.md
-  echo "..." | codex_consult.sh --mode consult -
+  codex_consult.sh [-o out.md] brief.md
+  echo "..." | codex_consult.sh -
 
 Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.

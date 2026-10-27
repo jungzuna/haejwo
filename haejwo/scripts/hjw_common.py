@@ -31,9 +31,9 @@ DEFAULT_CONFIG = {
         # Stop-hook presence check of the record lines on a push turn
         # (report_check.py).
         "report_check": True,
-        # The per-prompt turn checklist (turn_reset.py; 2.33.0 PILOT, default
-        # on). An invalid value turns ONLY the checklist off.
-        "turn_checklist": True,
+        # The 2.33.0 checklist pilot's gate key was removed in 2.34.0: a
+        # user config that still holds it is preserved but unused (never
+        # rewritten, never named as ignored).
     },
     "code_extensions": [
         "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "java", "go", "rs",
@@ -192,8 +192,6 @@ _TYPED_KEYS = (
      "(delegation guard off)"),
     ("gate", "report_check", _is_bool, "true or false", False,
      "(record check off)"),
-    ("gate", "turn_checklist", _is_bool, "true or false", False,
-     "(turn checklist off)"),
     ("codex", "enabled", _is_bool, "true or false", False, "(default used)"),
 ) + tuple((sec, role, _is_str, "a string", DEFAULT_CONFIG[sec][role],
            "(default used)")
@@ -346,61 +344,51 @@ def carry_session_flags(prev, state):
         state["cfg_ignored_noted"] = True
     if isinstance(prev.get("pin_unpassable_noted"), list):
         state["pin_unpassable_noted"] = list(prev["pin_unpassable_noted"])
-    if prev.get("checklist_assigned"):
-        state["checklist_assigned"] = True
-    # Session counters (2.33.0): incremented by the bash guard and the
-    # PostToolUse hooks, never by a reset; read by the turn checklist.
-    for key in SESSION_COUNTERS:
-        if _is_count(prev.get(key)):
-            state[key] = prev[key]
+    # 2.34.0: the 2.33.0 pilot keys (`checklist_assigned`, the session
+    # counters `handbacks` / `review_runs` / `push_calls`, `handback_ids`)
+    # are no longer carried: a stale state holding them loads without error
+    # and the next reset drops them.
     for key in SESSION_ID_LISTS:
         if isinstance(prev.get(key), list):
             state[key] = [x for x in prev[key] if isinstance(x, str)][-SESSION_IDS_CAP:]
     return state
 
 
-# Session-scoped counters and the tool_use_id lists that dedupe them
-# (field round 3, bundle B). Carried across every turn reset. Caps:
-# `handback_ids` / `review_ids` keep the newest SESSION_IDS_CAP ids;
-# `outward_seen` (bash_guard.py) and `push_returned_ids` (post_bash.py) stop
-# growing at SESSION_IDS_CAP, so later push-bearing calls get no return note
-# and no dedupe (README discloses it).
-SESSION_COUNTERS = ("handbacks", "review_runs", "push_calls")
-SESSION_ID_LISTS = ("handback_ids", "review_ids", "outward_seen",
-                    "push_returned_ids")
+# Session-scoped tool_use_id lists that dedupe the PostToolUse notes (field
+# round 3, bundle B). Carried across every turn reset. Caps: `review_ids`
+# keeps the newest SESSION_IDS_CAP ids; `outward_seen` (bash_guard.py) and
+# `push_returned_ids` (post_bash.py) stop growing at SESSION_IDS_CAP, so
+# later push-bearing calls get no return note and no dedupe (README
+# discloses it).
+SESSION_ID_LISTS = ("review_ids", "outward_seen", "push_returned_ids")
 SESSION_IDS_CAP = 64
 
 
-def _is_count(v):
-    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+def claim_session_id(data_dir, session_id, ids_key, tool_use_id=None):
+    """Claim `tool_use_id` in the session list `ids_key` under the session
+    lock; True when the claim was persisted, which is the caller's licence
+    to emit its note.
 
-
-def bump_session_counter(data_dir, session_id, key, tool_use_id=None,
-                         ids_key=None):
-    """Add 1 to the session counter `key` under the session lock; True when
-    that bump was persisted, which is the caller's licence to emit its note.
-
-    With `ids_key` and a string `tool_use_id`, an id already in that list
-    (cap SESSION_IDS_CAP, oldest dropped) is a duplicate event: nothing
-    changes and False is returned. False too when the lock was not taken,
-    the save failed or anything raised — the claim that bounds the note to
-    one per tool call could not be established, so the PostToolUse hooks
-    stay silent (bundle B diff review D4). The save keeps `updated_at`
+    An id already in the list (cap SESSION_IDS_CAP, oldest dropped) is a
+    duplicate event: nothing changes and False is returned. Without a string
+    id nothing is recorded, but the state is still saved, so the licence
+    keeps the same lock/save preconditions. False too when the lock was not
+    taken, the save failed or anything raised — the claim that bounds the
+    note to one per tool call could not be established, so the PostToolUse
+    hooks stay silent (bundle B diff review D4). The save keeps `updated_at`
     (touch=False: never turn freshness, D1). Never raises."""
     try:
         with state_lock(data_dir, session_id) as lk:
             if not lk.acquired:
                 return False
             state = load_state(data_dir, session_id)
-            if ids_key and isinstance(tool_use_id, str) and tool_use_id:
+            if isinstance(tool_use_id, str) and tool_use_id:
                 ids = state.get(ids_key)
                 ids = [x for x in ids if isinstance(x, str)] \
                     if isinstance(ids, list) else []
                 if tool_use_id in ids:
                     return False
                 state[ids_key] = (ids + [tool_use_id])[-SESSION_IDS_CAP:]
-            cur = state.get(key)
-            state[key] = (cur if _is_count(cur) else 0) + 1
             return save_state(data_dir, session_id, state, touch=False) is None
     except Exception:
         return False
@@ -699,19 +687,28 @@ def _temp_exempt(cpath, cwd):
     return not probe.startswith(root_s)
 
 
-def is_code_file(path, cfg, cwd=""):
+def non_code_reason(path, cfg, cwd=""):
+    """Why `path` is not project code, or None when it is. Precedence:
+    "temp-exempt" (resolves under a temp dir outside the project) →
+    "metadata-exempt" (an exempt directory component) → "non-code" (no
+    path, or an extension not in code_extensions). gate.py records the
+    reason as `via` (2.34.0; debate-5 C2)."""
     if not path:
-        return False
+        return "non-code"
     cpath = canonical(path, cwd)
     # temp locations: exempt by resolved PREFIX only (not substring), and
     # only outside the active project (_temp_exempt)
     if _temp_exempt(cpath, cwd):
-        return False
+        return "temp-exempt"
     # metadata dirs: exempt by exact path component
     parts = set(cpath.split("/"))
     if parts & set(cfg["exempt_dir_components"]):
-        return False
-    return code_ext(cpath, cfg) is not None
+        return "metadata-exempt"
+    return None if code_ext(cpath, cfg) is not None else "non-code"
+
+
+def is_code_file(path, cfg, cwd=""):
+    return non_code_reason(path, cfg, cwd) is None
 
 
 class state_lock:

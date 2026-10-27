@@ -18,14 +18,19 @@ existing obligation next to the facts of that call, as additionalContext
                   RETURNED, never that a push ran or succeeded.
                   `interrupted: true` is said only when the payload says so.
   review-invoked  review_runner_invoked(command) (bash_guard.py) names a
-                  reviewer runner; the session counter `review_runs` is
-                  bumped, deduped by tool_use_id (`review_ids`, cap 64,
-                  newest kept).
+                  reviewer runner and the segment is not a setup probe
+                  (`HJW_PROBE=` before the command word: no line, no
+                  claim); the tool_use_id is claimed in the session list
+                  `review_ids` (cap 64, newest kept), one line per call.
+                  RUNNER_NOTE says what the detection is: command syntax
+                  only — not that the runner ran, finished or reviewed
+                  anything (2.34.0, debate 6; no exit status: that payload
+                  field is unverified).
 Both on one call: push-returned first, joined by a newline. Each emission
 is observed (`hook: post_bash, decision: note, via, chars`).
 
 Silent on a failed claim (diff review D4): a line is emitted only after its
-claim or bump was SAVED — a lock not taken, a failed save or an exception
+claim was SAVED — a lock not taken, a failed save or an exception
 means no line (the one-line-per-call bound cannot be established).
 
 Exemptions (exit 0, no output — fail open, P4): malformed payload; subagent
@@ -35,8 +40,8 @@ failed tool call (PostToolUseFailure) gets no line: that path is unmeasured
 and not hooked.
 
 Scope: one line per push-bearing call the bash guard recorded and one per
-detected runner invocation; no state is written except the session counter
-and the id lists (saved without touching `updated_at`, so turn freshness —
+detected runner invocation; no state is written except the id lists
+(saved without touching `updated_at`, so turn freshness —
 gate.py's stale reset — never moves).
 Origin: field round 3, root-cause consensus 2026-10-26: fact-based
 re-presentation; measured on Claude Code 2.1.310 headless.
@@ -46,7 +51,7 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
-    SESSION_IDS_CAP, bump_session_counter, emit_context, gate_disabled_by_env,
+    SESSION_IDS_CAP, claim_session_id, emit_context, gate_disabled_by_env,
     is_subagent, load_config_with_status, load_state, observe, on_codex_host,
     paths, read_payload, sanitize_quoted, save_state, state_lock,
 )
@@ -57,11 +62,12 @@ PUSH_RETURNED = (
     "output tail: \"{tail}\"{interrupted}. The Outward actions line states "
     "repo; branch; action; result and the authorizing words."
 )
-REVIEW_INVOKED = (
-    "[haejwo] review runner invoked ({runner}; tool call {id}). When its reply "
-    "is read: decide each material finding fact vs remedy, with reasons; carry "
-    "the closing statement (scope, verification, omissions) into the report; "
-    "a same-model review is not independent."
+RUNNER_NOTE = (
+    "[haejwo] detected runner call ({runner}; tool call {id}): command syntax "
+    "only — whether it ran, finished or reviewed anything is not established. "
+    "When its reply is read: decide each material finding fact vs remedy, "
+    "with reasons; carry the closing statement (scope, verification, "
+    "omissions) into the report; a same-model review is not independent."
 )
 
 
@@ -150,9 +156,8 @@ def main():
     if line:
         lines.append(("push-returned", line))
     runner = review_runner_invoked(command) if command else None
-    if runner and bump_session_counter(data, sid, "review_runs", tuid,
-                                       "review_ids"):
-        lines.append(("review-invoked", REVIEW_INVOKED.format(
+    if runner and claim_session_id(data, sid, "review_ids", tuid):
+        lines.append(("review-invoked", RUNNER_NOTE.format(
             runner=runner, id=tuid or "id unknown")))
     if not lines:
         sys.exit(0)

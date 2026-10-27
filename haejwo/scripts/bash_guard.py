@@ -97,12 +97,14 @@ substitutions, `sudo git push` and other wrappers not named in
 _PUSH_PREFIX_WORDS.
 
 Bundle B (2.33.0, field round 3): the outward-attempt state write also keeps
-the turn's `outward_calls` / `outward_ids` (tool_use ids for display, cap 8),
-the session counter `push_calls` and the session dedupe list `outward_seen`
-(cap 64) — no command text is stored; post_bash.py and report_check.py read
-them. `review_runner_invoked` (the same segment
-grammar, plus `timeout <duration>`) names a reviewer-runner invocation for
-post_bash.py; it never affects a decision here.
+the turn's `outward_calls` / `outward_ids` (tool_use ids for display, cap 8)
+and the session dedupe list `outward_seen` (cap 64; the session counter
+`push_calls` was removed with the 2.33.0 checklist in 2.34.0) — no command
+text is stored; post_bash.py and report_check.py read them.
+`review_runner_invoked` (the same segment grammar, plus `timeout
+<duration>`; setup probes marked `HJW_PROBE=` excluded) names a
+reviewer-runner invocation for post_bash.py; it never affects a decision
+here.
 """
 import os
 import re
@@ -541,6 +543,105 @@ def git_push_attempt(command):
 
 
 REVIEW_RUNNERS = ("codex_consult.sh", "claude_consult.sh")
+# The setup-probe marker (2.34.0, plan ledger #5): an assignment word
+# `HJW_PROBE=<anything>` before a runner's command word marks a probe call.
+PROBE_MARKER = "HJW_PROBE="
+# Words after which a `NAME=VALUE` word is still a shell assignment (bash
+# reserved words, recognized only at the start of a simple command).
+_RESERVED_WORDS = frozenset({"!", "{", "if", "then", "do", "else", "elif",
+                             "while", "until", "time"})
+# GNU coreutils env options. Long options: name -> True when it takes a
+# REQUIRED operand (the next word unless spelled `--opt=value`); the signal
+# options take an optional `=SIG` only, never the next word. getopt_long
+# accepts any unambiguous prefix (`--chd` = `--chdir`). Short options: the
+# letters that take no operand; any other letter is an operand letter
+# (`uCSa`) or unknown. An operand is never an assignment, whatever it looks
+# like.
+_ENV_LONG_OPTS = {"unset": True, "chdir": True, "split-string": True,
+                  "argv0": True, "ignore-environment": False, "null": False,
+                  "debug": False, "block-signal": False,
+                  "default-signal": False, "ignore-signal": False,
+                  "list-signal-handling": False, "help": False,
+                  "version": False}
+_ENV_SHORT_FLAGS = "i0v"
+
+
+def _env_long_takes_next(opt):
+    """True when the `--name` word `opt` (no `=`) consumes the next word:
+    the long option it names (exact, or an unambiguous prefix as
+    getopt_long resolves it) takes a required operand. An unknown or
+    ambiguous name is treated as consuming it too — conservative: the next
+    word is never read as a probe marker (a wrong guess keeps the note)."""
+    name = opt[2:]
+    if name in _ENV_LONG_OPTS:
+        return _ENV_LONG_OPTS[name]
+    hits = [k for k in _ENV_LONG_OPTS if k.startswith(name)] if name else []
+    return _ENV_LONG_OPTS[hits[0]] if len(hits) == 1 else True
+
+
+def _probe_marked(words, end):
+    """True when a word before `end` (the command word's index) is
+    `HJW_PROBE=<anything>` in an ASSIGNMENT role: a leading bare `NAME=VALUE`
+    prefix word (at the start of the simple command or after a reserved
+    word), or a `NAME=VALUE` word `env` reads as an assignment once its
+    options and their operands (`-u NAME`, `-C dir`, `-S str`, `-a name`,
+    attached, `--opt=value` and abbreviated `--chd dir` forms, `--`) are
+    consumed (_env_long_takes_next; an unknown option letter or name is
+    taken to consume the next word, so that word is never a marker). An
+    option operand (`env -C HJW_PROBE=1 …`, `env --chd HJW_PROBE=1 …`)
+    is not a marker; once a split-string option appears in any spelling
+    (`env -S …`, `--spl=-C …`) no later word is one either, since the split
+    can change every later word's role. Nor is a `NAME=VALUE` word after `nohup`, `command`, `exec` or
+    `timeout <duration>` — the shell does not assign it; that word is their
+    command. Separate from _command_word_index on purpose: the push grammar
+    stays unchanged. Never raises."""
+    try:
+        i, assign_ok, fresh = 0, True, True
+        while i < end:
+            w = words[i]
+            if _ASSIGN_WORD.match(w):
+                if assign_ok and w.startswith(PROBE_MARKER):
+                    return True
+                fresh = False
+                i += 1
+            elif w in _RESERVED_WORDS and fresh:
+                i += 1
+            elif w == "env":
+                assign_ok, fresh = True, False
+                i += 1
+                while i < end and words[i].startswith("-"):
+                    o = words[i]
+                    i += 1
+                    if o == "--":
+                        break
+                    # split-string (-S, a cluster holding S, --split-string
+                    # or any prefix of it, with or without =) can rewrite
+                    # the role of every later word: nothing after it is a
+                    # marker (a kept note is the safe failure)
+                    if (o.startswith("--") and len(o) > 2
+                            and "split-string".startswith(
+                                o[2:].split("=", 1)[0])) \
+                            or (not o.startswith("--") and "S" in o):
+                        return False
+                    if o.startswith("--"):
+                        if "=" not in o and _env_long_takes_next(o):
+                            i += 1  # its operand
+                    else:
+                        # a short cluster: the first letter that is not a
+                        # known flag (an operand letter, or unknown:
+                        # conservative) takes the rest of the word, or the
+                        # next word when it ends the cluster
+                        for k, ch in enumerate(o[1:], 1):
+                            if ch not in _ENV_SHORT_FLAGS:
+                                if k == len(o) - 1:
+                                    i += 1
+                                break
+            else:
+                assign_ok, fresh = False, False
+                i += 1
+    except Exception:
+        pass
+    return False
 
 
 def review_runner_invoked(command):
@@ -551,7 +652,13 @@ def review_runner_invoked(command):
     `timeout`: past `NAME=VALUE` words, `nohup` and the other prefix words,
     `env` with its options, `timeout` with its options and duration) has
     basename `codex_consult.sh` or `claude_consult.sh` and no word of the
-    segment is `--help`. Quoted-delimiter heredoc bodies are skipped exactly
+    segment is `--help`. A segment carrying `HJW_PROBE=<anything>` as an
+    assignment before the command word (_probe_marked: a bare prefix
+    assignment or an `env` assignment, never an option operand) is a setup
+    probe (/haejwo:setup) and does not count: no note, no id claim. The
+    marker is read from syntax only, never by substring, so a probe brief's
+    text or an `HJW_PROBE=` after the command word does not exempt a call.
+    Quoted-delimiter heredoc bodies are skipped exactly
     as git_push_attempt skips them. Known misses (no line, fail-open):
     `bash -c '...'`, an interpreter word (`bash <path>/codex_consult.sh`),
     `sudo` and other wrappers not skipped above, and the push matcher's
@@ -563,6 +670,8 @@ def review_runner_invoked(command):
             except ValueError:
                 continue
             i = _command_word_index(words, timeout=True)
+            if _probe_marked(words, i):
+                continue  # a setup probe: not a review call
             if i < len(words) and "--help" not in words:
                 base = os.path.basename(words[i])
                 if base in REVIEW_RUNNERS:
@@ -580,8 +689,8 @@ def record_outward_attempt(payload, data, record):
     outward-attempt record. Never raises.
 
     Bundle B (2.33.0): the same state write also keeps, on the FIRST sight
-    of a tool_use_id, `outward_calls` +1 (turn), `push_calls` +1 (session)
-    and the id in `outward_ids` (turn, display only, cap OUTWARD_IDS_CAP).
+    of a tool_use_id, `outward_calls` +1 (turn) and the id in `outward_ids`
+    (turn, display only, cap OUTWARD_IDS_CAP).
     First sight is decided by the session list `outward_seen` (cap
     SESSION_IDS_CAP; it stops growing there, so a later id is counted on
     every replay — no dedupe — and post_bash.py gives it no return note);
@@ -617,11 +726,10 @@ def record_outward_attempt(payload, data, record):
                             ids.append(tuid)
                     state["outward_ids"] = ids
                     state["outward_seen"] = seen
-                    for key in ("outward_calls", "push_calls"):
-                        cur = state.get(key)
-                        state[key] = (cur if isinstance(cur, int)
-                                      and not isinstance(cur, bool)
-                                      and cur >= 0 else 0) + 1
+                    cur = state.get("outward_calls")
+                    state["outward_calls"] = (cur if isinstance(cur, int)
+                                              and not isinstance(cur, bool)
+                                              and cur >= 0 else 0) + 1
                 save_state(data, sid, state)
     except Exception:
         pass
@@ -708,7 +816,8 @@ def _decide_loaded(payload, cfg, on_codex):
                         f"[haejwo gate] Bash {label} writes to a code file ({target}). "
                         f"Bash code edits signal delegation. Delegate project-exercising "
                         f"scripts, scratch implementations and other delegated work to "
-                        f"{worker}. For eligible direct work, use {edit_tools} within the "
+                        f"{worker}. For eligible direct work (never scratch, probe or "
+                        f"project-exercising scripts), use {edit_tools} within the "
                         f"turn budget. Emergency override: {override}."
                     ), None
         # 2) in-place editors: explicit code-file target, OR fanned out via
@@ -731,8 +840,9 @@ def _decide_loaded(payload, cfg, on_codex):
                             f"[haejwo gate] Bash in-place edit ({label}) targets {shown}. "
                             f"Bash code edits signal delegation. Delegate "
                             f"project-exercising scripts, scratch implementations and "
-                            f"other delegated work to {worker}. For eligible direct work, "
-                            f"use {edit_tools} within the turn budget. "
+                            f"other delegated work to {worker}. For eligible direct work "
+                            f"(never scratch, probe or project-exercising "
+                            f"scripts), use {edit_tools} within the turn budget. "
                             f"Emergency override: {override}."
                         ), None
     # Precedence: a literal code target always wins (it returned a deny

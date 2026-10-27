@@ -30,12 +30,12 @@ Gate, bash-guard and tier answers persist with `"configured": true` in ONE write
 
 ## 3. Reviewer enabled → verify end-to-end (consent-gated)
 Before recording `verified_at`, confirm the log header's `config=<path>` is setup's file.
-0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` (`env -u …`); the smoke pins `CODEX_EFFORT=low`, the repo-read probe runs under `env -u CODEX_EFFORT`.
-1. **Self-contained smoke** — a tiny brief, no repo access, run inside a git repo (`claude_consult.sh` refuses a non-git cwd). Claude Code host:
+0. **Reviewer keys persist FIRST** — `codex.model` (removed for `CLI default`), `codex.effort` (Claude Code). Probes UNSET `CODEX_MODEL`/`CLAUDE_MODEL` and set `HJW_PROBE=1`; the smoke pins `CODEX_EFFORT=low`, the repo-read probe runs under `env -u CODEX_EFFORT HJW_PROBE=1`.
+1. **Self-contained smoke** — a tiny brief, no repo access, inside a git repo (`claude_consult.sh` refuses a non-git cwd). Claude Code host:
    ```
-   printf 'MODE: consult\nReply with exactly: HAEJWO-OK\n' | env -u CODEX_MODEL CODEX_EFFORT=low CODEX_TIMEOUT=90 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh" --mode consult -
+   printf 'MODE: consult\nReply with exactly: HAEJWO-OK\n' | env -u CODEX_MODEL HJW_PROBE=1 CODEX_EFFORT=low CODEX_TIMEOUT=90 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_consult.sh" --mode consult -
    ```
-   Codex host: same brief to `env -u CLAUDE_MODEL HJW_CLAUDE_EFFORT=low "${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh" --mode consult -` (CLAUDE_TIMEOUT=90). Exit != 0 or no HAEJWO-OK → persist disabled, report cause and fix, STOP — never ask the sandbox question.
+   Codex host: same brief to `env -u CLAUDE_MODEL HJW_PROBE=1 HJW_CLAUDE_EFFORT=low "${CLAUDE_PLUGIN_ROOT}/scripts/claude_consult.sh" --mode consult -` (CLAUDE_TIMEOUT=90). Exit != 0 or no HAEJWO-OK → persist disabled, report cause and fix, STOP — never ask the sandbox question.
 2. **Repo-read probe** — temp git repo from `mktemp -d` (never under the cwd; deleted when setup ends) holding a random nonce in a file whose NAME is unrelated to it; the stdin brief carries ONLY that absolute path and "return the file's exact content", never the nonce.
 3. **Run it.** Codex reviewer: `CODEX_SANDBOX=read-only` EXPLICITLY on attempt AND retry. Success → persist `consult_sandbox="read-only"`, `verified_at=<probe unix-ts>`, `enabled=true`; DONE. Failure → retry ONCE. Still failing → if the reply's log does not show the cause, report exactly "read-only workspace probe failed; sandbox or CLI/tool failure", NEVER "sandbox defect". Claude reviewer (sandbox not applicable): success → persist `verified_at=<probe unix-ts>`, `enabled=true`; DONE. Failure → persist disabled, report, STOP.
 4. **`danger-full-access` — CODEX reviewer only, ONLY after step 3 failed, retry included.** ONE question: allow it for future reviewer runs (the only repo access where the CLI's sandbox is broken)? The wording MUST state: the reviewer runs with the user's own permissions; the standing REVIEWER CONTRACT and git-snapshot change detection reduce risk but are NOT a security boundary; package installs, MCP/user config changes, ignored or out-of-repo files and an edit-then-restore sequence are NOT caught. Refusal → persist disabled, report, STOP.
@@ -43,4 +43,4 @@ Before recording `verified_at`, confirm the log header's `config=<path>` is setu
 6. **Re-run / revoke** — a re-run reuses a recorded consent only AFTER telling the user, who may revoke it; disabling the reviewer removes both keys.
 
 ## 4. Report
-Compact table of saved choices (stored pins kept; unset roles: today's defaults). Session effort: start at the vendor's recommendation; raise it only when accepted outcomes, cost and rework justify it. Context dominates cost: see the plugin README's By design note on `autoCompactWindow` and compact instructions.
+Compact table of saved choices (stored pins kept; unset roles: today's defaults). Session effort: start at the vendor's recommendation; raise it only when accepted outcomes, cost and rework justify it. Context dominates cost: the plugin README's By design covers `autoCompactWindow` and compact instructions.

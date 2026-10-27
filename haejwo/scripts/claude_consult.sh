@@ -55,8 +55,8 @@ print_help() {
 claude_consult.sh — feed a self-contained brief to headless claude; capture reply.
 
 Usage:
-  claude_consult.sh [--mode consult] [-o out.md] brief.md
-  echo "..." | claude_consult.sh --mode consult -
+  claude_consult.sh [-o out.md] brief.md
+  echo "..." | claude_consult.sh -
 
 Mode:
   consult   (only mode) non-editing contract with post-run change detection; FAILS if the repository changed during the run.

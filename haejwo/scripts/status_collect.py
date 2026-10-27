@@ -42,7 +42,9 @@ KNOWN_KEYS = {
     "report_check": BASE_KEYS | {"via", "chars"},  # chars: 2.33.0
     # 2.33.0 notes (one record per emitted line; `chars` counts exposure)
     "post_bash": BASE_KEYS | {"via", "chars"},
+    # RETIRED 2.34.0: records from 2.33.0 sessions still parse
     "handback_nudge": BASE_KEYS | {"via", "chars"},
+    # RETIRED 2.34.0: records from 2.33.0 sessions still parse
     "turn_checklist": BASE_KEYS | {"via", "chars"},
 }
 

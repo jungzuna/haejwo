@@ -142,7 +142,7 @@ hjw_scan_args() {
       # --resume (removed 2.13): implicit latest-thread selection misroutes under concurrent sessions;
       # rejected while parsing. *[origin: cross-vendor decision round 2026-09-21]*
       --resume) HJW_SCAN_ERR="--resume was removed in 2.13 (implicit latest-thread selection misroutes under concurrent sessions); start a NEW session with a self-contained brief"; return 2 ;;
-      --mode)   [ $# -ge 2 ] || { HJW_SCAN_ERR="--mode requires a value (consult)"; return 2; }; MODE="$2"; shift 2 ;;
+      --mode)   [ $# -ge 2 ] || { HJW_SCAN_ERR="--mode requires a value; consult is the only mode; run without --mode"; return 2; }; MODE="$2"; shift 2 ;;
       --mode=*) MODE="${1#--mode=}"; shift ;;
       -o)       [ $# -ge 2 ] || { HJW_SCAN_ERR="-o requires a value (output file)"; return 2; }; OUT="$2"; shift 2 ;;
       -o*)      OUT="${1#-o}"; shift ;;
@@ -155,21 +155,21 @@ hjw_scan_args() {
   done
   HJW_REST=("$@")
 
-  MODE="${MODE:-consult}"
+  MODE="${MODE:-consult}"  # `--mode consult` stays accepted (compat); 2.34.0 usage text omits it
   case "$MODE" in
     consult) ;;
     implement)
-      HJW_SCAN_ERR="--mode implement was removed in 2.10 (cross-vendor worker routing is a non-goal)."
+      HJW_SCAN_ERR="--mode implement was removed in 2.10 (cross-vendor worker routing is a non-goal); consult is the only mode; run without --mode"
       return 2
       ;;
     *)
-      HJW_SCAN_ERR="invalid --mode: $MODE (consult)"
+      HJW_SCAN_ERR="invalid --mode: $MODE; consult is the only mode; run without --mode"
       return 2
       ;;
   esac
 
   BRIEF="${HJW_REST[0]:-}"
-  [ -z "$BRIEF" ] && { HJW_SCAN_ERR="brief file required. usage: ${HJW_RUNNER_KIND}_consult.sh [--mode consult] [-o out] brief.md|-"; return 2; }
+  [ -z "$BRIEF" ] && { HJW_SCAN_ERR="brief file required. usage: ${HJW_RUNNER_KIND}_consult.sh [-o out.md] brief.md|-"; return 2; }
   return 0
 }
 

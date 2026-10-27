@@ -510,7 +510,8 @@ def config_host_summary_tests():
                   "Bash code edits signal delegation. Delegate project-exercising "
                   "scripts, scratch implementations and other delegated work to "
                   "spawn_agent with the configured worker model and reasoning_effort "
-                  "(see @haejwo-setup). For eligible direct work, use apply_patch "
+                  "(see @haejwo-setup). For eligible direct work (never scratch, "
+                  "probe or project-exercising scripts), use apply_patch "
                   "within the turn budget. "
                   "Emergency override: @haejwo-gate off."), reason_of(out))
         rc, out = run("bash_guard.py", bash_payload("sed -i 's/a/b/' src/app.py"), f11,
@@ -1191,13 +1192,15 @@ def main():
              "[haejwo gate] Bash output redirect writes to a code file (src/app.py). "
              "Bash code edits signal delegation. Delegate project-exercising scripts, "
              "scratch implementations and other delegated work to "
-             "'haejwo:default-worker'. For eligible direct work, use Edit/Write within "
+             "'haejwo:default-worker'. For eligible direct work (never scratch, probe "
+             "or project-exercising scripts), use Edit/Write within "
              "the turn budget. Emergency override: /haejwo:gate off.", "redirect"),
             ("sed -i 's/a/b/' src/app.py",
              "[haejwo gate] Bash in-place edit (sed -i) targets ['src/app.py']. "
              "Bash code edits signal delegation. Delegate project-exercising scripts, "
              "scratch implementations and other delegated work to "
-             "'haejwo:default-worker'. For eligible direct work, use Edit/Write within "
+             "'haejwo:default-worker'. For eligible direct work (never scratch, probe "
+             "or project-exercising scripts), use Edit/Write within "
              "the turn budget. Emergency override: /haejwo:gate off.", "in-place edit"),
         )
         for cmd, want, label in BASH_DENY_TEXT:
@@ -1846,7 +1849,7 @@ def main():
                          # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
                          # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
                          # in a demo app went undisclosed) names both tokens
-                         ("haejwo/README.md", 2250),  # 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
+                         ("haejwo/README.md", 2580),  # 2.34.0: the Contract section (K2: mechanisms + exemptions, demonstrated-delivery notes, norm-only omission table with denominators, host/path matrix, T1/T2 maintenance rule) replaced the 2.33 pilot paragraph: 2,249 -> 2,577 words, re-pinned to the shipped count rounded up (disclosed in docs/field/STABILIZATION-2034.md); 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
                          ("haejwo/commands/plan.md", 560),  # 2.32.0: the representative-screen checkpoint sentence; 2.33.0: the brief names revision, permitted verification, runner settings and deadline (field: one timeout, a 601 s run)
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):

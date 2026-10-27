@@ -254,10 +254,11 @@ def run_section():
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-        # deny text (field round 3): four paths x two host renderings, byte-exact
+        # deny text (field round 3; 2.34.0 parenthesis): four paths x two host renderings, byte-exact
         mid = ("Bash code edits signal delegation. Delegate project-exercising "
                "scripts, scratch implementations and other delegated work to {w}. "
-               "For eligible direct work, use {e} within the turn budget. "
+               "For eligible direct work (never scratch, probe or project-exercising "
+               "scripts), use {e} within the turn budget. "
                "Emergency override: {o}.")
         hosts = (("Claude", None, "'haejwo:default-worker'", "Edit/Write", "/haejwo:gate off"),
                  ("Codex", cx_root, "spawn_agent with the configured worker model and "

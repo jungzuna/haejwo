@@ -17,7 +17,11 @@ lock. `via` is the reason the decision was reached, in precedence order:
   config-malformed config.json is unparseable — allowed, gates fail open
   gate-off         config gate.enabled is false, or the budget is invalid
                    (hjw_common._validate_types: an invalid value fails open)
-  non-code         no code file in this call (non-code/temp/metadata paths)
+  temp-exempt      no code file: every path resolves under a temp dir
+                   outside the project (hjw_common.non_code_reason)
+  metadata-exempt  no code file: every path has an exempt dir component
+  non-code         no code file: extensions not in the list, no path, or
+                   paths with mixed reasons
   free-reedit      every file was already counted this turn (iteration free)
   budget-full      allowed, and this call filled the budget (warning context)
   ok               allowed with budget left
@@ -39,7 +43,7 @@ import time
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from hjw_common import (  # noqa: E402
     CODEX_SPAWN_WORKER, allow, canonical, carry_session_flags, command_name,
-    config_ignored_note_once, deny, gate_disabled_by_env, is_code_file,
+    config_ignored_note_once, deny, gate_disabled_by_env, non_code_reason,
     is_subagent, load_config_with_status, load_state, malformed_note_once,
     observe, on_codex_host, paths, read_payload, save_state, state_lock,
     state_not_persisted_note, with_note,
@@ -110,14 +114,21 @@ def _decide_loaded(payload, data, root, cfg):
 
     new_paths = []
     seen = set()
+    reasons = []
     for p in raw_paths:
-        if p and is_code_file(p, cfg, cwd):
+        reason = non_code_reason(p, cfg, cwd)
+        if reason is None:
             cp = canonical(p, cwd)
             if cp not in seen:
                 seen.add(cp)
                 new_paths.append(cp)
+        else:
+            reasons.append(reason)
     if not new_paths:
-        return "allow", "non-code", None, None, None
+        # the shared reason when every path agrees, else (mixed or no
+        # paths) the generic "non-code"
+        via = reasons[0] if reasons and len(set(reasons)) == 1 else "non-code"
+        return "allow", via, None, None, None
 
     sid = payload.get("session_id", "unknown")
     max_files = int(cfg["gate"]["max_files_per_turn"])

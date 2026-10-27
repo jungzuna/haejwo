@@ -70,6 +70,55 @@ execution, any behavioural benefit.
   understood by the shared command-word walk (no note either way); unchanged because it
   shares the push grammar.
 
+## Owner amendment (2026-10-27, before the field sessions)
+The owner reopened ONE item outside T1/T2, as the owner's own decision (the owner sits
+above the constitution; P2 cost): the setup experience — too many model turns and
+question rounds on a large session model, and a reviewer connection that always
+attempts a read-only sandbox this machine cannot provide before asking for
+`danger-full-access`. Scope: a deterministic setup helper (preflight / write / verify),
+one question round, remembered consent asked once with the full disclosure, no new
+enforcement, no change to the reviewer runners. Ships as 2.35.0 and is what the two
+field sessions will run; the K5 budget (5 maintainer days, 2 sessions) is unchanged and
+this work counts against it. Rejection alternative recorded: keep the current flow and
+only document that setup is once per machine.
+
+### 2.35.0 plan
+- Codex plan critique (one round, 14 objections): 14/14 accepted, none rejected or deferred.
+- Measured on this pod (2026-10-27, Claude Code 2.1.311, codex-cli 0.163.0): the read-only
+  preflight (`codex sandbox -- true`) fails in 36 ms with the bwrap launcher line; reviewer
+  smoke 8 s; repo-read probe 18 s. The command frontmatter `model: sonnet` switch was
+  measured headless only: the command's turn ran on Sonnet, the session model returned on
+  the next prompt, a headless `--resume` kept Sonnet; AskUserQuestion is unavailable
+  headless, so its behaviour under the override is unverified.
+- Candidate live run (host-run by the code worker on this pod against a TEMP config path,
+  never the real one; deterministic parts only): `preflight` → `broken` with the bwrap
+  launcher line (36 ms class); `verify --sandbox danger-full-access --consented` → verified
+  in 21.1 s total (smoke 8.5 s, repo-read 12.5 s); the runner log's `config=<path>` header
+  check passed; artefacts under `<config dir>/setup/` with mode 700; no temp repository left
+  behind. The helper also records `verification_pending` and a fingerprint that includes the
+  reviewer model, effort and verified sandbox. Host re-run on the FINAL helper (after the
+  three blocker fixes), same temp-config method: preflight `broken`, `write` ok, `verify
+  --sandbox danger-full-access --consented` verified in 19 s, `keep-check` → keep=true
+  "configured; reviewer verified", `verification_pending` cleared, setup dir mode 700, no
+  temp repository left. Launching the helper from `/tmp` itself is refused by design
+  (stage temp-repo: "temp dir is under the cwd").
+- Review trail 2.35.0: Codex diff review — 3 blockers (timeout did not reap bounded.py's
+  own-session child; temp-repo cleanup gap before `realpath`; non-launcher permission errors
+  classified `broken`), 6 should, 1 nit; four fixed-diff re-reviews, the last three on the
+  preflight classifier (abbreviated/quoted paths, then payload-exec lines), round 4 RESOLVED
+  with a recorded non-blocking residual: launcher prefixes and stage keywords are a heuristic,
+  accepted under the cost asymmetry (a wrong `broken` = one declinable consent question with
+  the full disclosure; a wrong `unknown` = the ordinary read-only attempt and retry). Final
+  rule: a line starting with a launcher prefix whose remainder names a sandbox-initialization
+  stage; payload-exec lines never count. Suite 1,439 passed, 0 failed, exit 0 (host run).
+- Push gate for 2.35.0 (unchanged): the owner's interactive run of `/haejwo:setup` in a fresh
+  session with `--plugin-dir` — the one question round, the consent option, AskUserQuestion
+  under the Sonnet override, and `/model` after the command. This is evidence for the helper, not for the
+  interactive flow below.
+- Gate for pushing 2.35.0: the owner's interactive pre-ship check in a fresh session
+  (`--plugin-dir`) — the question round, the consent flow, AskUserQuestion under the
+  Sonnet override, and `/model` after the command. Until it passes, 2.35.0 stays local.
+
 ## Closure conditions
 - Acceptance requires zero unresolved material contract failures; a claim without its exposure is reported "unverified".
 - At the cap: remove the unsupported claims or features, or withhold the release. No extension.

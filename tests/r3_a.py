@@ -813,11 +813,7 @@ def run_section():
         check("2.34 status control: an unknown hook is still a new shape",
               any(a.startswith("new shape") for a in an), str(an))
 
-        # --- 2.34: version ----------------------------------------------------
-        vers = [json.load(open(os.path.join(T.PLUGIN, d_, "plugin.json"),
-                               encoding="utf-8")).get("version")
-                for d_ in (".claude-plugin", ".codex-plugin")]
-        check("2.34 both plugin manifests at 2.34.0", vers == ["2.34.0", "2.34.0"], str(vers))
+        # --- 2.34: version pin moved to tests/r4_a.py (2.35.0) ----------------
 
         # --- hooks.json and source canaries ---------------------------------
         hooks = json.load(open(os.path.join(T.PLUGIN, "hooks", "hooks.json"),

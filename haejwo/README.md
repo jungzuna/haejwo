@@ -42,21 +42,21 @@ A bounded, supported version. It cannot eliminate the host's completion drive or
 - **Measured host facts** (measured on Claude Code 2.1.310 headless; roles per the CLI transcript): UserPromptSubmit and PostToolUse context reach the model (UserPromptSubmit's persists into later turns); PreToolUse notes land after the tool ran, with PostToolUse's, so hook notes report and prevent nothing; any Stop output costs one extra model turn; SubagentStop output goes to the subagent and REPLACES its answer, so haejwo never uses it. Host version observed 2.1.311 on 2026-10-27; measurements are per version.
 
 ## First run
-**`/haejwo:setup`** is optional, nudged each session until configured. It sets tiers, budget, bash-guard and the reviewer (probed, smoke-tested) in `${CLAUDE_PLUGIN_DATA}/config.json`. Before setup, defaults apply (gate ON, 2 files/turn, bash-guard ON) unless `/haejwo:gate` stored a value. Presets: `Standard` / `Budget` (Sonnet/Haiku) / `Custom`.
+**`/haejwo:setup`** is optional (nudged until configured), once per machine/account; config survives plugin updates. Its helper runs preflight, one round (Custom and login recovery add a follow-up), write+verify (≈ 30 s authenticated: smoke 8 s, repo-read 18 s, measured 2026-10-27). Read-only is tried only where `codex sandbox -- true` works or is inconclusive; a recognised launcher failure goes to one-time `danger-full-access` consent (full disclosure, remembered until revoked, shown by `/haejwo:status`). On Claude Code it runs on Sonnet until the next prompt (a resume may keep Sonnet). Before setup, defaults apply (gate ON, 2 files/turn, bash-guard ON) unless `/haejwo:gate` stored values.
 
-On Claude Code a worker runs at its agent file's model unless one is passed; the delegation gate steers an omitted override that misses a configured pin but never verifies which model ran.
+A Claude Code worker runs at its agent file's model unless one is passed; the gate steers an omitted override missing a configured pin, never verifying which model ran.
 
 ## Commands
-Normal use needs **none**: the host plans, delegates and asks before push/deploy (prior assent covers only the actions and order it enumerates); acceptance and outward reports end with the rules' two-line record, whose presence proves neither adequacy nor authorization. Credential decisions include `.env` sourcing/printing, inline secrets, secret manifest copies; a comment is not a control, a test covers only itself.
+Normal use needs **none**: the host plans, delegates and asks before push/deploy; acceptance and outward reports end with the rules' two-line record (presence proves neither adequacy nor authorization).
 
 | Command | Role |
 |---|---|
-| `/haejwo:plan <topic>` | Pre-implementation consensus: reviewer critique → host-decided plan; feature-scale briefs embed it (`Plan:`) |
-| `/haejwo:setup` | Interactive configuration + reviewer probe |
-| `/haejwo:status` | Config, turn counter, reviewer readiness, this session's observations and delegations (read-only) |
+| `/haejwo:plan <topic>` | Reviewer critique → host-decided plan; feature-scale briefs embed it (`Plan:`) |
+| `/haejwo:setup` | Configuration + reviewer probe |
+| `/haejwo:status` | Config, turn counter, reviewer readiness, observations, delegations (read-only) |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |
 
-Gate fires log to `state/observations.jsonl`. `HAEJWO_GATE=off` works only in the host process's environment (no per-command bypass); `/haejwo:gate off` is the hatch.
+Gate fires log to `state/observations.jsonl`. `HAEJWO_GATE=off` works only in the host's environment (no per-command bypass).
 
 ## Install
 See the [root README](../README.md); Codex in headless CI only: `--dangerously-bypass-hook-trust`.

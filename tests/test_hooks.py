@@ -6824,6 +6824,9 @@ exit "$rc"
         # 2.33.0 field round 3 bundle B: the re-presentation layer.
         import r3_a  # noqa: E402
         r3_a.run_section()
+        # 2.35.0 setup helper: scripts/setup_probe.py against stub CLIs.
+        import r4_a  # noqa: E402
+        r4_a.run_section()
 
         print(f"\n{PASS} passed, {len(FAIL)} failed")
         if FAIL:

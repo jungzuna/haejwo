@@ -1,4 +1,4 @@
-# Stabilization ledger — haejwo 2.34.0 (K5)
+# Stabilization ledger — haejwo 2.34.0 → 2.35.1 (K5)
 
 One stabilization attempt, no automatic extension (debate 6 K5,
 [2026-10-27-consensus-finish.md](2026-10-27-consensus-finish.md)). Missing exposure is
@@ -10,14 +10,14 @@ statistical validation.
 |---|---|
 | Start | 2026-10-27 10:37 KST (plan critique started) |
 | Cap | 5 maintainer working days + 2 field sessions on different projects |
-| Cumulative maintainer time | 2026-10-27 10:37 → 11:12 KST at the release candidate (plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review); the debate itself (same morning, before 10:37) is not counted |
+| Cumulative maintainer time | 2026-10-27 10:37 → 13:31 KST (release candidate 11:12 after plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review; 2.34.0 committed 11:31, 2.35.0 13:31) + 2026-10-28 09:20 → 10:10 KST (documentation audit + 2.35.1); 2 of 5 maintainer days consumed (calendar days touched). The debate itself (2026-10-27, before 10:37) is not counted |
 | Field sessions | 0/2 |
-| Scope | debate 6 K3 exactly (removals, retained notes, wording, contract, this folder) |
+| Scope | debate 6 K3 exactly (removals, retained notes, wording, contract, this folder) + the owner amendment (setup helper, 2.35.0; below) + the 2.35.1 documentation patch |
 
 ## Retained claims and the exposure each needs
 | Claim | Mechanism | Exposure needed | Status |
 |---|---|---|---|
-| <= N code files per turn for the main agent | `gate.py` | tests + canary edit | tests pass (suite 1,317); canary edit: unverified (no edit canary was run) |
+| <= N code files per turn for the main agent | `gate.py` | tests + canary edit | tests pass (suite 1,439 at 2.35.0; 1,346 at 2.34.0); canary edit: unverified (no edit canary was run) |
 | Bash code writes denied (heuristic) | `bash_guard.py` | tests (deny contract) | tests pass |
 | Generic agents need an explicit model; tier pin | `delegation_gate.py` | tests + canary Agent | tests pass; canary 2: delegation record present, no errors |
 | Plan-marker presence recorded | `delegation_gate.py` | tests | tests pass |
@@ -51,14 +51,14 @@ execution, any behavioural benefit.
   (`--spl=-C`), round 3 RESOLVED with no new blocker (263 additional spellings checked by
   the reviewer). Rule adopted: any split-string spelling makes the whole segment
   non-probe (a kept note is the safe failure).
-- Suite: `python3 tests/test_hooks.py` unpiped, 1,346 passed, 0 failed, exit 0 (host run
+- 2.34.0: suite `python3 tests/test_hooks.py` unpiped, 1,346 passed, 0 failed, exit 0 (host run
   after the final fix; 1,320 at 2.33.0).
 
 ## Field sessions
-| # | Project | Date | Claims exercised | Material contract failures |
-|---|---|---|---|---|
-| 1 | _pending_ | | | |
-| 2 | _pending_ | | | |
+| # | Project | Date | Host version | Claims exercised | Material contract failures |
+|---|---|---|---|---|---|
+| 1 | _pending_ | | | | |
+| 2 | _pending_ | | | | |
 
 ## Disclosures
 - Plugin README word cap: re-pinned to the shipped count rounded up to 10 — 2,249 words
@@ -77,8 +77,8 @@ question rounds on a large session model, and a reviewer connection that always
 attempts a read-only sandbox this machine cannot provide before asking for
 `danger-full-access`. Scope: a deterministic setup helper (preflight / write / verify),
 one question round, remembered consent asked once with the full disclosure, no new
-enforcement, no change to the reviewer runners. Ships as 2.35.0 and is what the two
-field sessions will run; the K5 budget (5 maintainer days, 2 sessions) is unchanged and
+enforcement, no change to the reviewer runners. Shipped locally as 2.35.0 (5be0ab2); the
+two field sessions run it (2.35.1 docs patch on top); the K5 budget (5 maintainer days, 2 sessions) is unchanged and
 this work counts against it. Rejection alternative recorded: keep the current flow and
 only document that setup is once per machine.
 
@@ -101,7 +101,8 @@ only document that setup is once per machine.
   --sandbox danger-full-access --consented` verified in 19 s, `keep-check` → keep=true
   "configured; reviewer verified", `verification_pending` cleared, setup dir mode 700, no
   temp repository left. Launching the helper from `/tmp` itself is refused by design
-  (stage temp-repo: "temp dir is under the cwd").
+  (stage temp-repo: "temp dir is under the cwd"). This is evidence for the helper, not for
+  the interactive flow.
 - Review trail 2.35.0: Codex diff review — 3 blockers (timeout did not reap bounded.py's
   own-session child; temp-repo cleanup gap before `realpath`; non-launcher permission errors
   classified `broken`), 6 should, 1 nit; four fixed-diff re-reviews, the last three on the
@@ -111,13 +112,48 @@ only document that setup is once per machine.
   the full disclosure; a wrong `unknown` = the ordinary read-only attempt and retry). Final
   rule: a line starting with a launcher prefix whose remainder names a sandbox-initialization
   stage; payload-exec lines never count. Suite 1,439 passed, 0 failed, exit 0 (host run).
-- Push gate for 2.35.0 (unchanged): the owner's interactive run of `/haejwo:setup` in a fresh
-  session with `--plugin-dir` — the one question round, the consent option, AskUserQuestion
-  under the Sonnet override, and `/model` after the command. This is evidence for the helper, not for the
-  interactive flow below.
 - Gate for pushing 2.35.0: the owner's interactive pre-ship check in a fresh session
   (`--plugin-dir`) — the question round, the consent flow, AskUserQuestion under the
   Sonnet override, and `/model` after the command. Until it passes, 2.35.0 stays local.
+  WAIVED 2026-10-28 by the owner's words ("테스트는 필요 없어" — the test is not needed): the
+  interactive check was not run, so the interactive setup flow stays unverified; 2.35.0 and
+  2.35.1 can be pushed on the owner's say-so. The gate's definition is otherwise unchanged.
+
+### 2.35.1 (documentation consistency, 2026-10-28)
+- Three read-only audits at 5be0ab2 — the READMEs (root, Korean, plugin); the internal
+  LLM-facing docs (PROMPTS, PHILOSOPHY, rules, commands, agents); this folder — 49 rows:
+  wrong 3, stale 7, duplicate 1, missing 9, nit 29. Zero code, deny-string, hook-contract or
+  version mismatches.
+- Applied (documentation only, nothing under `haejwo/scripts/`): plugin README (the
+  plan-marker record is outside `gate.delegation_guard`; `turn_reset.py` named; config path
+  outside the plugin cache; setup rounds; the 30-day and fingerprint Keep rule; runner exit-2
+  and reply-name nits); root and Korean READMEs (the push-turn Stop block sentence,
+  `bash on`/`bash off`, Korean drift: plan trigger, CI line, the By-design pointer mirrored);
+  PROMPTS (`model:` key, `setup_probe.py` strings in Scope, prefixes, pins in `tests/r3_a.py`,
+  README Contract = full mechanism catalogue); `default-worker` Report back ends with
+  `Judgment calls:`; `commands/gate.md` (writes config, no 1-10 ceiling), `setup.md`
+  (`verify_fingerprint`, every removed reviewer key, Codex effort default, `verify` without
+  `--effort`), `status.md` (retired 2.33.0 hook names); this folder (ledger, index, backlog).
+- Deferred to [BACKLOG.md](BACKLOG.md), each with a reject option: status showing
+  `verification_pending` (#8) and status calling the setup preflight (#10) — behaviour;
+  the setup helper's `--mode consult` (#9) — code; the PHILOSOPHY P7 origin clause and the
+  Docs-map rows (#11) — K8 keeps PHILOSOPHY unchanged. `rules/orchestration.md` untouched
+  (3,744/3,750 B): PROMPTS now says the README is the catalogue and the rules name the
+  subset the host acts on. Korean README badges: omitted deliberately. The README T1 ellipsis
+  stays (explicit elision).
+- Word caps (`tests/test_hooks.py`): plugin README sat at exactly 2,580 = cap before this
+  patch; re-pinned 2,580 → 2,620 (shipped 2,620, after trimming duplicated wording); root
+  README re-pinned 740 → 770 (shipped 768). Unchanged caps: `README.ko.md` 650 (547),
+  `commands/setup.md` 900 (900, trimmed to fit), `commands/status.md` 310 (310, trimmed to
+  fit), `commands/plan.md` 560 (553). The cap comment's "2,577" is corrected to 2,571 (the
+  606d143 count). The rules byte ratchet and the runner-stack line ratchet are unchanged.
+- Host note: this pod now runs Claude Code 2.1.312, outside the measured 2.1.305/310/311
+  matrix; under K4 a new upstream version alone is not drift. Field-session rows must record
+  the host version.
+- Suite: the worker's run showed 1,437 passed, 2 failed (the 2.35.0 version pin at
+  `tests/r4_a.py:180`, outside its file list); the host moved the pin to 2.35.1 and re-ran
+  `python3 tests/test_hooks.py` unpiped: 1,439 passed, 0 failed, exit 0. `tests/mirrors.py`:
+  no drift.
 
 ## Closure conditions
 - Acceptance requires zero unresolved material contract failures; a claim without its exposure is reported "unverified".

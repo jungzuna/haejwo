@@ -2,12 +2,18 @@
 
 Source: debate 6 K3 ("Not built → backlog with an explicit reject option") and K4
 ([2026-10-27-consensus-finish.md](2026-10-27-consensus-finish.md)). These items never
-reopen a release on their own: only T1 (a material safety or authorization incident
-the plugin caused or materially enabled, or a failure of its declared coverage; a
-reproducible material regression against the frozen contract) or T2 (a demonstrated
-failure of a declared supported host/path assumption) does. The backlog is reviewed
-at most quarterly. Declining an item is a recorded outcome (K6): choosing `Reject:`
-removes it from this file with the date and the reason.
+reopen a release on their own: only T1 or T2 does, verbatim from K4:
+
+> T1 — a confirmed material safety or authorization incident caused or materially
+> enabled by the plugin, or demonstrating failure of its declared coverage; or a
+> reproducible material regression against the frozen contract, including misleading
+> evidence (wrong counters/records), permission interference, or loss of required
+> review artifacts.
+> T2 — demonstrated failure of a declared supported host/path assumption. A new
+> upstream version alone is not demonstrated drift.
+
+The backlog is reviewed at most quarterly. Declining an item is a recorded outcome
+(K6): choosing `Reject:` moves it to `## Closed` with the date and the reason.
 
 Each item: what it would do, why it was not built, the evidence that would reopen it,
 and the options.
@@ -53,6 +59,30 @@ and the options.
 - Not built: broad detection deferred; even the bounded pilot reports after the fact (notes land after the tool ran) and prevents nothing.
 - Reopen evidence: a T1 credential exposure the plugin materially enabled, or an owner decision to run the bounded pilot as a separately measured experiment (debate 5 C4).
 - Options: Build the bounded pilot · Defer · `Reject:` remove the item; credential exposure stays in the owner's incident process (K7).
+
+## 8. Status shows a pending verification
+- Would: `/haejwo:status` prints `verification_pending` (and `verify_fingerprint` presence) on the reviewer line, so a failed or interrupted verify reads differently from a deliberate Skip (internal docs audit #14, 2026-10-28).
+- Not built: a behaviour change to `status_collect.py`; 2.35.1 is a wording-only patch. Today the setup re-run's keep-check already reports "reviewer verification pending or failed".
+- Reopen evidence: a user or field session misreading a failed verification as an opt-out, or the next minor release touching `status_collect.py`.
+- Options: Build (one field on the reviewer line + one clause in `commands/status.md`) · Defer · `Reject:` the keep-check reason stays the only surface.
+
+## 9. Setup helper drops `--mode consult`
+- Would: `setup_probe.py` calls the runner without `--mode consult`, matching the documented 2.34.0 usage (internal docs audit #18).
+- Not built: a code change; the flag is accepted on the runner's compatibility path, so behaviour is identical.
+- Reopen evidence: the compatibility path is removed, or the next release that edits `setup_probe.py`.
+- Options: Build (drop two arguments, re-run the setup canaries) · Defer · `Reject:` keep the flag; the compatibility path stays.
+
+## 10. Status uses the setup preflight
+- Would: `commands/status.md` item 3 calls `setup_probe.py preflight` instead of a hand-rolled CLI probe (one source for login/version/sandbox; internal docs audit #13).
+- Not built: changes what the host runs during `/haejwo:status` (a behaviour change, and preflight adds the 5 s sandbox probe).
+- Reopen evidence: a field report where the hand-rolled probe and keep-check disagree.
+- Options: Build · Defer · `Reject:` keep the hand-rolled probe.
+
+## 11. PHILOSOPHY wording (K8-deferred)
+- Would: (a) narrow the P7 origin clause — the PreToolUse/SessionStart paths were proven on both hosts, the PostToolUse notes and the Stop check only on Claude Code (internal docs audit #1); (b) add Docs-map rows for `AGENTS.md` (maintainer hard rules; per incident) and `docs/field/` (field evidence; per field session) (#17).
+- Not built: debate 6 K8 keeps `PHILOSOPHY.md` unchanged; the plugin README Contract already states the measured host/path matrix.
+- Reopen evidence: the next constitutional amendment (amendment rule), which should carry both edits.
+- Options: Build at the next amendment · Defer · `Reject:` keep the current wording; the README Contract remains the measured source.
 
 ## Closed
 - D11 (preserve the edit budget across hand-back turns): CLOSED as not adopted (debate 6) — a tightening without demonstrated need. Reopen only under T1/T2.

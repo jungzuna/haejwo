@@ -48,4 +48,5 @@ second question).
   host-owned.
 - Report back, proportional to the change: what changed and why, files touched,
   verification evidence, limitations or skipped work, anything the orchestrator
-  must review — no narrative beyond the rationale needed.
+  must review — no narrative beyond the rationale needed — ending with
+  `Judgment calls:` (bullets, or `none`).

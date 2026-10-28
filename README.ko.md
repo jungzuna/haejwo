@@ -31,11 +31,11 @@ codex plugin add haejwo@haejwo
 ```
 `/hooks`로 훅을 한 번 신뢰하세요. 명령어는 `@haejwo-*` 스킬입니다.
 
-`/reload-plugins`(Claude Code)는 열린 세션의 훅·명령어·에이전트를 갱신하지만 주입 규칙은 세션 시작 때만 로드되니, 설치·업데이트 후 재시작. 로컬: 클론 후 `/plugin marketplace add <경로>`(codex도 동일).
+`/reload-plugins`(Claude Code)는 훅·명령어·에이전트를 갱신하지만 주입 규칙은 세션 시작 때만 로드되니, 설치·업데이트 후 재시작. 로컬: 클론 후 `/plugin marketplace add <경로>`(codex도 동일).
 
 ## 무엇을 얻나
 
-**판단은 비싸게.** 호스트는 언제나 **세션 모델**로 계획·결정·검토를 맡고, feature급 작업은 리뷰어가 비평한 계획에서 출발(규범; 꺼진 리뷰어는 같은 모델이 대신). `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집을 거부하고(프로젝트 안팎의 코드 확장자; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) Bash 코드 수정은 휴리스틱 차단. 서브에이전트는 면제, 훅 오류는 통과(fail-open).
+**판단은 비싸게.** 호스트는 언제나 **세션 모델**로 계획·결정·검토를 맡고, feature급 작업은 리뷰어가 비평한 계획에서 출발(규범; 꺼진 리뷰어는 같은 모델이 대신). `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집을 거부하고(프로젝트 안팎의 코드 확장자; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) Bash 코드 수정은 휴리스틱 차단. Claude Code에서 `git push`를 요청한 턴은 `Outward actions:` / `Final-diff review:` 두 줄로 끝나야 하며, 없으면 Stop 훅이 한 번 막습니다(있는지만 확인; 자세히: [Contract](haejwo/README.md#contract-234)). 서브에이전트는 면제, 훅 오류는 통과(fail-open).
 
 **실행은 설정된 티어로.** 구현·잡무는 워커 티어: Claude Code에선 `default-worker`(Opus, high effort), `task-worker`(Opus, low), 선택형 `Budget`(sonnet/haiku); Codex에선 `spawn_agent` 모델 매핑(기본 호스트 모델 상속). 비용 절감은 측정 후 고른 싼 티어에서만.
 
@@ -54,7 +54,7 @@ codex plugin add haejwo@haejwo
 
 ## 명령어 (설정·점검 전용)
 
-평소엔 **하나도** 불필요: `/haejwo:setup`(1회 설정) · `/haejwo:status`(읽기 전용 상태) · `/haejwo:gate`(예산 `N`, `on`/`off`) · `/haejwo:plan`(수동 트리거).
+평소엔 **하나도** 불필요: `/haejwo:setup`(1회 설정) · `/haejwo:status`(읽기 전용 상태) · `/haejwo:gate`(예산 `N`, `on`/`off`, `bash on`/`bash off`) · `/haejwo:plan`(수동 트리거; 기본은 호스트가 알아서 실행).
 
 ## 하지 않는 것
 
@@ -73,7 +73,7 @@ codex plugin add haejwo@haejwo
 
 ## 검증
 
-`python3 tests/test_hooks.py`: 계약 테스트 스위트(표준 라이브러리만; bash·git·Unix 호스트; 두 테스트는 저장소 git 이력 필요). 커밋은 **파이프 없는** 종료 코드로 판정.
+`python3 tests/test_hooks.py`: 계약 테스트 스위트(표준 라이브러리만; bash·git·Unix 호스트; 두 테스트는 저장소 git 이력 필요). 커밋은 **파이프 없는** 종료 코드로 판정. CI가 모든 push에서 실행.
 
 변경 내역: [Releases](https://github.com/jungzuna/haejwo/releases) · [tags](https://github.com/jungzuna/haejwo/tags).
 

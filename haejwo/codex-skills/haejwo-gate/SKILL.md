@@ -1,6 +1,6 @@
 ---
 name: haejwo-gate
-description: Inspect or change the enforcement gate on the fly — show status, set the per-turn file budget, or toggle on/off (emergency hatch for hotfixes).
+description: Inspect or change the enforcement gate on the fly (writes config) — show status, set the per-turn file budget, or toggle on/off (emergency hatch for hotfixes).
 ---
 
 <!-- MIRROR of commands/gate.md for the Codex host — do not edit by hand;
@@ -14,7 +14,7 @@ Data dir: `${CLAUDE_PLUGIN_DATA}` — substituted by the host for THIS plugin (m
 
 - **No argument** → show status: read `config.json` (gate.enabled, max_files_per_turn, bash_guard) plus this session's state file — `$CLAUDE_CODE_SESSION_ID`, every `[^A-Za-z0-9_-]` → `-`, first 80 chars → `state/<that>.json` (this turn's counted files); unknown session id → the newest `state/*.json`, labeled "may be another session's". One compact block.
 - **`on` / `off`** → set `gate.enabled` accordingly in config.json via python3 (read-modify-write, preserve other keys). Confirm what changed.
-- **A number N (1-10)** → set `gate.max_files_per_turn = N`. Confirm.
+- **A number N** (the config accepts any integer ≥ 1) → set `gate.max_files_per_turn = N`. Confirm.
 - **`bash on` / `bash off`** → set `gate.bash_guard`. Confirm.
 - Anything else → show usage.
 

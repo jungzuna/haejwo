@@ -177,7 +177,7 @@ def run_section():
         # --- canaries ------------------------------------------------------
         for host in (".claude-plugin", ".codex-plugin"):
             v = json.load(open(os.path.join(T.PLUGIN, host, "plugin.json")))["version"]
-            check(f"2.35 version {host} == 2.35.0", v == "2.35.0", v)
+            check(f"2.35 version {host} == 2.35.1", v == "2.35.1", v)
         tree = ast.parse(open(PROBE).read())
         mods = {a.name.split(".")[0] for node in ast.walk(tree)
                 if isinstance(node, ast.Import) for a in node.names}

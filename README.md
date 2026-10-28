@@ -37,17 +37,17 @@ codex plugin add haejwo@haejwo
 ```
 Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills.
 
-`/reload-plugins` (Claude Code) refreshes hooks, commands and agents in an open session; the injected rules re-load only at session start — restart after install or update. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
+`/reload-plugins` (Claude Code) refreshes hooks, commands and agents; the injected rules re-load only at session start — restart after install or update. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
 
 ## What you get
 
-**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; known edit tools, any listed code extension in or out of the project; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. Subagents are exempt; hook errors fail open.
+**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; any listed code extension in or out of the project; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. On Claude Code, a turn that requested `git push` must end with `Outward actions:` / `Final-diff review:` lines or the Stop hook blocks once (presence only; details: [Contract](haejwo/README.md#contract-234)). Subagents are exempt; hook errors fail open.
 
 **Execution runs at configured tiers.** Implementation and chores go to worker tiers — on Claude Code `default-worker` (Opus, high effort), `task-worker` (Opus, low), `Budget` (sonnet/haiku) opt-in; on Codex a `spawn_agent` mapping that inherits the host model by default. Cost gains come only from cheaper pins set after measuring.
 
 **Review comes from another vendor.** Once `/haejwo:setup` enables and verifies it (OFF by default), the reviewer is the other company's model: codex on Claude Code, claude on Codex. Without that CLI or verification, review falls back to the same-family `deep-reasoner` (weaker independence). Enabling it sends briefs and the repository content the reviewer reads to that vendor ([disclosure](haejwo/commands/setup.md)).
 
-Deep dive: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
+Deep dive: [`haejwo/README.md`](haejwo/README.md) (recurring objections: [By design](haejwo/README.md#by-design)) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
 
 ### Host combinations
 
@@ -60,7 +60,7 @@ Deep dive: [`haejwo/README.md`](haejwo/README.md) · [`PHILOSOPHY.md`](haejwo/PH
 
 ## Commands (settings & inspection)
 
-Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only status) · `/haejwo:gate` (budget `N`, `on`/`off`) · `/haejwo:plan` (manual trigger; the host runs it by default).
+Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only status) · `/haejwo:gate` (budget `N`, `on`/`off`, `bash on`/`bash off`) · `/haejwo:plan` (manual trigger; the host runs it by default).
 
 ## Non-goals
 

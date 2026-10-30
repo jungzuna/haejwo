@@ -77,7 +77,7 @@ question rounds on a large session model, and a reviewer connection that always
 attempts a read-only sandbox this machine cannot provide before asking for
 `danger-full-access`. Scope: a deterministic setup helper (preflight / write / verify),
 one question round, remembered consent asked once with the full disclosure, no new
-enforcement, no change to the reviewer runners. Shipped locally as 2.35.0 (5be0ab2); the
+enforcement, no change to the reviewer runners. Shipped locally as 2.35.0 (da888b3); the
 two field sessions run it (2.35.1 docs patch on top); the K5 budget (5 maintainer days, 2 sessions) is unchanged and
 this work counts against it. Rejection alternative recorded: keep the current flow and
 only document that setup is once per machine.
@@ -120,7 +120,7 @@ only document that setup is once per machine.
   2.35.1 can be pushed on the owner's say-so. The gate's definition is otherwise unchanged.
 
 ### 2.35.1 (documentation consistency, 2026-10-28)
-- Three read-only audits at 5be0ab2 — the READMEs (root, Korean, plugin); the internal
+- Three read-only audits at da888b3 — the READMEs (root, Korean, plugin); the internal
   LLM-facing docs (PROMPTS, PHILOSOPHY, rules, commands, agents); this folder — 49 rows:
   wrong 3, stale 7, duplicate 1, missing 9, nit 29. Zero code, deny-string, hook-contract or
   version mismatches.
@@ -146,7 +146,7 @@ only document that setup is once per machine.
   README re-pinned 740 → 770 (shipped 768). Unchanged caps: `README.ko.md` 650 (547),
   `commands/setup.md` 900 (900, trimmed to fit), `commands/status.md` 310 (310, trimmed to
   fit), `commands/plan.md` 560 (553). The cap comment's "2,577" is corrected to 2,571 (the
-  606d143 count). The rules byte ratchet and the runner-stack line ratchet are unchanged.
+  d0be26c count). The rules byte ratchet and the runner-stack line ratchet are unchanged.
 - Host note: this pod now runs Claude Code 2.1.312, outside the measured 2.1.305/310/311
   matrix; under K4 a new upstream version alone is not drift. Field-session rows must record
   the host version.
@@ -169,8 +169,13 @@ only document that setup is once per machine.
   runner-stack line ratchet stays at 1,830). `.gitignore` gains `.env` and `.env.*` (nothing
   was ever tracked). Consensus files in this folder took the same label map (see
   [README.md](README.md)); session-id prefixes are unchanged.
-- Git history still carries the old labels (earliest appearances 2026-09-29 to 2026-10-30, per
-  the audit); no history rewrite was done.
+- Git history was REWRITTEN the same day at the owner's request (`git filter-repo`: the label
+  map, the paraphrased quote, the two push tails and the author e-mail → GitHub noreply, over
+  all 68 commits and 41 tags; the main tree hash was unchanged by the rewrite; 0 old tokens in
+  any commit afterwards), then force-pushed; every commit SHA changed, so SHA citations in this
+  folder and in `tests/test_hooks.py` (the t12 fixture commit) were re-mapped. Old commits stay
+  reachable on GitHub by SHA until GitHub support purges them (requested by the owner); clones
+  and forks made before 2026-10-30 still hold the old history.
 - READMEs (words, `str.split()`): root 768 → 450 (cap 770 → 450), Korean 547 → 318 (cap
   650 → 320), plugin 2,620 → 2,402 (cap 2,620 → 2,410). The host-combination table and the
   non-goals moved to `docs/non-goals.md`; the runner exit codes, knobs/config and the

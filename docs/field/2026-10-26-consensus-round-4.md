@@ -1,6 +1,6 @@
 # haejwo field round 4 — Claude × Codex consensus (signed 2026-10-26 ~22:00 KST)
 
-Scope: haejwo 2.33.0 (4c86c6a) on Claude Code CLI 2.1.310, project E session aa57d31e (16:26–20:41 KST), monitored live by Claude (same vendor as the host) and debated with Codex in two rounds (codex_r1.md 22.8 KB; codex_r2.md timed out at 900 s after 23 shell commands, partial notes p1–p3 adopted; codex_r2b.md 220 s, SIGN/NARROW on all items, no OBJECT). Claude accepts every NARROW wording verbatim. Files: claude_analysis_r1.md, claude_r2.md, measure_async_summary.md (+ measure_async/payloads), codex_r1.md, codex_r2.events.jsonl, codex_r2b.md.
+Scope: haejwo 2.33.0 (fcc0f5e) on Claude Code CLI 2.1.310, project E session aa57d31e (16:26–20:41 KST), monitored live by Claude (same vendor as the host) and debated with Codex in two rounds (codex_r1.md 22.8 KB; codex_r2.md timed out at 900 s after 23 shell commands, partial notes p1–p3 adopted; codex_r2b.md 220 s, SIGN/NARROW on all items, no OBJECT). Claude accepts every NARROW wording verbatim. Files: claude_analysis_r1.md, claude_r2.md, measure_async_summary.md (+ measure_async/payloads), codex_r1.md, codex_r2.events.jsonl, codex_r2b.md.
 
 ## Signed items (Codex wording where narrowed)
 C1 (NARROW) Claude's session audit reports the listed successes and omissions; Codex has not independently verified the underlying counts. The checklist's effect is unidentified. The supplied measurement supports the async delivery gap.

@@ -6046,7 +6046,7 @@ exit "$rc"
             # lib/forward.py, and the completeness set requires it. The fixture
             # is the ACTUAL 2.17.0 scripts, read out of git history, because a
             # copy of TODAY's scripts under a 2.17 label would prove nothing. ----
-            t12_commit = "0c9cf4e"
+            t12_commit = "61ef251"  # 2.35.2 history rewrite (privacy): was 0c9cf4e
             t12_ls = subprocess.run(
                 ["git", "ls-tree", "-r", "--name-only", t12_commit, "--",
                  "haejwo/scripts"],

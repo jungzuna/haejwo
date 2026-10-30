@@ -8,9 +8,7 @@
 
 <p align="center"><sub><a href="README.md">English</a></sub></p>
 
-haejwo는 [Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)용 훅·규칙 플러그인입니다. 세션 시작 때 규칙을 주입하고, 턴당 예산을 넘는 메인 에이전트의 코드 편집을 거부해 구현을 워커로 넘기며, 켜면 계획을 상대 회사 모델이 리뷰합니다. 세션 모델을 판단에만 쓰려는 두 하네스 사용자용입니다.
-
-아무리 대충 적어도(그게 "해줘") 호스트가 계획·위임·검증합니다. 깔면 바로 켜짐; 설정은 선택(전까지 안내 반복).
+haejwo는 [Claude Code](https://claude.com/claude-code)와 [Codex](https://github.com/openai/codex)용 훅·규칙 플러그인입니다. 세션 시작 때 규칙을 주입하고, 턴당 예산을 넘는 메인 에이전트의 코드 편집을 거부해 구현을 워커로 넘기며, 켜면 계획을 상대 회사 모델이 리뷰합니다. 아무리 대충 적어도(그게 "해줘") 호스트가 계획·위임·검증합니다. 깔면 바로 켜짐; 설정은 선택(전까지 안내 반복).
 
 ## 설치
 
@@ -29,53 +27,27 @@ haejwo는 [Claude Code](https://claude.com/claude-code)와 [Codex](https://githu
 codex plugin marketplace add https://github.com/jungzuna/haejwo
 codex plugin add haejwo@haejwo
 ```
-`/hooks`로 훅을 한 번 신뢰하세요. 명령어는 `@haejwo-*` 스킬입니다.
-
-`/reload-plugins`(Claude Code)는 훅·명령어·에이전트를 갱신하지만 주입 규칙은 세션 시작 때만 로드되니, 설치·업데이트 후 재시작. 로컬: 클론 후 `/plugin marketplace add <경로>`(codex도 동일).
+`/hooks`로 훅을 한 번 신뢰하세요. 명령어는 `@haejwo-*` 스킬입니다. 주입 규칙은 세션 시작 때만 로드되니 설치·업데이트 후 재시작.
 
 ## 무엇을 얻나
 
-**판단은 비싸게.** 호스트는 언제나 **세션 모델**로 계획·결정·검토를 맡고, feature급 작업은 리뷰어가 비평한 계획에서 출발(규범; 꺼진 리뷰어는 같은 모델이 대신). `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2) 초과 편집을 거부하고(프로젝트 안팎의 코드 확장자; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) Bash 코드 수정은 휴리스틱 차단. Claude Code에서 `git push`를 요청한 턴은 `Outward actions:` / `Final-diff review:` 두 줄로 끝나야 하며, 없으면 Stop 훅이 한 번 막습니다(있는지만 확인; 자세히: [Contract](haejwo/README.md#contract-234)). 서브에이전트는 면제, 훅 오류는 통과(fail-open).
+**판단은 비싸게.** 호스트는 언제나 세션 모델로 계획·결정·검토를 맡습니다. `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) 초과 편집을 거부하고 Bash 코드 수정은 휴리스틱 차단. Claude Code에서 `git push`를 요청한 턴은 `Outward actions:` / `Final-diff review:` 두 줄로 끝나야 하며, 없으면 Stop 훅이 한 번 막습니다(있는지만 확인; 자세히: [Contract](haejwo/README.md#contract-234)). 서브에이전트는 면제, 훅 오류는 통과(fail-open).
 
-**실행은 설정된 티어로.** 구현·잡무는 워커 티어: Claude Code에선 `default-worker`(Opus, high effort), `task-worker`(Opus, low), 선택형 `Budget`(sonnet/haiku); Codex에선 `spawn_agent` 모델 매핑(기본 호스트 모델 상속). 비용 절감은 측정 후 고른 싼 티어에서만.
+**실행은 설정된 티어로.** 구현·잡무는 워커 티어(`default-worker`, `task-worker`, 선택형 `Budget`; Codex에선 `spawn_agent` 매핑). 비용 절감은 측정 후 고른 싼 티어에서만.
 
-**리뷰는 다른 회사 모델이.** `/haejwo:setup`으로 켜고 검증하면(기본 꺼짐) 리뷰어는 상대 회사 모델(Claude Code에선 codex, Codex에선 claude). CLI나 검증 없으면 같은 계열 `deep-reasoner`가 대신합니다(독립성 약함). 켜면 브리프와 리뷰어가 읽는 저장소 내용이 상대 회사로 전송됩니다([고지](haejwo/commands/setup.md)).
+**리뷰는 다른 회사 모델이.** `/haejwo:setup`으로 켜고 검증하면(기본 꺼짐) Claude Code에선 codex, Codex에선 claude가 리뷰; 아니면 같은 계열 `deep-reasoner`가 대신(독립성 약함). 켜면 브리프와 리뷰어가 읽는 저장소 내용이 상대 회사로 전송됩니다([고지](haejwo/commands/setup.md)).
 
-자세히: [`haejwo/README.md`](haejwo/README.md)(반복 반론의 답은 [By design](haejwo/README.md#by-design)) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
+교차-벤더 리뷰는 두 CLI가 모두 필요하고, 위임 게이트·노트·Stop 검사는 Claude Code 전용입니다. 조합별 기능과 하지 않는 것: [docs/non-goals.md](docs/non-goals.md).
 
-### 조합별로 얻는 것
+## 명령어
 
-| | Claude Code만 | Codex만 | 둘 다 |
-| --- | --- | --- | --- |
-| 게이트·규칙·plan-first·push ask-first | ✓ | ✓ | ✓ |
-| 위임 게이트(범용 에이전트는 모델 명시 필수) | ✓ | — (`spawn_agent` 미연결) | ✓ Claude Code 쪽 |
-| 모델 티어(판단은 상속) | ✓ 세션 모델/opus/opus | ✓ `spawn_agent` 매핑 | ✓ |
-| **교차-벤더 리뷰** | 대체: `deep-reasoner` | 대체: 같은 모델 서브에이전트 | ✓ codex↔claude, setup 검증 후 |
+평소엔 **하나도** 불필요: `/haejwo:setup`(1회 설정) · `/haejwo:status`(읽기 전용) · `/haejwo:gate`(예산 `N`, `on`/`off`, `bash on|off`) · `/haejwo:plan`(기본은 호스트가 실행).
 
-## 명령어 (설정·점검 전용)
+## 링크
 
-평소엔 **하나도** 불필요: `/haejwo:setup`(1회 설정) · `/haejwo:status`(읽기 전용 상태) · `/haejwo:gate`(예산 `N`, `on`/`off`, `bash on`/`bash off`) · `/haejwo:plan`(수동 트리거; 기본은 호스트가 알아서 실행).
+[플러그인 README](haejwo/README.md)([Contract](haejwo/README.md#contract-234), [By design](haejwo/README.md#by-design)) · [현장 기록](docs/field/README.md) · [하지 않는 것](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
 
-## 하지 않는 것
-
-하네스가 아닌 윤활층:
-
-- 스케줄러, 영속 작업 큐, 상주 에이전트 로스터
-- 범용 DAG나 재귀적 멀티에이전트 런타임
-- 모델 게이트웨이, 과금 최적화, 가격 기반 라우터
-- 교차-벤더 **워커** 라우팅(워커는 호스트 벤더; GPT 실행은 Codex 호스트로). `codex@openai-codex`와 공존하되 리뷰는 haejwo의 비편집 러너로
-- 워커용 worktree 오케스트레이션이나 패치 병합
-- 호스팅 컨트롤 플레인이나 대시보드
-- 자율 push/배포/공개
-- 워크플로 DSL이나 온톨로지 프레임워크
-- 두 번째 운영 아키텍처(값싼 메인의 어드바이저 모드)
-- 판단 사항 하드 게이트(plan 마커, 보고 길이): 훅 게이트 없음. 마커 없는 워커는 한 번 묻고, 실행 가능한 계획·사유 없으면 blocked 보고
-
-## 검증
-
-`python3 tests/test_hooks.py`: 계약 테스트 스위트(표준 라이브러리만; bash·git·Unix 호스트; 두 테스트는 저장소 git 이력 필요). 커밋은 **파이프 없는** 종료 코드로 판정. CI가 모든 push에서 실행.
-
-변경 내역: [Releases](https://github.com/jungzuna/haejwo/releases) · [tags](https://github.com/jungzuna/haejwo/tags).
+테스트: `python3 tests/test_hooks.py`; 커밋은 **파이프 없는** 종료 코드로 판정.
 
 ## 라이선스
 

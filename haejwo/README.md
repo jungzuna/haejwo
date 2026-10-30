@@ -7,9 +7,9 @@ haejwo keeps the main model on **judgment** and sends **execution** to worker ti
 | Layer | Artifact | What it does |
 |---|---|---|
 | Declaration | SessionStart hook (`session_brief.py`) | Injects the rules (a minimal core if unreadable or over budget), a setup nudge until configured, and the config summary |
-| Roles | `agents/` | `deep-reasoner` (fresh context, session model and effort, never below default-worker) · `default-worker` (opus, high effort) · `task-worker` (opus, low effort) + the reviewer slot (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
+| Roles | `agents/` | `deep-reasoner` (fresh context, session model and effort, never below default-worker) · `default-worker` (opus, high) · `task-worker` (opus, low) + the reviewer runner (`scripts/codex_consult.sh` on Claude, `scripts/claude_consult.sh` on Codex) |
 | Criteria | `rules/orchestration.md` | When the main agent delegates |
-| **Enforcement** | PreToolUse hooks (`gate.py`, `bash_guard.py`, `delegation_gate.py`) + a Stop hook (`report_check.py`); re-presentation via the PostToolUse hook `post_bash.py`; the UserPromptSubmit hook `turn_reset.py` resets the per-turn counter | Main agent: over-budget code edits, Bash code writes and generic-agent delegation without a model are **denied**; on Claude Code a push-turn final message lacking the record labels is **blocked once** (Contract below) |
+| **Enforcement** | PreToolUse `gate.py`, `bash_guard.py`, `delegation_gate.py`; Stop `report_check.py`; PostToolUse `post_bash.py` re-presents; UserPromptSubmit `turn_reset.py` resets the per-turn counter | Main agent: over-budget code edits, Bash code writes and generic-agent delegation without a model are **denied**; on Claude Code a push-turn final message lacking the record labels is **blocked once** (Contract below) |
 
 ## Contract (2.34)
 A bounded, supported version. It cannot eliminate the host's completion drive or accept-all behavior, prevent same-model reviews from being labelled independent, make broad assent authorize actions or sequences outside the enumerated list, or guarantee equivalent behavior across unhooked or unmeasured Codex host paths.
@@ -27,14 +27,12 @@ A bounded, supported version. It cannot eliminate the host's completion drive or
 | Provenance of cited numbers | 0/~8 |
 | Scratch/probe scripts delegated | 6/6 host-run |
 
-- **Measured paths:** Claude Code 2.1.305 (Stop block); 2.1.310 headless (UserPromptSubmit/PostToolUse delivery, push shapes S1/S2); 2.1.311 headless via a `--plugin-dir` checkout, not the installed cache: four 2.34.0 canaries passed 2026-10-27 (docs/field/2026-10-27-canaries-2034.md). Interactive paths, Codex hosts: notes and Stop check unverified (Codex gate parity: Install).
+- **Measured paths:** Claude Code 2.1.305 (Stop block); 2.1.310 headless (UserPromptSubmit/PostToolUse delivery, push shapes S1/S2); 2.1.311 headless via a `--plugin-dir` checkout, not the installed cache: four 2.34.0 canaries passed 2026-10-27 (docs/field/2026-10-27-canaries-2034.md). Interactive paths, Codex hosts: notes and Stop check unverified. Dual-host parity (measured): all but the delegation gate (Codex `spawn_agent` is unhooked), the Stop record check and the notes (silent on Codex, unmeasured) works on both hosts, the gate apply_patch-aware; Codex tiers ride `spawn_agent` parameters (`models_codex`).
 - **Everything else is unverified.** Behavior changes only on the reopen triggers ([K4](../docs/field/2026-10-27-consensus-finish.md)): "T1 — a confirmed material safety or authorization incident caused or materially enabled by the plugin, or demonstrating failure of its declared coverage; or a reproducible material regression against the frozen contract … T2 — demonstrated failure of a declared supported host/path assumption. A new upstream version alone is not demonstrated drift." Else: [`docs/field/BACKLOG.md`](../docs/field/BACKLOG.md) (reject option per item).
 
 ## Gate semantics
 
-- Counts **distinct code files** (config extension list) per user turn; re-editing is free. **Subagents are exempt** (payload `agent_id`/`agent_type`); workers may delegate further (nested agents), exempt alike from every gate and note.
-- Turn state is per session id, sanitized and cut to 80 chars: ids alike in those chars, or absent (`unknown`), share a counter.
-- Denials name the budget and delegate; the last allowed edit warns the budget is full.
+- Counts **distinct code files** (config extension list) per user turn; re-editing is free; denials name the budget and delegate, the last allowed edit warns. **Subagents are exempt** (payload `agent_id`/`agent_type`); workers may delegate further (nested agents), exempt alike from every gate and note. Turn state is per session id, sanitized and cut to 80 chars: ids alike in those chars, or absent (`unknown`), share a counter.
 - **Fail-open**: any hook error or ambiguity ⇒ no objection. haejwo never approves a tool call, only denies or annotates, so your permission settings still apply. An affordance, not a security boundary (P4): editing `config.json` (not code) turns the gate off; dynamically written code is invisible to the guard.
 - The temp exemption is decided by where a path RESOLVES relative to the project, not by what the file is: a path resolving under a temp dir (`/tmp`, `/var/tmp`, `tempfile.gettempdir()`) outside the active project (git toplevel, else cwd) is not code, scratch code included; a temp-dir repository that IS the project is gated unless its root is a temp dir or ancestor (`/tmp`, `/`). In-place editors run via `find`/`xargs` are denied on any path.
 - **Record check (Stop, 2.32):** after the bash guard passed a main-agent `git push` this turn (noted to the model, recorded as `outward-attempt`), a final message lacking `Outward actions:` or `Final-diff review:` is blocked ONCE naming both; `not run because:` satisfies the review label. Presence only. Exempt: `HAEJWO_GATE=off`, `gate.enabled`/`gate.report_check` false, malformed config, subagents, Codex hosts (unmeasured), `stop_hook_active`, a prior nudge, a failed state write. Detection is a grammar, not the shell: dry-runs (`-n`, `--dry-run`) are not attempts; quoted-delimiter heredoc bodies are skipped, what follows scanned. Missed: unquoted-delimiter bodies and what follows them, continued headers, `$(…)` in bodies, unlisted wrappers (`sudo git push`). A turn idle past the 2 h stale reset can be nudged twice. Measured on Claude Code 2.1.305: the block shows as a "Stop hook error", then the model wrote both lines. Acceptance reports without a push are unchecked (not countable).
@@ -42,12 +40,10 @@ A bounded, supported version. It cannot eliminate the host's completion drive or
 - **Measured host facts** (measured on Claude Code 2.1.310 headless; roles per the CLI transcript): UserPromptSubmit and PostToolUse context reach the model (UserPromptSubmit's persists into later turns); PreToolUse notes land after the tool ran, with PostToolUse's, so hook notes report and prevent nothing; any Stop output costs one extra model turn; SubagentStop output goes to the subagent and REPLACES its answer, so haejwo never uses it. Measurements are per version.
 
 ## First run
-**`/haejwo:setup`** is optional (nudged until configured), once per machine/account; config (`~/.claude/plugins/data/haejwo-haejwo/config.json`; Codex `~/.codex/plugins/data/haejwo-haejwo/`) lives outside the plugin cache, so it survives updates. Its helper runs preflight, one round (Custom adds a follow-up; an inconclusive sandbox failing its read-only probe twice adds a second; not logged in: log in, re-run), write+verify (≈ 30 s authenticated, measured 2026-10-27). A re-run offers Keep only while reviewer CLI version, login and settings are unchanged (fingerprint) and verification is under 30 days old (status and the session brief flag older). Read-only is tried only where `codex sandbox -- true` works or is inconclusive; a recognised launcher failure goes to one-time `danger-full-access` consent (full disclosure, remembered until revoked, shown by `/haejwo:status`). On Claude Code it runs on Sonnet until the next prompt (a resume may keep Sonnet). Before setup, defaults apply (gate ON, 2 files/turn, bash-guard ON) unless `/haejwo:gate` stored values.
-
-A Claude Code worker runs at its agent file's model unless one is passed; the gate steers an omitted override missing a configured pin, never verifying which model ran.
+**`/haejwo:setup`** is optional (nudged until configured), once per machine/account; config (`~/.claude/plugins/data/haejwo-haejwo/config.json`; Codex `~/.codex/plugins/data/haejwo-haejwo/`) lives outside the plugin cache, so it survives updates. Its helper runs preflight, one round (Custom adds a follow-up; an inconclusive sandbox failing its read-only probe twice adds a second; not logged in: log in, re-run), write+verify (≈ 30 s authenticated, measured 2026-10-27). A re-run offers Keep only while reviewer CLI version, login and settings are unchanged (fingerprint) and verification is under 30 days old (status and the session brief flag older). Read-only is tried only where `codex sandbox -- true` works or is inconclusive; a recognised launcher failure goes to one-time `danger-full-access` consent (full disclosure, remembered until revoked, shown by `/haejwo:status`). On Claude Code it runs on Sonnet until the next prompt (a resume may keep Sonnet). Before setup, defaults apply (gate ON, 2 files/turn, bash-guard ON) unless `/haejwo:gate` stored values. A Claude Code worker runs at its agent file's model unless one is passed; the gate steers an omitted override missing a configured pin, never verifying which model ran.
 
 ## Commands
-Normal use needs **none**: the host plans, delegates and asks before push/deploy; acceptance and outward reports end with the rules' two-line record.
+Normal use needs **none**.
 
 | Command | Role |
 |---|---|
@@ -56,21 +52,17 @@ Normal use needs **none**: the host plans, delegates and asks before push/deploy
 | `/haejwo:status` | Config, turn counter, reviewer readiness, observations, delegations (read-only) |
 | `/haejwo:gate [on\|off\|N\|bash on\|bash off]` | Emergency hatch / live tuning |
 
-Gate fires log to `state/observations.jsonl`. `HAEJWO_GATE=off` works only in the host's environment (no per-command bypass).
+Gate fires log to `state/observations.jsonl`; `HAEJWO_GATE=off` works only in the host's environment (no per-command bypass).
 
 ## Install
-See the [root README](../README.md); Codex in headless CI only: `--dangerously-bypass-hook-trust`.
-
-`/reload-plugins` (Claude Code) refreshes hooks, commands and agents, not the injected rules — restart after install/update.
+See the [root README](../README.md); Codex in headless CI only: `--dangerously-bypass-hook-trust`. `/reload-plugins` (Claude Code) refreshes hooks, commands and agents, not the injected rules — restart after install/update.
 
 **Support floor:** runners support installs >= 2.22.0; a 2.26+ runner never forwards below it (says so, runs locally). Pre-floor installs are unsupported as sources too: without the `snapshot.py` tombstone, a pre-floor runner stays local.
-
-**Dual-host parity (measured):** all but the delegation gate (Codex `spawn_agent` is unhooked), the Stop record check and the notes (silent on Codex, unmeasured) works on both hosts, the gate apply_patch-aware; Codex tiers ride `spawn_agent` parameters (`models_codex`).
 
 ## Reviewer runners
 **Usage:** `<runner> [-o out.md] brief.md`, or `echo … | <runner> -` (stdin brief, deleted on exit), from the project root. Without `-o` the reply is `<brief-stem>.reply.md` (`plan.md` → `plan.reply.md`), the log beside it; keep replies and briefs until the acceptance is reported (cleanup must not delete them). For a stable tree, pause writes or review a prepared worktree.
 
-**Exit codes:** `0` accepted · `1` failed check (empty reply, failure event, tracing error, repository changed, detection unavailable) · `2` usage error, missing brief, bad env value, refused artifact path, non-git directory (codex runner: unless the sandbox is read-only) · `3` CLI or library missing · `4` no writable temp dir · `124` timeout; other statuses pass through.
+Exit codes, env knobs and config keys, and the official `codex@openai-codex` plugin note: [docs/runners.md](../docs/runners.md).
 
 **Guarantees**
 - A standing non-editing REVIEWER CONTRACT is prepended to every brief and asks for a closing statement (material read, verification run, omissions); `claude_consult.sh` also disallows Edit/Write/NotebookEdit.
@@ -88,26 +80,17 @@ See the [root README](../README.md); Codex in headless CI only: `--dangerously-b
 - An unselected model is **`cli-default (identity unverified)`**; the Codex-host workflow is field-untested.
 - The `codex` block names the reviewer of the data dir's host — on a Codex host `codex.model` is a Claude model; a rename is deferred as schema debt.
 
-**Knobs and config**
-- Env wins over config; empty = unset. `CODEX_MODEL`, `CODEX_EFFORT` (`low`/`medium`/`high`/`xhigh`, runner default **`medium`**, `high` for plans/diffs), `CODEX_SANDBOX` (`read-only` default/`workspace-write`/`danger-full-access`), `CODEX_TIMEOUT` (600s at every effort, `0` = unlimited); `CLAUDE_MODEL`, `HJW_CLAUDE_EFFORT` (env > `codex.effort`, else no flag: CLI default), `CLAUDE_TIMEOUT` on the claude runner.
-- Keys: `codex.model`, `codex.effort`, `codex.consult_sandbox`. Each runner reads its own install's `config.json`; a foreign value is ignored and disclosed once.
-
-**Official `codex@openai-codex` plugin (1.0.6, measured 2026-09-21):** its rescue subagent is exempt from haejwo's gate and `/codex:review` reported completion without inspecting changes; keep its Stop gate OFF and verify its diffs.
-
 ## By design
 Rejected recurring objections:
-- The host's budget applies despite same-model workers: it steers implementation toward workers by capping the code files edited per turn — not context size or model price.
-- The budget counts allowed attempts, not successful edits: one hook.
+- The budget applies despite same-model workers: it caps code files edited per turn (allowed attempts, not successful edits: one hook), not context size or model price.
 - Runners do not check `enabled`/`verified_at`: the host is the policy gate, the runner a tool.
 - A stored `danger-full-access` consent persists; every run header discloses it. The Claude reviewer keeps Bash for tests and greps; detected repository changes fail the run (documented exclusions apply).
 - Stale cache-path runners forward to the installed version (Claude Code only): restarting pushes a measured host failure onto users; the support floor bounds the cost.
 - The runner stack keeps the artifact guard and change detection: plain status/diff checks omit their contracts.
 - The bash guard covers redirects, `tee` and in-place editors only — no `cp`/`mv`/`git apply`/`patch` heuristics, no longer extension list (json, yaml, html, css, tf are not code): each costs false positives (2.20). Known gaps: a quoted redirect target passes; `tee` checks its first target only; `$NAME` targets stay unresolved even after `NAME=/path`: the 2.32 resolver was withdrawn when cross-vendor review reproduced wrong denies (`declare -n`, `trap … DEBUG`); it reopens only with a real shell parser.
 - Explore runs on the `opus` alias under a Fable host, else inherits the session model (Claude Code docs): the explicit-model rule adds no cost.
-- A session that cannot delegate (no Agent tool / `spawn_agent`) is outside the gate's design and undetectable by it — stop until the next user turn, or use the emergency override.
-- Plan-marker counts and anomaly detection are field observation the owner reads (P8).
+- A session that cannot delegate (no Agent tool / `spawn_agent`) is outside the gate's design and undetectable by it: stop until the next user turn, or use the emergency override.
 - The host runs at your session effort: start from your model generation's vendor recommendation; raise it only when accepted outcomes, cost and rework justify it.
-- Tests pinning documentation sentences are how four cold audits became fixes (P7).
 - Context (long conversations, cache rebuilds), not model, dominates this workload's cost. Optional, never changed by haejwo: in Claude Code lower `autoCompactWindow`, add CLAUDE.md compact instructions preserving decisions, constraints and unfinished work, start fresh for unrelated tasks, leave a handoff before long breaks; measure before using `subagentPromptCacheTtl` (costlier writes).
 
 ## Conventions

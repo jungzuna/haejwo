@@ -78,8 +78,8 @@ S2 = ("cat >> docs/design/X.md <<'EOF'\n\n### G-12 title\n- line with git push "
       "origin main 2>&1 | tail -1; git log --oneline -1")
 S1_LONG = (
     "git -c user.name=field-bot -c user.email=bot@example.invalid commit -q -F - "
-    "<<'EOF'\nfeat(api): move the report endpoints under /api and pin the schema\n\n"
-    "- routes: every /v1_old/* handler is served from /api/* with the same\n"
+    "<<'EOF'\nfeat(api): move the report endpoints under /v1 and pin the schema\n\n"
+    "- routes: every /v1_old/* handler is served from /v1/* with the same\n"
     "  request and response shapes; the old prefix answers 308 for one release\n"
     "- schema: the report payload gains an explicit version field and the\n"
     "  validator rejects unknown keys instead of dropping them silently\n"

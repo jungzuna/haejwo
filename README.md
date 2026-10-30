@@ -14,9 +14,7 @@
 
 <p align="center"><sub><a href="README.ko.md">한국어</a></sub></p>
 
-haejwo is a hooks-and-rules plugin for [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex): it injects orchestration rules at session start, denies the main agent's code edits past a per-turn budget so implementation goes to worker subagents, and, once enabled, sends plans to the other vendor's model for review. It is for users of those harnesses who want the session model kept on judgment.
-
-You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on; setup is optional and nudged until configured.
+haejwo is a hooks-and-rules plugin for [Claude Code](https://claude.com/claude-code) and [Codex](https://github.com/openai/codex): it injects orchestration rules at session start, denies the main agent's code edits past a per-turn budget so implementation goes to worker subagents, and, once enabled, sends plans to the other vendor's model for review. You write the ask however roughly (that's the 해줘); the host plans, delegates and verifies. Install it and it's on; setup is optional and nudged until configured.
 
 ## Install
 
@@ -35,53 +33,27 @@ Requires `python3` (CI tests 3.10); reviewer runners need Bash and git.
 codex plugin marketplace add https://github.com/jungzuna/haejwo
 codex plugin add haejwo@haejwo
 ```
-Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills.
-
-`/reload-plugins` (Claude Code) refreshes hooks, commands and agents; the injected rules re-load only at session start — restart after install or update. Local install: clone, then `/plugin marketplace add <clone-path>` (or the `codex` equivalent).
+Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills. The injected rules load only at session start — restart after install or update.
 
 ## What you get
 
-**Judgment stays expensive.** The host — always your session's model, never re-pointed — keeps planning, deciding and review. Feature-scale work should start from a reviewer-critiqued plan (a norm; reviewer off → same-model critique). A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; any listed code extension in or out of the project; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. On Claude Code, a turn that requested `git push` must end with `Outward actions:` / `Final-diff review:` lines or the Stop hook blocks once (presence only; details: [Contract](haejwo/README.md#contract-234)). Subagents are exempt; hook errors fail open.
+**Judgment stays expensive.** The host is always your session's model and keeps planning, deciding and review. A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. On Claude Code, a turn that requested `git push` must end with `Outward actions:` / `Final-diff review:` lines or the Stop hook blocks once (presence only; details: [Contract](haejwo/README.md#contract-234)). Subagents are exempt; hook errors fail open.
 
-**Execution runs at configured tiers.** Implementation and chores go to worker tiers — on Claude Code `default-worker` (Opus, high effort), `task-worker` (Opus, low), `Budget` (sonnet/haiku) opt-in; on Codex a `spawn_agent` mapping that inherits the host model by default. Cost gains come only from cheaper pins set after measuring.
+**Execution runs at configured tiers.** Implementation and chores go to worker tiers (`default-worker`, `task-worker`, opt-in `Budget`; on Codex a `spawn_agent` mapping). Cost gains come only from cheaper pins chosen after measuring.
 
-**Review comes from another vendor.** Once `/haejwo:setup` enables and verifies it (OFF by default), the reviewer is the other company's model: codex on Claude Code, claude on Codex. Without that CLI or verification, review falls back to the same-family `deep-reasoner` (weaker independence). Enabling it sends briefs and the repository content the reviewer reads to that vendor ([disclosure](haejwo/commands/setup.md)).
+**Review comes from another vendor.** Once `/haejwo:setup` enables and verifies it (OFF by default), codex reviews on Claude Code and claude on Codex; otherwise the same-family `deep-reasoner` does (weaker independence). Enabling it sends briefs and the repository content the reviewer reads to that vendor ([disclosure](haejwo/commands/setup.md)).
 
-Deep dive: [`haejwo/README.md`](haejwo/README.md) (recurring objections: [By design](haejwo/README.md#by-design)) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md).
+Cross-vendor review needs both CLIs; the delegation gate, notes and Stop check are Claude Code only. Host combinations and non-goals: [docs/non-goals.md](docs/non-goals.md).
 
-### Host combinations
+## Commands
 
-| | Claude Code only | Codex only | Both CLIs |
-| --- | --- | --- | --- |
-| Gate, rules, plan-first, ask-first push | ✓ | ✓ | ✓ |
-| Delegation gate (generic agents need an explicit model) | ✓ | — (`spawn_agent` not hooked) | ✓ on Claude Code |
-| Model tiers (judgment inherits) | ✓ session model/opus/opus | ✓ `spawn_agent` mapping | ✓ |
-| **Cross-vendor review** | fallback: `deep-reasoner` | fallback: same-model subagent | ✓ codex↔claude, after setup verifies |
+Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only) · `/haejwo:gate` (budget `N`, `on`/`off`, `bash on|off`) · `/haejwo:plan` (the host runs it).
 
-## Commands (settings & inspection)
+## Links
 
-Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status` (read-only status) · `/haejwo:gate` (budget `N`, `on`/`off`, `bash on`/`bash off`) · `/haejwo:plan` (manual trigger; the host runs it by default).
+[Plugin README](haejwo/README.md) ([Contract](haejwo/README.md#contract-234), [By design](haejwo/README.md#by-design)) · [Field record](docs/field/README.md) · [Non-goals](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
 
-## Non-goals
-
-A lubricant layer, not a harness:
-
-- Scheduler, durable task queue, or persistent agent roster
-- General DAG or recursive multi-agent runtime
-- Model gateway, billing optimizer, or price-based router
-- Cross-vendor WORKER routing — workers follow the host's vendor (for GPT execution, run the Codex host); `codex@openai-codex` can coexist, but reviews keep haejwo's non-editing runner
-- Worktree orchestration or patch merging for workers
-- Hosted control plane or dashboard
-- Autonomous push/deploy/publish
-- Workflow DSL or ontology framework
-- A second operating architecture (advisor-style cheap-main mode)
-- Hard gates on judgment calls (plan markers, report length) — never hook-gated; a worker without a plan marker asks once and reports blocked if no actionable plan or reason follows
-
-## Verification
-
-`python3 tests/test_hooks.py` — the contract suite (Python stdlib only; needs bash, git, a Unix host, and this repo's git history for two tests). Gate any commit on its UNPIPED exit code; CI runs it on every push.
-
-Release notes: [Releases](https://github.com/jungzuna/haejwo/releases) · [tags](https://github.com/jungzuna/haejwo/tags).
+Tests: `python3 tests/test_hooks.py`; gate commits on its UNPIPED exit code.
 
 ## License
 

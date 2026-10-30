@@ -10,7 +10,7 @@ statistical validation.
 |---|---|
 | Start | 2026-10-27 10:37 KST (plan critique started) |
 | Cap | 5 maintainer working days + 2 field sessions on different projects |
-| Cumulative maintainer time | 2026-10-27 10:37 → 13:31 KST (release candidate 11:12 after plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review; 2.34.0 committed 11:31, 2.35.0 13:31) + 2026-10-28 09:20 → 10:10 KST (documentation audit + 2.35.1); 2 of 5 maintainer days consumed (calendar days touched). The debate itself (2026-10-27, before 10:37) is not counted |
+| Cumulative maintainer time | 2026-10-27 10:37 → 13:31 KST (release candidate 11:12 after plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review; 2.34.0 committed 11:31, 2.35.0 13:31) + 2026-10-28 09:20 → 10:10 KST (documentation audit + 2.35.1) + 2026-10-30 11:06 → 13:25 KST (field session 1 monitored live from the haejwo maintainer session, transcript + observation records, no reviewer involved); 3 of 5 maintainer days consumed (calendar days touched). The debate itself (2026-10-27, before 10:37) is not counted |
 | Field sessions | 0/2 |
 | Scope | debate 6 K3 exactly (removals, retained notes, wording, contract, this folder) + the owner amendment (setup helper, 2.35.0; below) + the 2.35.1 documentation patch |
 
@@ -57,7 +57,7 @@ execution, any behavioural benefit.
 ## Field sessions
 | # | Project | Date | Host version | Claims exercised | Material contract failures |
 |---|---|---|---|---|---|
-| 1 | _pending_ | | | | |
+| 1 | project M (a three-service web application, stages 1–2; 2 user prompts, 7 delegations, 3 Codex diff-review threads, commits only) | 2026-10-30 11:06 → 13:14 KST | Claude Code 2.1.314 (outside the measured 2.1.305/310/311 matrix; K4: not drift by itself), haejwo 2.35.1 from the installed cache, session model Opus 5.5 | gate: 1 direct code edit allowed (`ok`), 10 temp-exempt, 3 non-code, 2 metadata-exempt, 0 denies; bash guard: 84 `ok`, 13 `unresolved-target`, 0 denies (sub-agents: 419 exempt); delegation: 7 allowed, tier pin `pass:pin-matches-default` ×7, plan marker `no_plan` ×1 / `none` ×6 (the six briefs carried `Plan: design doc §…` in brief FILES the prompt only pointed at — presence-only record, by design); runner note: 0 emitted for 12 runner invocations — 1 `--help` (excluded by design), 11 with the runner path in a shell variable (`$S -o …`; the documented unresolved-`$NAME` limit, 2.32 resolver withdrawn); push note / Stop block: no opportunity (no push requested; the final message still carried `Final-diff review:` + `Outward actions: … authorized by: none`); session brief delivered (attachment record, `[haejwo config]` line); setup not run (config pre-existing, no nudge) — the interactive setup flow stays unverified | **none.** Norm-only observations (no mechanism claims them): `.env` sourcing by the host 8× (`set -a; . …/API-DP/.env`) with 0/8 disclosures (keys listed by name only, no values printed); host-written project-exercising script 1 (the scratchpad deploy script the user asked for as a deliverable); a Claude Code auto-mode classifier denial ("shared resource change") was respected, not re-routed (1/1); outward scope kept (push only on the user's separate word, none requested) |
 | 2 | _pending_ | | | | |
 
 ## Disclosures

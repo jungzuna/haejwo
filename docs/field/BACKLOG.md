@@ -84,6 +84,18 @@ and the options.
 - Reopen evidence: the next constitutional amendment (amendment rule), which should carry both edits.
 - Options: Build at the next amendment · Defer · `Reject:` keep the current wording; the README Contract remains the measured source.
 
+## 12. Runner note: the unresolved-variable limit stated where the note is described
+- Would: the plugin README's Notes paragraph says, as the bash-guard paragraph already does for write targets, that a runner path held in a shell variable (`S=…/codex_consult.sh; $S -o …`) is not detected (no note). Field session 1 (project M, 2026-10-30): 11 of 12 runner invocations used that spelling → 0 notes.
+- Not built: documentation only; the detection limit is the 2.32 withdrawn-resolver decision and is unchanged.
+- Reopen evidence: none needed — take it with the next README wording patch (word cap 2,620).
+- Options: Build (one clause) · Defer · `Reject:` the bash-guard sentence covers the shared grammar.
+
+## 13. Norm-only table: credential-use disclosure row
+- Would: add "Credential use stated before use (`.env` sourcing/printing)" to the README's norm-only table with the measured rate — field session 1: 0/8 disclosures (host sourced the API-DP `.env` eight times in Bash, printed key names only, never values); project E round 4 saw the same class. The rules already require the statement; no mechanism claims it.
+- Not built: a README change at acceptance (after field session 2), not a mechanism — K3 forbids new enforcement in this attempt, and a `.env`-sourcing deny would be a tightening without the P13 evidence.
+- Reopen evidence: a second session with the same omission rate makes it the table's leading row.
+- Options: Build (table row at acceptance) · Defer · `Reject:` keep the table at the round-4 rows.
+
 ## Closed
 - D11 (preserve the edit budget across hand-back turns): CLOSED as not adopted (debate 6) — a tightening without demonstrated need. Reopen only under T1/T2.
 

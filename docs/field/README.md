@@ -7,7 +7,9 @@ and the stabilization ledger of the one capped 2.34.0 → 2.35.1 attempt. Debate
 measurements used to live only in session scratchpads; debate 6 (K8) moved them
 here so a reader can check a claim without the session that produced it. Nothing
 here contains credentials, transcript excerpts or machine-local paths; raw
-transcripts stay withheld (they contain owner credentials).
+transcripts stay withheld (they contain owner credentials). Client and project
+identifiers in this folder were replaced with neutral labels on 2026-10-30 at the
+owner's request; counts, shapes and session-id prefixes are unchanged.
 
 | File | What it is |
 |---|---|

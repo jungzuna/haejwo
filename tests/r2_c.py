@@ -2,8 +2,8 @@
 retention (three prior generations). Wired into tests/test_hooks.py main();
 standalone: cd tests && python3 -c "import r2_c as m; m.run_section()"
 
-Origins: project M 2026-10-20 (reviewer runs from another repo; the header did not
-say what change detection covered) and a demo app 2026-10-20 (reviews with
+Origins: project M 2026-10-20 (reviewer runs from another repo; the header did
+not say what change detection covered) and a demo app 2026-10-20 (reviews with
 0 shell commands went undisclosed); 2026-10-19 observation records were gone
 with one prior generation.
 """

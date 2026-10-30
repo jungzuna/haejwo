@@ -85,22 +85,30 @@ and the options.
 - Options: Build at the next amendment · Defer · `Reject:` keep the current wording; the README Contract remains the measured source.
 
 ## 12. Runner note: the unresolved-variable limit stated where the note is described
-- Would: the plugin README's Notes paragraph says, as the bash-guard paragraph already does for write targets, that a runner path held in a shell variable (`S=…/codex_consult.sh; $S -o …`) is not detected (no note). Field session 1 (project M, 2026-10-30): 11 of 12 runner invocations used that spelling → 0 notes.
+- Would: the plugin README's Notes paragraph says, as the bash-guard paragraph already does for write targets, that a runner path held in a shell variable (`S=…/codex_consult.sh; $S -o …`) is not detected (no note). Field session 1 (project M, 2026-10-30): 13 of 14 runner invocations used that spelling (the 14th was `--help`, excluded by design) → 0 notes. Same patch: one README clarification that the plan-marker record scans the Agent prompt itself, so a `Plan:` line only in a referenced brief file is invisible (field session 1: 6 of 7 records `none` while the brief files carried the marker; debate 8 C3).
 - Not built: documentation only; the detection limit is the 2.32 withdrawn-resolver decision and is unchanged.
 - Reopen evidence: none needed — take it with the next README wording patch (word cap 2,620).
 - Options: Build (one clause) · Defer · `Reject:` the bash-guard sentence covers the shared grammar.
 
 ## 13. Norm-only table: credential-use disclosure row
-- Would: add "Credential use stated before use (`.env` sourcing/printing)" to the README's norm-only table with the measured rate — field session 1: 0/8 disclosures (host sourced the API-DP `.env` eight times in Bash, printed key names only, never values); project E round 4 saw the same class. The rules already require the statement; no mechanism claims it.
-- Not built: a README change at acceptance (after field session 2), not a mechanism — K3 forbids new enforcement in this attempt, and a `.env`-sourcing deny would be a tightening without the P13 evidence.
-- Reopen evidence: a second session with the same omission rate makes it the table's leading row.
+- Would: add "Credential use stated before use (`.env` sourcing/printing)" to the README's norm-only table with the measured rate — field session 1: 0/13 disclosures ("13 sourcing calls without prior disclosure observed", not necessarily 13 independent decisions; the host sourced production `.env` files in Bash, printed key names once with values stripped, never values); project E round 4 saw the same class. The rules already require the statement; no mechanism claims it.
+- Not built: a README change at acceptance (after field session 2), not a mechanism — K3 forbids new enforcement in this attempt. Debate 8 (2026-10-30, Codex) rejected both a post-use NOTE (a note after sourcing cannot satisfy a before-use obligation, and syntax detection cannot honestly say "sourced" — a conditional segment may never run) and a deny (tightening; K3). P13's condition is field evidence AND independent cross-vendor review — one session can supply the evidence; a second incident is not required (the earlier "needs more than one session" wording was the host's error).
+- Owner-process candidate (K7, outside haejwo): a Claude Code permission deny rule in the project for Bash commands that source or read `.env` — a real control, but UNVERIFIED on this host until measured against compound commands and the supported access paths (debate 8 C4).
+- Reopen evidence: a measured, declared coverage failure (T1), or the owner's explicit amendment.
 - Options: Build (table row at acceptance) · Defer · `Reject:` keep the table at the round-4 rows.
 
 ## 14. Bash guard: heredoc bodies in the write scan
 - Would: the in-place/redirect write scan skips quoted-delimiter heredoc bodies (as the push and runner matchers already do), so a `;` or a code-looking word inside a Python/stdin heredoc no longer desyncs the segment split and names prose as a target. Field session 1 (project M, 2026-10-30 13:39 KST): one wrong deny on a Markdown memory edit, recovered with Edit in 5.4 s; the maintainer's read-only analysis command was blocked the same way (`cmd.find("sed -i")` → `fanout`).
-- Not built: long-standing behaviour (identical 2.31.0 → 2.35.1), declared heuristic, below the 2.20 reopen bar ("more than one retry"); the one-line candidate (`_skip_quoted_heredocs` before the scan) flips 7 of 10 pinned adversarial cases SF2–SF10 deny→allow — the 2.26 signed stop condition — so there is no safe fix without a shell parser. Evidence: session 4c990b2c scratchpad impl/F/repro_F.md.
+- Not built: long-standing behaviour (identical 2.31.0 → 2.35.1), declared heuristic, below the 2.20 reopen bar ("more than one retry"); the one-line candidate (`_skip_quoted_heredocs` before the scan) flips pinned adversarial cases deny→allow — 7 of 10 in the same-vendor reproduction, 6 of 10 in Codex's (SF9 stays denied); either count violates the 2.26 signed stop condition — so there is no safe fix without a shell parser. Evidence: session 4c990b2c scratchpad impl/F/repro_F.md.
 - Reopen evidence: a second field session with a wrong deny that costs more than one retry, or a shell-parser-based scan reviewed cross-vendor (P13).
 - Options: Build (parser-based scan + the SF rows kept) · Defer · `Reject:` the heuristic stays as declared; hosts use Edit/Write for non-code files too.
+
+## 15. Runner note: literal-assignment resolver for the NOTE matcher only
+- Would: `review_runner_invoked` resolves `NAME=/path/codex_consult.sh; … $NAME -o …` (a literal assignment earlier in the same command) for the runner NOTE only, never for any deny path. Field session 1: 13 of 14 runner invocations used that spelling → 0 notes, so the obligation the note re-presents (per-finding fact vs remedy; carry the closing statement, scope, verification, omissions into the report) was never shown; reviewer omissions reached the host's reports in 0/2 messages — co-occurrence, not causality.
+- Argument for: the 2.32 resolver was withdrawn because cross-vendor review reproduced wrong DENIES (`declare -n`, …); a wrong NOTE costs ≤ 400 chars of context and no blocked action, so that withdrawal reason does not transfer.
+- Against (debate 8, Codex): K1 (each surprise → a new delivery assumption), K3 (no new mechanism in this attempt), K4/K5 (reopen only on T1/T2 or the owner's explicit amendment; "after acceptance" is not an automatic 2.36); 400 chars bounds neither cumulative attention nor maintenance cost; the benefit for omission carry-over is SPECULATION.
+- Not built. Reopen evidence: the owner's explicit amendment, with a canary on the installed host and cross-vendor review of the resolver's grammar (P13).
+- Options: Build (resolver + canary + review) · Defer · `Reject:` the documented limit stands and #12's wording is the whole fix.
 
 ## Closed
 - D11 (preserve the edit budget across hand-back turns): CLOSED as not adopted (debate 6) — a tightening without demonstrated need. Reopen only under T1/T2.

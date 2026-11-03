@@ -18,6 +18,8 @@ owner's request; counts, shapes and session-id prefixes are unchanged.
 | [2026-10-27-canaries-2034.md](2026-10-27-canaries-2034.md) | Full hook sequences of the four 2.34.0 installed-host canaries, sanitized |
 | [2026-10-30-consensus-field-1.md](2026-10-30-consensus-field-1.md) | Field session 1 (project M, 2.35.1 on Claude Code 2.1.314) evaluation consensus F1–F8, signed Claude × Codex, with the measurements behind it |
 | [2026-10-30-consensus-improvements.md](2026-10-30-consensus-improvements.md) | After session 1: ten improvement candidates dispositioned Claude × Codex (G1–G3 signed) — no code change; one docs-only patch at acceptance; #14/#15 backlog with reject |
+| [2026-11-03-consensus-field-2.md](2026-11-03-consensus-field-2.md) | Field session 2 (project E, 2.35.2) evaluation: H0–H6 signed or narrowed Claude × Codex; no T1/T2; norm omissions recorded; the two-project checkpoint is complete, but that is not acceptance |
+| [2026-11-03-consensus-external-skills.md](2026-11-03-consensus-external-skills.md) | Three external skill repositories analysed Claude × Codex (two rounds): no runtime import; corroboration and counter-evidence go into #5; one conditional evaluation proposal, #16 |
 | [2026-10-27-consensus-finish.md](2026-10-27-consensus-finish.md) | Debate 6, "Can haejwo be finished?": K1-K9, the contract, the 2.34.0 scope, the reopen triggers T1/T2 (verbatim) |
 | [BACKLOG.md](BACKLOG.md) | Mechanisms not built, each with an explicit reject option and the evidence that would reopen it |
 | [STABILIZATION-2034.md](STABILIZATION-2034.md) | K5 ledger of the 2.34.0 → 2.35.1 attempt: budget, retained claims and their exposure, canaries, field sessions, closure |

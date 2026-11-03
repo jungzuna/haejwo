@@ -46,7 +46,23 @@ and the options.
 - Would: notice review/fix rounds that repeat without convergence.
 - Not built: no countable definition of a round; debate 5 dropped it (C4).
 - Reopen evidence: a countable round definition and a field case where a non-converging loop caused material cost the user did not authorize.
-- Options: Build · Defer · `Reject:` remove the item.
+- Field evidence (session 2, project E, 2026-11-02; [consensus](2026-11-03-consensus-field-2.md) H4):
+  - Ten diff-review rounds: reviewer verdict reject in rounds 1–9, about 6 h with no owner checkpoint.
+  - A same-vendor classification of the stored replies found 57 findings, 35 of them blocking. It is not independent, and nothing was re-run.
+    - By class: gaps in the previous round's fix 34; already present in the base 9; beyond the brief or plan 6; regressions 4; non-actionable 4; invented 0.
+    - Blocking findings worse than the base: 11, all in rounds 1–6. Rounds 7–10: 0.
+  - From round 3 the host tightened its own acceptance criterion beyond the plan without owner input. A redesign departing from the plan would first have tripped a "departs from the reviewed plan" trigger at round 3.
+  - The estimate that the loop could have stopped after round 7 is SPECULATION.
+- External material ([debate 10](2026-11-03-consensus-external-skills.md); all labelled, none measured for this purpose):
+  - For a cap: addyosmani/agent-skills "3 cycles, escalate to the user" (unmeasured; its eval does not test it). mattpocock/skills has a cap in an unshipped skill.
+  - Against a cap: pstack's unlinked anecdote of a real defect on review pass 7 after every earlier pass was fixed. mattpocock/skills separately rejects numeric question caps.
+- Candidate policy (not implemented; host wording, after Codex's suggestion):
+  - (a) A fix that changes an agreed design decision revisits the plan before implementation.
+  - (b) After K consecutive diff-review rounds with reviewer verdict reject, pause automatic review and return to the owner with both positions and their evidence.
+  - K is a cost policy. Reaching it establishes neither correctness nor permission to ship.
+  - Host change to Codex's draft: the draft counted only rounds whose findings were all *rejected* by the host, which would not fire on session 2, where every finding was accepted.
+  - Related, adopted in 2.35.3: the reviewer now labels provenance and flags beyond-brief remedies (#19), which exposes (a) without enforcing it.
+- Options: Build (one rules sentence; it must displace bytes, since the rules are at 3,744/3,750) · Defer · `Reject:` remove the item; the existing added-scope disclosure rule stays the only lever.
 
 ## 6. Interpreter reminders
 - Would: re-present the scratch-delegation obligation on main-agent inline interpreter calls (`python -c`, `python - <<EOF`).
@@ -95,6 +111,8 @@ and the options.
 - Not built: a README change at acceptance (after field session 2), not a mechanism — K3 forbids new enforcement in this attempt. Debate 8 (2026-10-30, Codex) rejected both a post-use NOTE (a note after sourcing cannot satisfy a before-use obligation, and syntax detection cannot honestly say "sourced" — a conditional segment may never run) and a deny (tightening; K3). P13's condition is field evidence AND independent cross-vendor review — one session can supply the evidence; a second incident is not required (the earlier "needs more than one session" wording was the host's error).
 - Owner-process candidate (K7, outside haejwo): a Claude Code permission deny rule in the project for Bash commands that source or read `.env` — a real control, but UNVERIFIED on this host until measured against compound commands and the supported access paths (debate 8 C4).
 - Reopen evidence: a measured, declared coverage failure (T1), or the owner's explicit amendment.
+- Session 2 (project E, 2026-11-02; [consensus](2026-11-03-consensus-field-2.md) H1): there were 0 sourcing opportunities. The owner asked for the app to be run, the app read its own configured env, and the host listed key names once with the values masked. The omission that did occur was different: 1 episode of substantial test writes into a shared environment, not announced beforehand. Whether those writes were authorized is unresolved and stays in the owner's process (K7).
+- 2.35.3: the README table carries both sessions' rows in these units.
 - Options: Build (table row at acceptance) · Defer · `Reject:` keep the table at the round-4 rows.
 
 ## 14. Bash guard: heredoc bodies in the write scan
@@ -110,7 +128,45 @@ and the options.
 - Not built. Reopen evidence: the owner's explicit amendment, with a canary on the installed host and cross-vendor review of the resolver's grammar (P13).
 - Options: Build (resolver + canary + review) · Defer · `Reject:` the documented limit stands and #12's wording is the whole fix.
 
+## 16. Behavioural evaluation with `claude plugin eval`
+- Would: measure haejwo's effect on norm-only obligations by comparing runs with and without the plugin. The obligations: credential and side-effect disclosure, decisions stated before delegation, and delegation of suites and probes.
+- Design conditions ([debate 10](2026-11-03-consensus-external-skills.md) P4):
+  - blinded judging, with a different-model judge (cross-vendor where available)
+  - a predeclared rubric and an opportunity denominator per obligation
+  - attributed host, plugin, executor and judge revisions
+  - a fixed run and cost budget
+  - incomplete traces kept and reported separately
+  - `--judge-model` alone establishes no independence
+- Feasibility, measured 2026-11-03 (owner-authorized; Claude Code 2.1.317; a copy of the installed 2.35.2 cache — every tracked plugin file equal to tag v2.35.2, tree `haejwo/` = d86b537, compared by the Codex diff review; evidence kept in maintainer session fa7810bd scratchpad `exp16/`; 1 run per arm; $0.10; not published):
+  - SessionStart injection and the edit-budget deny work inside eval children. The no-plugin arm had neither.
+  - Children run with an isolated HOME: user config is not read and the reviewer is disabled.
+  - On this pod any shell grant is refused (no `bwrap` or `socat`). So the bash guard, the Codex runner and every Bash-mediated norm cannot be measured here.
+- Not built: the obligations of interest are Bash-mediated, so measuring them needs a system install (an owner and system decision) and then a bounded, owner-amended experiment. It has no automatic schedule and never reopens a release by itself.
+- Options: Build (install the sandbox prerequisites, then one bounded experiment) · Defer · `Reject:` field sessions stay the only behavioural evidence.
+
+## 17. Stale long-running sessions after a plugin update
+- Observed: a session started on 2.33.0 kept its plugin root after the cache moved to 2.35.x and the old directory was removed. From 2026-10-30 every haejwo hook in that session failed with "Plugin directory does not exist". Hooks fail open (P4), so the session ran ungated with no notice to the model. A new session loaded 2.35.2 cleanly.
+- Coverage disposition: this is outside the declared support boundary, not T2. The plugin and root READMEs already say "restart after install/update". The silent part is the host's hook-failure handling, not a haejwo path.
+- Not built: haejwo cannot run code in a session whose plugin directory is gone.
+- Reopen evidence: a declared path that breaks without a plugin update, or a host mechanism that could surface the failure.
+- Options: Build (a louder restart notice in the install docs or the update release notes) · Defer · `Reject:` the existing "restart after install/update" line stands.
+
+## 18. Setup guidance when the account rejects the reviewer model
+- Observed (2026-11-02): an external user on a lower-tier ChatGPT plan reported that the reviewer "does not work because model 5.3 is missing".
+  - haejwo hard-codes no model; the runner resolves `CODEX_MODEL` > `codex.model` > the CLI default.
+  - The runner already prints a "model … was rejected before execution" hint.
+  - The setup flow does not tell the user to pick a model their plan allows (setup → Custom → reviewer model, or `model=` in the Codex config).
+- Not built: documentation only, and a single report.
+- Reopen evidence: a second report, or the owner's word. It can then ride the next wording patch.
+- Options: Build (one sentence in `commands/setup.md` and `docs/runners.md`) · Defer · `Reject:` the runner hint is enough.
+
 ## Closed
+- 19. Reviewer contract: provenance labels. ADOPTED in 2.35.3 (owner amendment 2026-11-03; [debate 10](2026-11-03-consensus-external-skills.md) P1 → the plan critique in the ledger).
+  - Both runners' REVIEWER CONTRACT now asks: "For each finding, label provenance as regression (introduced by this change), base (already present), or unresolved (baseline unavailable, inapplicable, or insufficient), and flag any requested remedy beyond the brief or plan."
+  - Source idea: addyosmani/agent-skills (MIT), paraphrased and narrowed.
+  - Evidence: the session-2 classification in #5.
+  - The "zero findings is valid / do not invent" half was dropped, because 0 invented findings were observed.
+  - The labels are the reviewer's claims. They block, waive and route nothing. No benefit (for example, fewer rounds) is claimed.
 - D11 (preserve the edit budget across hand-back turns): CLOSED as not adopted (debate 6) — a tightening without demonstrated need. Reopen only under T1/T2.
 
 ## Rejected alternatives

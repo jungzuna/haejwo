@@ -1849,7 +1849,7 @@ def main():
                          # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
                          # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
                          # in a demo app went undisclosed) names both tokens
-                         ("haejwo/README.md", 2410),  # 2.35.2: privacy + lean rewrite, 2,620 -> 2,402 words (cap 2,620 -> 2,410; exit codes, knobs and the codex@openai-codex note moved to docs/runners.md); 2.35.1 documentation patch: 2,580 (at cap) -> 2,620 shipped (turn_reset.py named, plan-marker record outside delegation_guard, config path, setup rounds, 30-day/fingerprint Keep rule, runner nits; disclosed in docs/field/STABILIZATION-2034.md); 2.34.0: the Contract section (K2: mechanisms + exemptions, demonstrated-delivery notes, norm-only omission table with denominators, host/path matrix, T1/T2 maintenance rule) replaced the 2.33 pilot paragraph: 2,249 -> 2,571 words, re-pinned to the shipped count rounded up (disclosed in docs/field/STABILIZATION-2034.md); 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
+                         ("haejwo/README.md", 2640),  # 2.35.3 acceptance docs: 2,402 -> 2,635 words (cap 2,410 -> 2,640; norm-only table re-sourced to field sessions 1-2, three measured-path rows, interactive/Codex/setup status, historical parity qualifier, #12 and C3 clauses, reviewer provenance labels; duplicates trimmed first; disclosed in docs/field/STABILIZATION-2034.md); 2.35.2: privacy + lean rewrite, 2,620 -> 2,402 words (cap 2,620 -> 2,410; exit codes, knobs and the codex@openai-codex note moved to docs/runners.md); 2.35.1 documentation patch: 2,580 (at cap) -> 2,620 shipped (turn_reset.py named, plan-marker record outside delegation_guard, config path, setup rounds, 30-day/fingerprint Keep rule, runner nits; disclosed in docs/field/STABILIZATION-2034.md); 2.34.0: the Contract section (K2: mechanisms + exemptions, demonstrated-delivery notes, norm-only omission table with denominators, host/path matrix, T1/T2 maintenance rule) replaced the 2.33 pilot paragraph: 2,249 -> 2,571 words, re-pinned to the shipped count rounded up (disclosed in docs/field/STABILIZATION-2034.md); 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
                          ("haejwo/commands/plan.md", 560),  # 2.32.0: the representative-screen checkpoint sentence; 2.33.0: the brief names revision, permitted verification, runner settings and deadline (field: one timeout, a 601 s run)
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
@@ -3495,6 +3495,10 @@ def main():
             codex_script = os.path.join(SCRIPTS, "codex_consult.sh")
             claude_script = os.path.join(SCRIPTS, "claude_consult.sh")
             CONTRACT_HEAD = "REVIEWER CONTRACT: analyze and reply only."
+            LABEL_SENTENCE = ("For each finding, label provenance as regression (introduced by "
+                              "this change), base (already present), or unresolved (baseline "
+                              "unavailable, inapplicable, or insufficient), and flag any requested "
+                              "remedy beyond the brief or plan.")
 
             # Stub codex/claude executable. Captures argv (one arg per line) +
             # full stdin per invocation; the `--version` probe is NOT captured
@@ -3773,6 +3777,10 @@ exit "$rc"
                 check(f"{label} file-brief: contract asks for a closing statement",
                       bool(calls) and "End your reply with a closing statement: material "
                       "read, verification run, material omissions." in calls[0][1], calls[:1])
+                # 2.35.3: the contract asks for per-finding provenance labels
+                # (wrapped in the runner source, so compared whitespace-normalized).
+                check(f"{label} file-brief: contract asks for provenance labels",
+                      bool(calls) and LABEL_SENTENCE in " ".join(calls[0][1].split()), calls[:1])
 
                 cap2 = os.path.join(runner_tmp, f"cap-{label}-stdin")
                 make_stub(bin_dir, label, cap2)
@@ -3781,6 +3789,8 @@ exit "$rc"
                 check(f"{label} stdin-brief: run succeeds", rc == 0, f"rc={rc} out={out} err={err}")
                 check(f"{label} stdin-brief: contract at top of captured stdin",
                       bool(calls2) and calls2[0][1].startswith(CONTRACT_HEAD), calls2[:1])
+                check(f"{label} stdin-brief: contract asks for provenance labels",
+                      bool(calls2) and LABEL_SENTENCE in " ".join(calls2[0][1].split()), calls2[:1])
 
                 check_resume_removed(f"{label}-resume", f"{label} --resume",
                                      script, label, ["--resume"])

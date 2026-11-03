@@ -10,18 +10,18 @@ statistical validation.
 |---|---|
 | Start | 2026-10-27 10:37 KST (plan critique started) |
 | Cap | 5 maintainer working days + 2 field sessions on different projects |
-| Cumulative maintainer time | 2026-10-27 10:37 → 13:31 KST (release candidate 11:12 after plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review; 2.34.0 committed 11:31, 2.35.0 13:31) + 2026-10-28 09:20 → 10:10 KST (documentation audit + 2.35.1) + 2026-10-30 11:06 → 14:30 KST (field session 1 monitored live from the haejwo maintainer session — transcript + observation records; the deny reproduction; the two-round evaluation debate with Codex and the read-only review grading; the one-round improvement debate: no code change); 3 of 5 maintainer days consumed (calendar days touched). The debate itself (2026-10-27, before 10:37) is not counted |
-| Field sessions | 0/2 |
+| Cumulative maintainer time | 2026-10-27 10:37 → 13:31 KST (release candidate 11:12 after plan critique, two workers + harness worker, diff review, fix round, canaries ×2, re-review; 2.34.0 committed 11:31, 2.35.0 13:31) + 2026-10-28 09:20 → 10:10 KST (documentation audit + 2.35.1) + 2026-10-30 11:06 → 14:30 KST (field session 1 monitored live from the haejwo maintainer session — transcript + observation records; the deny reproduction; the two-round evaluation debate with Codex and the read-only review grading; the one-round improvement debate: no code change); + 2026-11-02 12:44 → about 21:15 KST (field session 2 on project E, monitored live from the maintainer session: the stale-session diagnosis, the update, transcript monitoring, mid-term and final evaluations) + 2026-11-03 09:46 KST → the 2.35.3 commit (the field-2 evaluation debate, the external-repository debate, the two owner-authorized experiments, the 2.35.3 plan critique, implementation and diff review); **5 of 5 maintainer days consumed** (calendar days touched); the cap is reached with 2.35.3. The debate itself (2026-10-27, before 10:37) is not counted |
+| Field sessions | 2/2 (project M 2026-10-30; project E 2026-11-02) |
 | Scope | debate 6 K3 exactly (removals, retained notes, wording, contract, this folder) + the owner amendment (setup helper, 2.35.0; below) + the 2.35.1 documentation patch |
 
 ## Retained claims and the exposure each needs
 | Claim | Mechanism | Exposure needed | Status |
 |---|---|---|---|
-| <= N code files per turn for the main agent | `gate.py` | tests + canary edit | tests pass (suite 1,439 at 2.35.0; 1,346 at 2.34.0); canary edit: unverified (no edit canary was run) |
+| <= N code files per turn for the main agent | `gate.py` | tests + canary edit | tests pass (suite 1,439 at 2.35.0; 1,346 at 2.34.0; 1,443 at 2.35.3); edit-budget deny OBSERVED 2026-11-03 in a `claude plugin eval` child (Claude Code 2.1.317, headless, isolated HOME, a copy of the 2.35.2 cache content; 1 run per arm; BACKLOG #16); interactive and installed-cache edit deny: unverified (0 denies in both field sessions) |
 | Bash code writes denied (heuristic) | `bash_guard.py` | tests (deny contract) | tests pass |
 | Generic agents need an explicit model; tier pin | `delegation_gate.py` | tests + canary Agent | tests pass; canary 2: delegation record present, no errors |
 | Plan-marker presence recorded | `delegation_gate.py` | tests | tests pass |
-| Main-agent push detected → note → `outward-attempt` → Stop block once | `bash_guard.py` + `report_check.py` | tests + canary (4); field: unverified until a push turn occurs | tests pass; canary 4 pass; field: unverified |
+| Main-agent push detected → note → `outward-attempt` → Stop block once | `bash_guard.py` + `report_check.py` | tests + canary (4); field: unverified until a push turn occurs | tests pass; canary 4 pass; field (session 1, 2.1.314 interactive, installed cache): push detection, `outward-attempt`, push notes and a label-complete ending NOT blocked demonstrated; Stop BLOCK in the field: unverified |
 | Runner-call note with its limits; setup probe excluded | `post_bash.py` | tests + canary (3) | tests pass (15 parser cases incl. option-operand spellings); canary 3 pass |
 | Push-returned note | `post_bash.py` | tests + canary (4) | tests pass; canary 4 pass |
 | Session brief within 5,000 chars on the worst combination | `session_brief.py` | tests (fixture) | tests pass |
@@ -58,7 +58,7 @@ execution, any behavioural benefit.
 | # | Project | Date | Host version | Claims exercised | Material contract failures |
 |---|---|---|---|---|---|
 | 1 | project M (a three-service web application, stages 1–2; 2 user prompts, 7 delegations, 3 Codex diff-review threads, commits only) | 2026-10-30 11:06 → 13:14 KST | Claude Code 2.1.314 (outside the measured 2.1.305/310/311 matrix; K4: not drift by itself), haejwo 2.35.1 from the installed cache, session model Opus 5.5 | gate: 1 direct code edit allowed (`ok`), 10 temp-exempt, 3 non-code, 2 metadata-exempt, 0 denies; bash guard: 84 `ok`, 13 `unresolved-target`, 0 denies (sub-agents: 419 exempt); delegation: 7 allowed, tier pin `pass:pin-matches-default` ×7, plan marker `no_plan` ×1 / `none` ×6 (the six briefs carried `Plan: design doc §…` in brief FILES the prompt only pointed at — presence-only record, by design); runner note: 0 emitted for 14 runner invocations — 1 `--help` (excluded by design), 13 graded review runs with the runner path in a shell variable (`$S -o …`; the documented unresolved-`$NAME` limit, 2.32 resolver withdrawn); push path EXERCISED (second half of the session: authorized 13:25 KST, pushes 13:59–14:00 KST, after the owner's written authorization to commit, push and copy to the deploy side): 2 `git push` calls → 2 `outward-attempt` records, 2 PreToolUse push notes and 2 PostToolUse push-returned notes (232 chars, two `main -> main` push tails quoted by the note) all delivered as `hook_additional_context` attachments on 2.1.314 interactive from the installed cache; the final message carried `Final-diff review:` + a multi-line `Outward actions:` block quoting the owner's words at the time → Stop check passed, no block (the pass path leaves no record); the earlier non-push turns ended with `Outward actions: none - authorized by: none`, and a platform-folder copy turn carried its own line; Stop BLOCK path still unexercised; session brief delivered (attachment record, `[haejwo config]` line); setup not run (config pre-existing, no nudge) — the interactive setup flow stays unverified | **none.** One wrong deny, below the reopen bar: the bash guard denied a `python3 - <<'EOF' … EOF; sed -i … MEMORY.md` command (`via=inplace`, targets taken from a Python string in the heredoc body because a `;` inside the string split the segment — the real `sed -i` target was a Markdown memory file); the host recovered with the Edit tool in 5.4 s. Reproduced offline byte-for-byte at 2.31.0, 2.32.0, 2.33.0, 2.34.0 and 2.35.1 (not a regression; the write scan has never skipped heredoc bodies — the quoted-heredoc skip belongs to the push and runner matchers; declared "heuristic"; the 2.20 docstring defers heredoc-body cases; the one-line fix flips 7 of 10 pinned adversarial tests in the same-vendor reproduction and 6 of 10 in Codex's — the 2.26 signed stop condition either way) → BACKLOG #14. Norm-only observations (no mechanism claims them): `.env` sourcing by the host 13× (`set -a; . …/.env`) with 0/13 disclosures; review handling (read-only same-vendor grading): 13 rounds, 24 material findings → 21 fixed / 3 rejected with a reason / 0 deferred, reasoned decision visible 21/24, fixed-diff re-review 8/9, reviewer omissions carried into the host's reports 0/2; counts reconciled across all four observation rotations at the 14:04 KST snapshot (every host call has a record). Evaluation consensus: [2026-10-30-consensus-field-1.md](2026-10-30-consensus-field-1.md) (F1–F8) (keys listed by name only, no values printed); host-written project-exercising script 1 (the scratchpad deploy script the user asked for as a deliverable); a Claude Code auto-mode classifier denial ("shared resource change") was respected, not re-routed (1/1); outward scope kept (push only on the user's separate word, none requested) |
-| 2 | _pending_ | | | | |
+| 2 | project E (a feature remediation against a requirements spec: 2 owner prompts, then about 6 h of autonomous work; 19 delegations; 1 plan review and 10 diff reviews by Codex; nothing committed) | 2026-11-02 05:10 → 12:12 UTC | Claude Code 2.1.316 interactive, haejwo 2.35.2 from the installed cache, session model Opus 5.5 | SessionStart brief delivered; 0 hook failures; 0 haejwo denies (no deny path exercised); host calls on 11-02: Bash 85 (pytest 15, server start 11, scenario/smoke runner 10, review runner 13), Edit/Write 5 code + 5 docs + 4 scratch; delegation: 15 implementation briefs `Plan:`, 4 `No plan because:`; push path not exercised (0 commits, 0 pushes); final message carried both record lines (`Final-diff review:` disclosing the unreviewed last fix; `Outward actions: none - authorized by: none`); a classifier denial (bulk delete of test threads) was respected 1/1 | **none** ([consensus](2026-11-03-consensus-field-2.md) H0: no T1/T2; zero failures and denies do not prove coverage). Norm-only omissions: 1/1 shared-environment test-write episode not announced beforehand (authorization unresolved, owner's process); 1/1 identified security default not disclosed; decisions shown after the launches, reasons not shown (no fraction until the denominator is classified); 25 host executions of suites and runners (the rules delegate test suites; H5); the last review fix unreviewed (risk class unresolved); a 10-round diff-review loop with the host's criterion tightened beyond the plan from round 3 without owner input (BACKLOG #5). Separately observed: a long-running session from before the update ran ungated with every hook failing (BACKLOG #17, outside the declared support boundary) |
 
 ## Disclosures
 - Plugin README word cap: re-pinned to the shipped count rounded up to 10 — 2,249 words
@@ -189,6 +189,57 @@ only document that setup is once per machine.
   check and Notes paragraphs and the three tested substrings are unchanged.
 - The documentation-only acceptance patch that F8 and the improvement debate call "2.35.2"
   ships as 2.35.3.
+
+### 2.35.3 (owner amendment + acceptance documentation, 2026-11-03)
+- **Authority.** On 2026-11-03 the owner said: "organize it without personal or sensitive information, run whatever experiments there are, and apply the insights if they are worth applying." The host treated this as an explicit owner amendment under K4 for ONE patch, on maintainer day 5 of 5.
+- **Inputs:**
+  - [field-2 consensus](2026-11-03-consensus-field-2.md)
+  - [external-skills consensus](2026-11-03-consensus-external-skills.md)
+  - two owner-authorized experiments, recorded in BACKLOG #5 and #16:
+    - a same-vendor classification of session 2's 57 review findings
+    - a `claude plugin eval` feasibility run ($0.10)
+- **Plan critique.** Codex, effort high, one round, new session. Codex narrowed or objected on every point; every narrowing was adopted:
+  - Provenance (regression / base / unresolved) is separated from the beyond-brief flag.
+  - The labels expose information for the existing added-scope obligation. They supply no checkpoint and do not resolve H3.
+  - The norm-only rows use per-row units. There is no session-2 re-review rate, and authoring is kept apart from execution.
+  - 2.35.2 is the plugin version. The session-2 host was Claude Code 2.1.316.
+  - The eval run closes "no edit-budget canary was run" only for its own path: a copy of the cache, not the installed cache.
+  - Acceptance is conditional: unverified guarantees are narrowed, not appended. The present-tense dual-host parity sentence becomes historical.
+  - #17 receives an explicit coverage disposition.
+  - The runner line ratchet is kept.
+- **Changes:**
+  - Both runners' REVIEWER CONTRACT now carries one sentence asking for a provenance label per finding and a flag on beyond-brief remedies (BACKLOG #19, closed as adopted). The existing lines were reflowed, so the runner stack stays at exactly 1,830 lines.
+  - Tests: the sentence is asserted in the captured effective brief for both runners × file/stdin input (4 new checks).
+  - Versions 2.35.2 → 2.35.3 in both manifests and in `tests/r4_a.py`.
+  - Plugin README Contract:
+    - The norm-only table is re-sourced to field sessions 1–2, with units per row. The round-4 table stays in [2026-10-26-round-4-evidence.md](2026-10-26-round-4-evidence.md).
+    - The measured paths gain 2.1.314 interactive (F2's limits), 2.1.316 interactive and the 2.1.317 eval child.
+    - The blanket "interactive … unverified" is replaced by per-path statements.
+    - The parity sentence becomes historical: first stated in 2.2.0 (2026-07-07), Codex CLI version unrecorded, not re-measured.
+    - #12 and C3 get one clause each.
+    - Interactive setup is stated as unverified (the waiver is not verification).
+    - The Guarantees bullet names the labels as unverified reviewer claims.
+  - `rules/orchestration.md` is byte-identical (3,744 B). No hook, deny string or behaviour changed.
+- **Word cap, disclosed.**
+  - The plugin README went from 2,402 words to 2,635 after trimming 39 duplicated words: the Layers cell, the Contract push clause, the Notes exemption list, and one By-design sentence that repeated Guarantees and Not guaranteed.
+  - The cap was re-pinned 2,410 → 2,640, the shipped count rounded up to 10.
+  - Reason: the K2 contract content F8 requires (the measured paths and the norm-only rows) cannot fit without cutting non-duplicated content.
+- **Suite.** `python3 tests/test_hooks.py`, unpiped: 1,443 passed, 0 failed, exit 0. Final run after the review fixes (task-worker, output redirected, exit captured unpiped): 1,443 passed, 0 failed, exit 0; `tests/mirrors.py` exit 0.
+- **Review trail.** Codex final-diff review, effort high, new session. Named risks: the contract text on both hosts, evidence integrity, privacy, and tests. Verdict: accept with changes, no runtime regression. Codex confirmed:
+  - The prior contract is word-identical after the reflow, and the quoting is safe.
+  - The four new assertions inspect the captured input.
+  - The ratchets are honest: 1,830 lines; 2,635/2,640 words; rules at 3,744 B.
+  - The privacy grep is clean.
+
+  Three record findings were fixed. Each fix was a docs-only correction with no runtime change, so the host verified each one by grep rather than requesting a re-review:
+  1. The retained-claims rows still said "no edit canary was run" and "push field exposure unverified". They now state the eval-child observation and session 1's push-path exposure; the interactive edit deny and Stop BLOCK stay unverified.
+  2. The copied artifact's identity was unrecorded. BACKLOG #16 now records that every tracked plugin file equals tag v2.35.2, with tree d86b537, compared by the reviewer, and points to the evidence.
+  3. This line had promised a final run that was not yet recorded; the final run is now recorded above.
+- **Closure (K5).** At the ceiling: 5 of 5 maintainer days, 2 of 2 field sessions on different projects.
+  - Material contract failures unresolved: 0. Debates 9 and 10 and the final review established no T1 or T2.
+  - Unsupported claims were narrowed rather than kept: the dual-host parity sentence is now historical, and the blanket interactive statement is now per-path.
+  - Still unverified, and not passed: Stop BLOCK on interactive hosts, the interactive and installed-cache edit deny, the bash-guard deny on 2.35.x interactive, the Codex host paths, the interactive setup flow, and all behavioural benefit.
+  - The stabilization attempt is ACCEPTED as a bounded version at 2.35.3 once the owner commits it. After that, scheduled monitoring and debates END, and work reopens only under T1/T2 or the owner's explicit amendment.
 
 ## Closure conditions
 - Acceptance requires zero unresolved material contract failures; a claim without its exposure is reported "unverified".

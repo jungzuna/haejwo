@@ -44,10 +44,10 @@ HJW_OUT_SIBLINGS=(.events.jsonl)
 hjw_forward_if_stale "$@"
 
 # REVIEWER CONTRACT: prepended to every brief on every input path; what is enforced is its insertion, not that a caller cannot write contrary text.
-REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install
-anything, or change any configuration (packages, MCP servers, global or
-user settings). If you need a missing capability, STATE THE NEED in your
-reply — the host decides.
+REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify files, install anything, or change any configuration
+(packages, MCP servers, global or user settings). If you need a missing capability, STATE THE NEED in your reply — the host decides.
+For each finding, label provenance as regression (introduced by this change), base (already present), or unresolved
+(baseline unavailable, inapplicable, or insufficient), and flag any requested remedy beyond the brief or plan.
 End your reply with a closing statement: material read, verification run, material omissions.
 ---'
 

@@ -59,8 +59,9 @@ from bash_guard import review_runner_invoked  # noqa: E402
 
 PUSH_RETURNED = (
     "[haejwo] push-bearing Bash call returned (tool call {id}); quoted shell "
-    "output tail: \"{tail}\"{interrupted}. The Outward actions line states "
-    "repo; branch; action; result and the authorizing words."
+    "output tail: \"{tail}\"{interrupted}. "
+    "Record: actual result; verbatim words, time | standing (not verified "
+    "in this session): <source>."
 )
 RUNNER_NOTE = (
     "[haejwo] detected runner call ({runner}; tool call {id}): command syntax "

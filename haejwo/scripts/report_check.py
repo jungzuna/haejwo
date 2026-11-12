@@ -50,9 +50,10 @@ REVIEW_LABEL = "Final-diff review:"
 REASON = (
     "[haejwo] This turn requested git push. Finish with the record lines "
     "(presence is all this hook checks): `Outward actions: <repo; branch; "
-    "action; result> - authorized by: <user words, time>` and `Final-diff "
+    "action; actual result> - authorized by: <verbatim user words, time | "
+    "standing (not verified in this session): <source>>` and `Final-diff "
     "review: <change id; reply; closing statement | not run because: "
-    "<reason>>`."
+    "<reason>>`. Include failed attempts."
 )
 
 

@@ -10,7 +10,8 @@ from hjw_common import state_file
 
 OUTWARD_NOTE = ("[haejwo] outward action requested (git push): the report "
                 "carries `Outward actions: <repo; branch; action; result> - "
-                "authorized by: <user words, time>`.")
+                "authorized by: <verbatim user words, time | standing (not "
+                "verified in this session): <source>>`, with the actual result.")
 
 
 def _recs(data):

@@ -1,7 +1,7 @@
 # Field record
 
 This folder holds the evidence behind haejwo's published contract (plugin README,
-`## Contract (2.34)`): the signed consensus documents of the field debates, the
+`## Contract (3.0)`): the signed consensus documents of the field debates, the
 sanitized measurements they rest on, the backlog of mechanisms that were NOT built,
 and the stabilization ledger of the one capped 2.34.0 → 2.35.1 attempt. Debates and
 measurements used to live only in session scratchpads; debate 6 (K8) moved them
@@ -21,6 +21,7 @@ owner's request; counts, shapes and session-id prefixes are unchanged.
 | [2026-11-03-consensus-field-2.md](2026-11-03-consensus-field-2.md) | Field session 2 (project E, 2.35.2) evaluation: H0–H6 signed or narrowed Claude × Codex; no T1/T2; norm omissions recorded; the two-project checkpoint is complete, but that is not acceptance |
 | [2026-11-03-consensus-external-skills.md](2026-11-03-consensus-external-skills.md) | Three external skill repositories analysed Claude × Codex (two rounds): no runtime import; corroboration and counter-evidence go into #5; one conditional evaluation proposal, #16 |
 | [2026-10-27-consensus-finish.md](2026-10-27-consensus-finish.md) | Debate 6, "Can haejwo be finished?": K1-K9, the contract, the 2.34.0 scope, the reopen triggers T1/T2 (verbatim) |
+| [2026-11-11-consensus-v3.md](2026-11-11-consensus-v3.md) | The 3.0 lab (offline replays, installed-host fixture, file-budget pilot, suite-run trial) and the signed 2.36/3.0 scope F1–F10, Claude × Codex; what was not built and its reopen evidence |
 | [BACKLOG.md](BACKLOG.md) | Mechanisms not built, each with an explicit reject option and the evidence that would reopen it |
 | [STABILIZATION-2034.md](STABILIZATION-2034.md) | K5 ledger of the 2.34.0 → 2.35.1 attempt: budget, retained claims and their exposure, canaries, field sessions, closure |
 

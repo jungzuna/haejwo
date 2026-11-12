@@ -47,6 +47,7 @@ REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify file
 (packages, MCP servers, global or user settings). If you need a missing capability, STATE THE NEED in your reply — the host decides.
 For each finding, label provenance as regression (introduced by this change), base (already present), or unresolved
 (baseline unavailable, inapplicable, or insufficient), and flag any requested remedy beyond the brief or plan.
+A blocking finding names the agreed criterion it violates and the minimum remedy; list optional hardening separately.
 End your reply with a closing statement: material read, verification run, material omissions.
 ---'
 
@@ -69,6 +70,8 @@ Env (env > config > default; empty = unset): CLAUDE_MODEL, HJW_CLAUDE_EFFORT (lo
 Config keys codex.model/effort supply the defaults on a Codex host (a config path under /.codex/, or a
   custom plugin root naming no vendor); under /.claude/ they describe the other vendor's reviewer and
   are ignored. Env wins.
+HJW_REVIEW_BASE (optional): the base the caller reviews against, copied verbatim into the reply's
+  receipt (unset = `unavailable`). The reply file starts with that receipt: runner facts, not a verdict.
 
 Exit code: non-zero on ANY of {claude rc!=0, empty reply, repository changed, change detection
   unavailable}; there is no event classifier on this path; a failure the reviewer reports only in
@@ -175,6 +178,7 @@ if [ "$FAILED" = 1 ]; then
   hjw_fail_tail
 fi
 
+hjw_receipt_write
 hjw_log_coverage_note
 echo "=== Claude reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP ===$COVERAGE_NOTE"
 cat "$OUT"

@@ -4,6 +4,7 @@
   snapshot  <workdir> <outfile> [artifact...]   file-backed BEFORE/AFTER state
   compare   <before.json> <after.json>          the verdict + coverage flags
   artifacts [--dir] <cwd> <path>...             refuse artifacts inside the repo (2.21)
+  receipt   <reply> <repo> <base> <before.json> prepend the review receipt to the reply (3.0.0)
 
 Scope: HEAD, tracked status AND per-path fingerprints, `git diff`/`--cached` digests, untracked CONTENTS
 (sorted, first 2000; presence for all); the entrypoint's artifacts are excluded. NOT covered: global/user
@@ -20,6 +21,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 
 # LC_ALL=C: the unborn check matches git's diagnostics. *[origin: cold-loop 2 B1 — an inherited GIT_DIR aimed detection elsewhere]*
 GIT_ENV = dict((k, v) for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"))
@@ -209,6 +211,59 @@ def cmd_compare(argv):
                      % (truncated, unreadable, ", ".join(uniq)))
 
 
+# Review receipt (3.0.0 F6): FACTS the runner observed, prepended to the returned reply; no coverage claim,
+# no verdict, no stored state. SNAPSHOT_SCHEMA names the snapshot fields above (bump when they change); the digest
+# is SHA-256 over the canonical JSON of the BEFORE snapshot change detection already took (no second scan).
+SNAPSHOT_SCHEMA = 1
+RECEIPT_LIMITS = "A snapshot identifies the observed state, not reviewer coverage. No inheritance through a merge."
+
+
+def one_line(v):
+    v = v.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return "".join("?" if ord(ch) < 32 or ord(ch) == 127 else ch for ch in v)
+
+
+def cmd_receipt(argv):
+    # receipt <reply> <repo> <base> <before.json>: receipt + reviewer bytes -> hidden temp beside the reply (`.` + <=100
+    # name bytes, whole chars, `.*.receipt-tmp`: fits NAME_MAX), its mode, fsynced; ONE os.replace keeps it byte-exact.
+    out, repo, base, snap_path = argv
+    head = snapshot = "unavailable"
+    try:
+        with open(snap_path, encoding="ascii") as f:
+            snap = json.load(f)
+        cov = snap["coverage"]
+        digest = hashlib.sha256(json.dumps(snap, sort_keys=True, separators=(",", ":")).encode("ascii"))
+        head, snapshot = one_line(str(snap["head"])), "schema=%d sha256=%s truncated=%d unreadable=%s" % (
+            SNAPSHOT_SCHEMA, digest.hexdigest(), 1 if cov.get("truncated") else 0, cov.get("unreadable", 0))
+    except Exception:
+        pass
+    header = "\n".join(("---- haejwo review receipt (runner facts; not a verdict) ----",
+                        "repository: " + (one_line(repo) or "unavailable"),
+                        ("base (caller-supplied, not verified): " + one_line(base)) if base else "base: unavailable",
+                        "HEAD: " + head, "snapshot: " + snapshot, "limitations: " + RECEIPT_LIMITS,
+                        "---- end receipt ----", "", "")).encode("utf-8", "surrogateescape")
+    tmp, target = None, os.path.realpath(out)  # a symlinked reply keeps its link; the file it names is replaced
+    try:
+        with open(target, "rb") as f:
+            data, mode = f.read(), stat.S_IMODE(os.fstat(f.fileno()).st_mode)
+        name = os.fsencode(os.path.basename(target))[:100].decode("utf-8", "ignore")
+        fd, tmp = tempfile.mkstemp(".receipt-tmp", "." + name + ".", os.path.dirname(target))
+        try:
+            view = memoryview(header + data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, target)
+    except Exception as exc:
+        if tmp is not None and os.path.lexists(tmp):  # handled error: no temp left (a kill leaves it)
+            os.unlink(tmp)
+        sys.stderr.write("review receipt: %s\n" % exc)
+        sys.exit(1)
+
+
 ARTIFACT_HINT = "pass -o with a path outside it (the session scratchpad, for example)"
 ARTIFACT_DIR_HINT = "set TMPDIR to a directory outside it"
 
@@ -305,12 +360,13 @@ def cmd_artifacts(argv):
     sys.exit(0)
 
 
-MODES = {"snapshot": cmd_snapshot, "compare": cmd_compare, "artifacts": cmd_artifacts}
+MODES = {"snapshot": cmd_snapshot, "compare": cmd_compare, "artifacts": cmd_artifacts,
+         "receipt": cmd_receipt}
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in MODES:
-        sys.stderr.write("detect.py: usage: detect.py snapshot|compare|artifacts ...\n")
+        sys.stderr.write("detect.py: usage: detect.py snapshot|compare|artifacts|receipt ...\n")
         sys.exit(2)
     MODES[sys.argv[1]](sys.argv[2:])
 

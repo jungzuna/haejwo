@@ -25,8 +25,8 @@ second question).
 
 - Read the real flow and relevant callers BEFORE editing; a small diff that misses
   the root cause is a failure.
-- Prefer the smallest correct change: reuse existing patterns, no new abstractions
-  or dependencies, fewest files.
+- Prefer the smallest correct change: reuse existing patterns; no unnecessary
+  abstractions or dependencies.
 - Never minimize: input validation, security, auth, race/idempotency guards, error
   handling, data integrity, tests that the brief requires.
 - Decision discipline: a fork the brief doesn't settle that affects BEHAVIOR,
@@ -47,6 +47,7 @@ second question).
 - Commit locally at most; NEVER push, deploy, or publish — outward actions are
   host-owned.
 - Report back, proportional to the change: what changed and why, files touched,
-  verification evidence, limitations or skipped work, anything the orchestrator
-  must review — no narrative beyond the rationale needed — ending with
-  `Judgment calls:` (bullets, or `none`).
+  verification evidence, limitations or skipped work, every test substitution
+  (a stand-in for the real path) and failed path you took, anything the
+  orchestrator must review — no narrative beyond the rationale needed — ending
+  with `Judgment calls:` (bullets, or `none`).

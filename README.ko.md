@@ -31,7 +31,7 @@ codex plugin add haejwo@haejwo
 
 ## 무엇을 얻나
 
-**판단은 비싸게.** 호스트는 언제나 세션 모델로 계획·결정·검토를 맡습니다. `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(기본 2; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) 초과 편집을 거부하고 Bash 코드 수정은 휴리스틱 차단. Claude Code에서 `git push`를 요청한 턴은 `Outward actions:` / `Final-diff review:` 두 줄로 끝나야 하며, 없으면 Stop 훅이 한 번 막습니다(있는지만 확인; 자세히: [Contract](haejwo/README.md#contract-234)). 서브에이전트는 면제, 훅 오류는 통과(fail-open).
+**판단은 비싸게.** 호스트는 언제나 세션 모델로 계획·결정·검토를 맡습니다. `PreToolUse` 훅이 메인 에이전트의 **턴당 코드파일 N개**(턴은 새 prompt id마다 다시 시작, 작업 알림 포함; [실측](haejwo/README.md#measured); 기본 2; 메타데이터 디렉터리·프로젝트 밖 임시 경로 제외) 초과 편집을 거부하고 Bash 코드 수정은 휴리스틱 차단. Claude Code에서 `git push`를 요청한 턴은 `Outward actions:` / `Final-diff review:` 두 줄로 끝나야 하며, 없으면 Stop 훅이 한 번 막습니다(있는지만 확인; 자세히: [Contract](haejwo/README.md#contract-30)). 서브에이전트는 면제, 훅 오류는 통과(fail-open). 3.0의 승인 의무(리뷰 3회 연속 반려 시 소유자 확인, 승인 근거는 사용자 말 그대로 또는 확인 안 된 상시 근거로 명시, 실패한 경로·테스트 대체 보고)는 규범일 뿐: 훅이 강제하지 않고 효과도 입증되지 않았습니다.
 
 **실행은 설정된 티어로.** 구현·잡무는 워커 티어(`default-worker`, `task-worker`, 선택형 `Budget`; Codex에선 `spawn_agent` 매핑). 비용 절감은 측정 후 고른 싼 티어에서만.
 
@@ -45,7 +45,7 @@ codex plugin add haejwo@haejwo
 
 ## 링크
 
-[플러그인 README](haejwo/README.md)([Contract](haejwo/README.md#contract-234), [By design](haejwo/README.md#by-design)) · [현장 기록](docs/field/README.md) · [하지 않는 것](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
+[플러그인 README](haejwo/README.md)([Contract](haejwo/README.md#contract-30), [By design](haejwo/README.md#by-design)) · [현장 기록](docs/field/README.md) · [하지 않는 것](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
 
 테스트: `python3 tests/test_hooks.py`; 커밋은 **파이프 없는** 종료 코드로 판정.
 

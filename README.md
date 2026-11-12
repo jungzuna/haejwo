@@ -37,7 +37,7 @@ Trust the hooks once via `/hooks`; commands surface as `@haejwo-*` skills. The i
 
 ## What you get
 
-**Judgment stays expensive.** The host is always your session's model and keeps planning, deciding and review. A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (default 2; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. On Claude Code, a turn that requested `git push` must end with `Outward actions:` / `Final-diff review:` lines or the Stop hook blocks once (presence only; details: [Contract](haejwo/README.md#contract-234)). Subagents are exempt; hook errors fail open.
+**Judgment stays expensive.** The host is always your session's model and keeps planning, deciding and review. A `PreToolUse` hook denies the main agent's edits past **N distinct code files per turn** (a turn restarts at every new prompt id, task notifications included; [measured](haejwo/README.md#measured); default 2; metadata dirs and out-of-project temp paths exempt) and heuristically blocks its Bash writes to code. On Claude Code, a turn that requested `git push` must end with `Outward actions:` / `Final-diff review:` lines or the Stop hook blocks once (presence only; details: [Contract](haejwo/README.md#contract-30)). Subagents are exempt; hook errors fail open. 3.0 adds acceptance duties as norms only (an owner checkpoint after three review rejections, authorization quoted verbatim or a disclosed standing source, failed paths and test substitutions reported): no hook enforces them and no effectiveness is demonstrated.
 
 **Execution runs at configured tiers.** Implementation and chores go to worker tiers (`default-worker`, `task-worker`, opt-in `Budget`; on Codex a `spawn_agent` mapping). Cost gains come only from cheaper pins chosen after measuring.
 
@@ -51,7 +51,7 @@ Normal use needs **none**: `/haejwo:setup` (one-time config) · `/haejwo:status`
 
 ## Links
 
-[Plugin README](haejwo/README.md) ([Contract](haejwo/README.md#contract-234), [By design](haejwo/README.md#by-design)) · [Field record](docs/field/README.md) · [Non-goals](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
+[Plugin README](haejwo/README.md) ([Contract](haejwo/README.md#contract-30), [By design](haejwo/README.md#by-design)) · [Field record](docs/field/README.md) · [Non-goals](docs/non-goals.md) · [`PHILOSOPHY.md`](haejwo/PHILOSOPHY.md) · [`PROMPTS.md`](haejwo/PROMPTS.md) · [Releases](https://github.com/jungzuna/haejwo/releases)
 
 Tests: `python3 tests/test_hooks.py`; gate commits on its UNPIPED exit code.
 

@@ -498,8 +498,12 @@ def with_note(note, context=None, reason=None):
     return (context + "\n" + note if context else note), reason
 
 
+# The open-interval file of the subagent-exempt aggregation (observe()); its
+# "__" prefix keeps it out of the session-state file listings.
+OPEN_INTERVALS_FILE = "__observations_open__.json"
 _OBSERVATION_FILES = ("observations.jsonl", "observations.jsonl.1",
-                      "observations.jsonl.2", "observations.jsonl.3")
+                      "observations.jsonl.2", "observations.jsonl.3",
+                      OPEN_INTERVALS_FILE)
 
 
 def prune_state(data_dir, max_age_days=7):
@@ -510,7 +514,8 @@ def prune_state(data_dir, max_age_days=7):
             # observations.jsonl and its three prior generations (.1-.3) are
             # size-bounded by observe()'s own rotation, not age-bounded here;
             # they are retained P13 audit evidence and pruning them by age
-            # would defeat the rotation.
+            # would defeat the rotation. The open-interval file holds counts
+            # not yet in any row (bounded by OBS_AGG_KEYS_CAP).
             if name in _OBSERVATION_FILES:
                 continue
             p = os.path.join(sdir, name)
@@ -560,6 +565,99 @@ def _try_lock(path, timeout=0.3, interval=0.02):
             time.sleep(interval)
 
 
+# Subagent-exempt aggregation (2.36.0, F2 of the 3.0 lab scope, cross-vendor
+# signed): worker tool calls are exempt from every gate, and one row per call
+# filled the size-bounded log with them, so main-agent evidence rotated out
+# first. Per (session, hook, worker type) one interval stays open for
+# OBS_AGG_INTERVAL seconds from its first call; its count lives in
+# OPEN_INTERVALS_FILE. The OPENING call appends a row (n=1) at once; a later
+# call past the interval, or past OBS_AGG_KEYS_CAP open intervals, closes it
+# with a row carrying the final n (none when n=1). Rows of one interval share
+# an `iid`: readers keep the largest n per iid. Trade-off: the open file is
+# changed only under the observations lock (read-modify-atomic-replace), so a
+# busy lock or an unreadable open file appends the plain one-call row instead
+# — the count stays right, only less compact; no in-place log edits, no wait.
+# A crash between a row and the open-file save closes an interval twice (same
+# iid, same or larger n) or leaves a correct 1-call opening row.
+OBS_AGG_INTERVAL = 600
+OBS_AGG_KEYS_CAP = 64
+
+
+def _aggregable(record):
+    return (record.get("decision") == "allow"
+            and record.get("via") == "subagent-exempt"
+            and record.get("hook") in ("gate", "bash_guard"))
+
+
+def _interval_row(iv, now):
+    return {"v": 2, "hook": iv["hook"], "agent_type": iv["agent_type"],
+            "sid": iv["sid"], "decision": "allow", "via": "subagent-exempt",
+            "iid": iv["iid"], "n": iv["n"], "first": iv["first"],
+            "last": iv["last"], "ts": now}
+
+
+def _valid_interval(iv):
+    num = (int, float)
+    return (isinstance(iv, dict) and isinstance(iv.get("iid"), str)
+            and isinstance(iv.get("n"), int) and not isinstance(iv.get("n"), bool)
+            and iv["n"] >= 1
+            and all(isinstance(iv.get(k), num) and not isinstance(iv.get(k), bool)
+                    for k in ("first", "last"))
+            and all(k in iv for k in ("sid", "hook", "agent_type")))
+
+
+def _aggregate_locked(sdir, path, record, now):
+    """Count one subagent-exempt allow (caller holds the observations lock).
+    True when the call is counted — in an appended row or in the saved open
+    file; False when the caller must append the plain one-call row; a dict
+    of interval fields when the append of this call's OPENING row failed
+    after its bytes may already be in the log (an error at flush/close):
+    the caller's plain row carries them, so both rows share one iid and
+    readers count the call once (2.36.0 diff review round 1)."""
+    opath = os.path.join(sdir, OPEN_INTERVALS_FILE)
+    try:
+        with open(opath) as f:
+            ivs = json.load(f)
+    except FileNotFoundError:
+        ivs = {}
+    if not isinstance(ivs, dict) or not all(_valid_interval(v) for v in ivs.values()):
+        return False  # unreadable open file: left as is, plain rows from here
+    key = "\t".join(str(record.get(k)) for k in ("sid", "hook", "agent_type"))
+    keys = sorted(ivs, key=lambda k: ivs[k]["first"])
+    close = [k for k in keys if now - ivs[k]["first"] >= OBS_AGG_INTERVAL]
+    live = [k for k in keys if k not in close]
+    while key not in live and len(live) >= OBS_AGG_KEYS_CAP:
+        close.append(live.pop(0))
+    rows = [_interval_row(ivs.pop(k), now) for k in close]
+    rows = [r for r in rows if r["n"] > 1]  # n=1: its opening row says it all
+    opened = key not in ivs
+    if opened:
+        ivs[key] = {"sid": record.get("sid"), "hook": record.get("hook"),
+                    "agent_type": record.get("agent_type"),
+                    "iid": os.urandom(6).hex(), "first": now, "last": now, "n": 1}
+        rows.append(_interval_row(ivs[key], now))
+    else:
+        ivs[key]["n"] += 1
+        ivs[key]["last"] = now
+    if rows:
+        try:
+            with open(path, "a") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+        except Exception:
+            # open file untouched: the next call closes again
+            if opened:
+                return {k: ivs[key][k] for k in ("iid", "n", "first", "last")}
+            return False
+    try:
+        tmp = opath + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(ivs, f)
+        os.replace(tmp, opath)
+    except Exception:
+        return opened  # an opening call is in its row; an increment is not
+    return True
+
+
 def observe(data_dir, record):
     """Best-effort empirical log (e.g. to answer: do hooks fire in subagents?).
 
@@ -572,6 +670,10 @@ def observe(data_dir, record):
 
     The lock is NON-blocking with bounded retries; a busy lock means the
     append happens unlocked rather than the caller waiting (see _try_lock).
+
+    Subagent-exempt allows of gate.py and bash_guard.py are counted per
+    interval instead of one row each (_aggregate_locked), only while the
+    lock is held; every other record stays one row per event.
     """
     try:
         sdir = os.path.join(data_dir, "state")
@@ -588,6 +690,15 @@ def observe(data_dir, record):
             except Exception:
                 pass  # rotation is best-effort; still append the record below
             record["ts"] = round(time.time(), 1)
+            if fh is not None and _aggregable(record):
+                try:
+                    counted = _aggregate_locked(sdir, path, record, record["ts"])
+                    if counted is True:
+                        return
+                    if isinstance(counted, dict):
+                        record.update(counted)  # same iid as a row maybe written
+                except Exception:
+                    pass  # not counted there: the one-call row below counts it
             with open(path, "a") as f:
                 f.write(json.dumps(record) + "\n")
         finally:

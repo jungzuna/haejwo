@@ -41,9 +41,12 @@ regardless). Extending it requires stating why existing fields don't fit.
   subagent_type    — the requested target, verbatim (may be null/non-string).
   requested_model  — the explicit override, or null for none/blank/"inherit";
                      the same normalization the decision uses.
-  plan_marker_kind — "plan" | "no_plan" | "none" (telemetry, see
-                     _plan_marker_kind; "plan" wins when both appear).
-  decision         — "allow" (not denied; no decision is emitted) | "deny".
+  (plan_marker_kind — removed 2.36.0: a presence record of `Plan:` in the
+                     prompt; the 3.0 lab's cross-vendor read of the project E
+                     sessions found `none` is no evidence of a missing plan
+                     (the plan can sit in a referenced brief). The plan-first
+                     duty stays in the rules; older records still parse.)
+  decision        — "allow" (not denied; no decision is emitted) | "deny".
   tier_pin_check   — "deny" | "pass:explicit-model" | "pass:pin-inherit" |
                      "pass:pin-matches-default" | "pass:not-a-tier" (not a
                      tier, gate/guard off, subagent call, or Codex host) |
@@ -322,41 +325,6 @@ def _pin_not_passable_note_once(data_dir, session_id, role, pin, file_default,
         return note
 
 
-# A plan marker is a LABEL AT THE HEAD OF A LINE, written the way markdown
-# writes labels: `Plan:`, `**Plan**:`, `**Plan:**`, `- **Plan**: …`,
-# `## Plan (합의본 — …)`, `Plan —`, or `Plan` alone on a line (origin
-# 2026-09-28: a brief with the agreed plan under a heading recorded "none").
-# Line-local: `[ \t]` never crosses a newline. Separators are `:`, `(`, a dash
-# then space/EOL, or EOL — "Plan to investigate" is prose, `\b` keeps
-# "Planning" out, and a bullet `[-*]` needs trailing whitespace so `**Plan**`
-# is never read as one.
-_MARKER_HEAD = r"^[ \t]*(?:[-*][ \t]+)?(?:\#{1,6}[ \t]*)?(?:\*\*[ \t]*)?"
-# After the label: an optional closing `**` either side of the colon.
-_MARKER_TAIL = (r"[ \t]*(?::[ \t]*(?:\*\*)?"
-                r"|\*\*[ \t]*(?::|\(|[\u2014\u2013-](?=[ \t]|$)|$)"
-                r"|\(|[\u2014\u2013-](?=[ \t]|$)|$)")
-_PLAN_LABEL_RE = re.compile(_MARKER_HEAD + r"Plan\b" + _MARKER_TAIL, re.M)
-_NO_PLAN_LABEL_RE = re.compile(
-    _MARKER_HEAD + r"No[ \t]+plan[ \t]+because\b" + _MARKER_TAIL, re.M)
-
-
-def _plan_marker_kind(prompt):
-    """TELEMETRY ONLY — which marker the brief CARRIES, never that a plan
-    was agreed. Never raises (a non-string prompt is "none"). The legacy
-    substrings ("Plan:", "No plan because" anywhere) count alongside the
-    label forms; "plan" wins when both kinds appear. CRLF/CR are normalized
-    first (`$` would otherwise stop at `\r`). Known limitation, accepted: a
-    marker inside a fenced code block counts too."""
-    if not isinstance(prompt, str):
-        return "none"
-    text = prompt.replace("\r\n", "\n").replace("\r", "\n")
-    if "Plan:" in text or _PLAN_LABEL_RE.search(text):
-        return "plan"
-    if "No plan because" in text or _NO_PLAN_LABEL_RE.search(text):
-        return "no_plan"
-    return "none"
-
-
 def main():
     os.umask(0o077)  # cold-loop F15: state and observations are per-user
     payload = read_payload()
@@ -368,7 +336,6 @@ def main():
     tool_input = payload.get("tool_input") or {}
     subagent_type = tool_input.get("subagent_type")
     model = tool_input.get("model")
-    prompt = tool_input.get("prompt")
 
     # Normalized ONCE, shared by the decision and the envelope record below —
     # the audit trail can never show a requested_model that implies a
@@ -462,7 +429,7 @@ def main():
     context, deny_reason = with_note(ignored_note, context, deny_reason)
 
     # Envelope derivation must be exactly as fail-open as the decision path
-    # above: a malformed prompt, an encoding surprise, or an observe()
+    # above: an encoding surprise or an observe()
     # failure must never prevent the already-computed decision from being
     # emitted below.
     try:
@@ -471,7 +438,6 @@ def main():
             "hook": "delegation",
             "subagent_type": subagent_type,
             "requested_model": requested_model,
-            "plan_marker_kind": _plan_marker_kind(prompt),
             "decision": decision,
             "tier_pin_check": tier_pin_check,
             "agent_type": payload.get("agent_type"),

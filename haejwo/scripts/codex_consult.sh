@@ -48,6 +48,7 @@ REVIEWER_CONTRACT='REVIEWER CONTRACT: analyze and reply only. Do NOT modify file
 (packages, MCP servers, global or user settings). If you need a missing capability, STATE THE NEED in your reply — the host decides.
 For each finding, label provenance as regression (introduced by this change), base (already present), or unresolved
 (baseline unavailable, inapplicable, or insufficient), and flag any requested remedy beyond the brief or plan.
+A blocking finding names the agreed criterion it violates and the minimum remedy; list optional hardening separately.
 End your reply with a closing statement: material read, verification run, material omissions.
 ---'
 
@@ -69,6 +70,8 @@ Env (env > config > default; empty = unset): CODEX_SANDBOX, CODEX_EFFORT (defaul
   CODEX_MODEL, CODEX_TIMEOUT (default 600s at every effort; 0 = unlimited).
 Config keys codex.consult_sandbox, codex.model, codex.effort; env wins. model/effort are
   ignored under /.codex/ (there the codex block describes Claude).
+HJW_REVIEW_BASE (optional): the base the caller reviews against, copied verbatim into the reply's
+  receipt (unset = `unavailable`). The reply file starts with that receipt: runner facts, not a verdict.
 
 Exit code: non-zero on ANY of {codex rc!=0, empty reply, codex failure event, missing event
   stream, codex tracing error, repository changed, change detection unavailable}; a failure
@@ -382,6 +385,7 @@ if [ "$FAILED" = 1 ]; then
   hjw_fail_tail
 fi
 
+hjw_receipt_write
 hjw_log_coverage_note
 echo "=== Codex reply ($OUT) — mode=$MODE, ${DUR}s, $MODEL_DISP, $EFFORT_DISP, $SANDBOX_DISP ===${COVERAGE_NOTE}${ACCESS_NOTE} | $SHELL_NOTE"
 [ -n "${HOOK_BLOCK_NOTE:-}" ] && echo "$HOOK_BLOCK_NOTE"

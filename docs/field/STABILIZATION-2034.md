@@ -20,7 +20,7 @@ statistical validation.
 | <= N code files per turn for the main agent | `gate.py` | tests + canary edit | tests pass (suite 1,439 at 2.35.0; 1,346 at 2.34.0; 1,443 at 2.35.3); edit-budget deny OBSERVED 2026-11-03 in a `claude plugin eval` child (Claude Code 2.1.317, headless, isolated HOME, a copy of the 2.35.2 cache content; 1 run per arm; BACKLOG #16); interactive and installed-cache edit deny: unverified (0 denies in both field sessions) |
 | Bash code writes denied (heuristic) | `bash_guard.py` | tests (deny contract) | tests pass |
 | Generic agents need an explicit model; tier pin | `delegation_gate.py` | tests + canary Agent | tests pass; canary 2: delegation record present, no errors |
-| Plan-marker presence recorded | `delegation_gate.py` | tests | tests pass |
+| Plan-marker presence recorded | `delegation_gate.py` | tests | tests pass. *Dated note 2026-11-11: stale; 2.36.0 (F2) deleted the plan-marker record and its display, so this claim is retired, not current. The row is kept as history.* |
 | Main-agent push detected → note → `outward-attempt` → Stop block once | `bash_guard.py` + `report_check.py` | tests + canary (4); field: unverified until a push turn occurs | tests pass; canary 4 pass; field (session 1, 2.1.314 interactive, installed cache): push detection, `outward-attempt`, push notes and a label-complete ending NOT blocked demonstrated; Stop BLOCK in the field: unverified |
 | Runner-call note with its limits; setup probe excluded | `post_bash.py` | tests + canary (3) | tests pass (15 parser cases incl. option-operand spellings); canary 3 pass |
 | Push-returned note | `post_bash.py` | tests + canary (4) | tests pass; canary 4 pass |

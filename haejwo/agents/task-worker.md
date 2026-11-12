@@ -20,5 +20,5 @@ boilerplate, formatting, renames, simple find/replace-grade edits, doc updates.
   UNPIPED exit status, then read only what failed.
 - Report back briefly, proportional to the task: what you did, files touched,
   verification evidence (the deterministic check you ran and its result),
-  anything skipped and why — ending with `Judgment calls:` (bullets for any behavioral choice you
+  anything skipped and why, every test substitution or failed path you took — ending with `Judgment calls:` (bullets for any behavioral choice you
   made that the brief didn't settle, or `none`).

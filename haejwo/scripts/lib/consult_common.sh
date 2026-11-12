@@ -480,18 +480,32 @@ snapshot_diff() {
   bounded 60 python3 "$HJW_LIB/detect.py" compare "$1" "$2"
 }
 
+hjw_scope_root() {
+  # Sets HJW_SCOPE_ROOT to $1's worktree root RAW, as detect.py's snapshot derives it: the sentinel keeps a root
+  # that ends in a newline, and ONLY git's own trailing newline is stripped ("" when git fails). *[origin: 3.0.0
+  # review — `$(…)` stripped the path's newline, so the receipt named another path than the snapshot's]*
+  local raw
+  raw="$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$1" rev-parse --show-toplevel \
+           2>/dev/null; printf '%s' "$SNAP_META_END")"
+  HJW_SCOPE_ROOT=""
+  strip_sentinel "$raw" || return 0
+  HJW_SCOPE_ROOT="${META_VAL%$'\n'}"
+  return 0
+}
+
 hjw_git_preflight() {
   # Creates SNAPDIR; probes git: a repo, genuinely not one, or "git could not tell" (never read as "not a repo").
   SNAPDIR="$(mktemp -d "${TMPDIR:-/tmp}/${HJW_RUNNER_KIND}_snap.XXXXXX")" || SNAPDIR=""
   DETECT_OK=1
   [ -n "$SNAPDIR" ] || DETECT_OK=0
-  GIT_OK=0; SCOPE_DISP="scope=none (change detection off)"
+  GIT_OK=0; SCOPE_DISP="scope=none (change detection off)"; HJW_SCOPE_ROOT=""
   GIT_PROBE_ERR="$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
     git -C "$WORKDIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null)"  # as detect.py GIT_ENV
   GIT_PROBE_RC=$?
   if [ "$GIT_PROBE_RC" -eq 0 ]; then
     GIT_OK=1  # scope= = change detection's snapshot root, not read scope *[origin: project M 2026-10-20, review from another repo]*
-    hjw_esc_display "$(bounded 60 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)"
+    hjw_scope_root "$WORKDIR"
+    hjw_esc_display "$HJW_SCOPE_ROOT"
     SCOPE_DISP="scope=${HJW_ESC:-unknown}"
   else
     case "$GIT_PROBE_RC:$GIT_PROBE_ERR" in
@@ -579,6 +593,28 @@ hjw_fail_tail() {
   echo "  --- last 12 log lines ($LOG) ---" >&2
   tail -12 "$LOG" >&2
   [ "$rc" -ne 0 ] && exit "$rc" || exit 1
+}
+
+# ---- review receipt (3.0.0 F6): facts only, persisted with the returned reply ----
+# Repository (the snapshot root), base (HJW_REVIEW_BASE, labelled caller-supplied and not verified, else
+# `unavailable`), HEAD, and the schema and digest of the BEFORE snapshot change detection already took; no second
+# scan, no stored state, no verdict. A receipt that cannot be written FAILS the run (the signed F6 contract: the
+# receipt is persisted with the returned reply); the reviewer's answer stays in $OUT for diagnosis.
+hjw_receipt_write() {
+  local snap="" rrc
+  [ "$GIT_OK" = 1 ] && [ "$DETECT_OK" = 1 ] && [ -s "$SNAPDIR/before.json" ] && snap="$SNAPDIR/before.json"
+  bounded 60 python3 "$HJW_LIB/detect.py" receipt "$OUT" "${HJW_SCOPE_ROOT:-}" "${HJW_REVIEW_BASE:-}" "$snap" \
+    2>>"$LOG"
+  rrc=$?
+  [ "$rrc" -eq 0 ] && return 0
+  hjw_esc_display "$OUT"
+  if [ "$rrc" -eq 124 ]; then
+    fail "review receipt timed out — the reviewer's answer is kept as returned at $HJW_ESC"
+  else
+    fail "review receipt not written (rc=$rrc) — the reviewer's answer is kept as returned at $HJW_ESC"
+  fi
+  hjw_fail_header
+  hjw_fail_tail
 }
 
 hjw_log_coverage_note() {

@@ -75,9 +75,12 @@ variable attributes and traps — a real shell parser, which this heuristic is
 not; never with a blacklist of the counterexamples.
 
 Outward note (2.32). A main-agent `git push` attempt (command word `git` or
-`*/git` after `NAME=VALUE` words, a few reserved/wrapper words and `env`'s
-options; git global options skipped; first non-option word `push`; no
-`--dry-run` and no short option cluster containing `n`, e.g. `-n`, `-fn`)
+`*/git` after `NAME=VALUE` words, a few reserved/wrapper words, `env`'s
+options and, since 2.36.0, `timeout` with its options and duration (not
+past `--help`/`--version`, nor an assignment right after the duration); git
+global options skipped; first non-option word `push`, not followed directly
+by `--help` or `-h`; no `--dry-run` and no short option cluster containing
+`n`, e.g. `-n`, `-fn`)
 in a command whose decision is ALLOW (ok, unresolved-target, heredoc-data;
 never env-off, gate-off or config-malformed: haejwo is off there and
 report_check does not run) sets the per-turn `outward_attempt` flag in the
@@ -101,10 +104,19 @@ the turn's `outward_calls` / `outward_ids` (tool_use ids for display, cap 8)
 and the session dedupe list `outward_seen` (cap 64; the session counter
 `push_calls` was removed with the 2.33.0 checklist in 2.34.0) — no command
 text is stored; post_bash.py and report_check.py read them.
-`review_runner_invoked` (the same segment grammar, plus `timeout
-<duration>`; setup probes marked `HJW_PROBE=` excluded) names a
-reviewer-runner invocation for post_bash.py; it never affects a decision
-here.
+`review_runner_invoked` (the same segment grammar, plus a bare `bash`/`sh`
+word before the runner path since 2.36.0; setup probes marked `HJW_PROBE=`
+excluded) names a reviewer-runner invocation for post_bash.py; it never
+affects a decision here.
+
+Detection repair (2.36.0, lab E2: every main-agent Bash command of the two
+project E field sessions replayed through both matchers, 2,381 commands):
+v2.35.3 missed 22 of 89 pushes (all `timeout N git push`) and 73 of 161
+runner calls (`bash <runner>` 70, a runner after an unquoted heredoc 3). With
+the `timeout` skip for pushes and the bare interpreter word for runners, 0
+pushes and 20 runner calls stay missed — all after an unquoted `<<EOF`
+heredoc in the same command (the documented heredoc miss) — and 0 newly
+matched commands are false.
 """
 import os
 import re
@@ -287,7 +299,8 @@ def heredoc_data_target(command, cfg, cwd=""):
 # --- Outward note (2.32; module docstring) ----------------------------------
 OUTWARD_NOTE = ("[haejwo] outward action requested (git push): the report "
                 "carries `Outward actions: <repo; branch; action; result> - "
-                "authorized by: <user words, time>`.")
+                "authorized by: <verbatim user words, time | standing (not "
+                "verified in this session): <source>>`, with the actual result.")
 _ASSIGN_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _PUSH_PREFIX_WORDS = frozenset({"!", "{", "if", "then", "do", "else", "elif",
                                 "while", "until", "time", "command", "exec",
@@ -362,22 +375,38 @@ _TIMEOUT_OPTS_WITH_ARG = frozenset({"-s", "--signal", "-k", "--kill-after"})
 def _command_word_index(words, timeout=False):
     """Index of the command word: past `NAME=VALUE` words, the reserved and
     wrapper words in _PUSH_PREFIX_WORDS and `env` with its options; with
-    `timeout`, also past `timeout`, its options and its duration (the
-    review-runner matcher only — the push matcher never skipped it)."""
-    i, n = 0, len(words)
+    `timeout`, also past `timeout`, its options and its duration. Both
+    matchers pass `timeout=True` since 2.36.0 (lab E2 replay of the project E
+    sessions: all 22 missed pushes were `timeout N git push`, some with an
+    assignment before `timeout` or `env …` after the duration).
+
+    `timeout` boundaries (2.36.0 diff review): a terminating option
+    (`--help`, `--version` or an abbreviation getopt_long would accept or
+    reject as ambiguous) runs nothing, so there is no command word (returns
+    `len(words)`); after the duration timeout EXECUTES the next word, so a
+    `NAME=VALUE` word there is the command word, not an assignment —
+    assignments after the duration are skipped only behind `env`."""
+    i, n, exec_word = 0, len(words), False
     while i < n:
         w = words[i]
-        if _ASSIGN_WORD.match(w) or w in _PUSH_PREFIX_WORDS:
+        if _ASSIGN_WORD.match(w) and not exec_word:
+            i += 1
+        elif w in _PUSH_PREFIX_WORDS:
             i += 1
         elif w == "env":
+            exec_word = False
             i += 1
             while i < n and words[i].startswith("-"):
                 i += 2 if words[i] in _ENV_OPTS_WITH_ARG else 1
         elif timeout and w == "timeout":
             i += 1
             while i < n and words[i].startswith("-"):
+                name = words[i][2:].split("=", 1)[0] if words[i].startswith("--") else ""
+                if name and ("help".startswith(name) or "version".startswith(name)):
+                    return n  # prints and exits: nothing is executed
                 i += 2 if words[i] in _TIMEOUT_OPTS_WITH_ARG else 1
             i += 1  # the duration
+            exec_word = True
         else:
             break
     return i
@@ -385,13 +414,19 @@ def _command_word_index(words, timeout=False):
 
 def _is_push(words):
     n = len(words)
-    i = _command_word_index(words)
+    i = _command_word_index(words, timeout=True)
     if i >= n or not (words[i] == "git" or words[i].endswith("/git")):
         return False
     j = i + 1
     while j < n and words[j].startswith("-"):
         j += 2 if words[j] in _GIT_OPTS_WITH_ARG else 1
     if j >= n or words[j] != "push":
+        return False
+    # `push --help`/`push -h` print usage and push nothing (2.36.0; 0 such
+    # field commands in lab E2). Only the word right after `push`: later
+    # the same word can be an option's value (`--push-option -h`, diff
+    # review), and that push runs.
+    if j + 1 < n and words[j + 1] in ("--help", "-h"):
         return False
     return not any(a == "--dry-run" or _DRY_RUN_CLUSTER.fullmatch(a)
                    for a in words[j + 1:])
@@ -528,10 +563,12 @@ def git_push_attempt(command):
 
     Guarantee: literal body text of a quoted-delimiter heredoc is never
     classified as a push; commands after its terminator line are
-    (`_skip_quoted_heredocs`). Known misses (fail-open): an unquoted-delimiter
-    heredoc's body and everything after it, a continued or multiline heredoc
-    header, `$(...)` inside a body, an `EOF)` terminator inside a
-    substitution, and wrappers not in _PUSH_PREFIX_WORDS (`sudo git push`)."""
+    (`_skip_quoted_heredocs`). `timeout [opts] DURATION git push` is an
+    attempt (2.36.0); `--help`/`-h` right after `push` is not. Known misses
+    (fail-open): an unquoted-delimiter heredoc's body and everything after
+    it, a continued or multiline heredoc header, `$(...)` inside a body, an
+    `EOF)` terminator inside a substitution, and wrappers not skipped by
+    _command_word_index (`sudo git push`, `bash -c 'git push'`)."""
     for seg in _shell_segments(_skip_quoted_heredocs(command)):
         try:
             words = shlex.split(seg)
@@ -543,6 +580,7 @@ def git_push_attempt(command):
 
 
 REVIEW_RUNNERS = ("codex_consult.sh", "claude_consult.sh")
+_RUNNER_INTERPRETERS = frozenset({"bash", "sh"})
 # The setup-probe marker (2.34.0, plan ledger #5): an assignment word
 # `HJW_PROBE=<anything>` before a runner's command word marks a probe call.
 PROBE_MARKER = "HJW_PROBE="
@@ -650,7 +688,8 @@ def review_runner_invoked(command):
 
     A segment invokes one when its command word (`_command_word_index` with
     `timeout`: past `NAME=VALUE` words, `nohup` and the other prefix words,
-    `env` with its options, `timeout` with its options and duration) has
+    `env` with its options, `timeout` with its options and duration) — or,
+    when that word is exactly `bash` or `sh`, the word right after it — has
     basename `codex_consult.sh` or `claude_consult.sh` and no word of the
     segment is `--help`. A segment carrying `HJW_PROBE=<anything>` as an
     assignment before the command word (_probe_marked: a bare prefix
@@ -660,9 +699,12 @@ def review_runner_invoked(command):
     text or an `HJW_PROBE=` after the command word does not exempt a call.
     Quoted-delimiter heredoc bodies are skipped exactly
     as git_push_attempt skips them. Known misses (no line, fail-open):
-    `bash -c '...'`, an interpreter word (`bash <path>/codex_consult.sh`),
-    `sudo` and other wrappers not skipped above, and the push matcher's
-    heredoc misses."""
+    `bash -c '...'` (its operand is a string, not a parsed command), an
+    interpreter with options or a path (`bash -x <runner>`, `/bin/bash
+    <runner>`; 0 of 70 field interpreter calls in lab E2), `sudo` and other
+    wrappers not skipped above, and the push matcher's heredoc misses — the
+    one that remains in the field: a runner call after an unquoted `<<EOF`
+    heredoc in the same command (lab E2: 20 of 161 runner calls)."""
     try:
         for seg in _shell_segments(_skip_quoted_heredocs(command)):
             try:
@@ -672,6 +714,13 @@ def review_runner_invoked(command):
             i = _command_word_index(words, timeout=True)
             if _probe_marked(words, i):
                 continue  # a setup probe: not a review call
+            # 2.36.0 (lab E2: 70 field calls were `bash <runner>`, none with
+            # options or an interpreter path): a bare `bash`/`sh` word, no
+            # options, directly before the runner path is the interpreter
+            if (i + 1 < len(words) and words[i] in _RUNNER_INTERPRETERS
+                    and not words[i + 1].startswith("-")  # `--rcfile=<runner>`
+                    and os.path.basename(words[i + 1]) in REVIEW_RUNNERS):
+                i += 1
             if i < len(words) and "--help" not in words:
                 base = os.path.basename(words[i])
                 if base in REVIEW_RUNNERS:

@@ -943,21 +943,28 @@ def main():
         # two fragments that must BOTH appear (used when the source phrase
         # crosses a line wrap in the diet file).
         CANARIES = [
-            "does JUDGMENT",                        # 1. judgment/execution split
+            "Host judges; subagents execute",       # 1. judgment/execution split (3.0.0 wording)
             "NEVER require plugin commands",        # 2. zero-command concept
             "no behavior/risk/API/data-shape judgment",  # 3. task-worker litmus
-            "NOT independent authority",            # 4. deep-reasoner is not independent authority
+            "same-model; NOT independent",          # 4. deep-reasoner is not independent authority
             "independent review BEFORE",            # 5. review-timing invariant
             "xhigh ONLY",                           # 6. stakes-scaled effort ceiling
-            "never --resume",                       # 7. escalation = new session
+            "NEVER --resume",                       # 7. escalation = new session
             "No plan because",                      # 8. plan linkage escape
-            "no acceptance",                        # 9. acceptance evidence split
+            "Countable criteria need named deterministic evidence",  # 9. acceptance evidence split
             "Judgment calls:",                      # 10. discretion disclosure
-            ("workers NEVER", "push or deploy"),    # 11. outward-action ban
-            "delegation signal",                    # 12. bash-write rule
-            "never grind",                          # 13. retry stop-condition
+            ("Outward (push/deploy/publish):", "host ONLY"),  # 11. outward-action ban
+            "no code edits via Bash",               # 12. bash-write rule
+            "retry/raise tier ONCE",                # 13. retry stop-condition
             "Final-diff review:",                   # 14. acceptance record label (2.31.1)
             "Outward actions:",                     # 15. outward record label (2.31.1)
+            # 3.0.0 acceptance contract (F7): the three-rejection checkpoint,
+            # the two legal `authorized by:` forms, failed paths/substitutions.
+            ("After 3 consecutive", "review rejections", "pause for owner"),  # 16
+            "standing (not verified in this session)",  # 17. disclosed standing source
+            "verbatim user words",                  # 18. quoted authorization
+            "test substitutions",                   # 19. acceptance discloses substitutions
+            "bounded quiet runs of existing suites",  # 20. F5 suite norm
         ]
         for phrase in CANARIES:
             if isinstance(phrase, tuple):
@@ -991,6 +998,8 @@ def main():
         # list-and-order authorization wording; examples moved to README.
         # Cap re-pinned 3900 -> 3750 (actual 3744); worst combination
         # re-measured 4,857 chars (143 headroom) by the combined fixture below.
+        # 3.0.0 acceptance contract (F5/F7): same cap, actual 3749; the
+        # combined fixture measures 4,862 (60 mocked combinations: max 4,892).
         rules_size = os.path.getsize(rules_path)
         check("rules file size within diet budget (<=3750 bytes)",
               rules_size <= 3750, f"size={rules_size}")
@@ -1227,6 +1236,89 @@ def main():
         rc, out = run("bash_guard.py",
                       bash_payload("sed -i 's/a/b/' src/app.py", agent="task-worker"), data)
         check("SUBAGENT bash write -> allow (exempt)", decision(out) != "deny")
+
+        # 2.36.0 F1 detection repair (lab E2, the project E field spellings):
+        # the push matcher skips `timeout`, its options and duration as the
+        # runner matcher does; the runner matcher takes a bare `bash`/`sh`
+        # word before the runner path.
+        print("== bash_guard.py push / runner detection (2.36.0 F1) ==")
+        from bash_guard import git_push_attempt, review_runner_invoked  # noqa: E402
+        f1_r = "/p/haejwo/scripts/codex_consult.sh"
+        for cmd in ("timeout 300 git push origin main",
+                    "GIT_TERMINAL_PROMPT=0 timeout 120 git push origin HEAD",
+                    "timeout 120 env GIT_ASKPASS= GIT_TERMINAL_PROMPT=0 git push -q origin main",
+                    "timeout -k 5 -s TERM 60 git push origin main",
+                    "cd /repo && timeout 300 git push origin v3-dev",
+                    "cat > n.md <<'EOF'\nx\nEOF\ntimeout 300 git push origin main",
+                    # diff review round 1: the remaining timeout options, and help
+                    # words that are an option's VALUE (the push runs)
+                    "timeout --signal=KILL 60 git push origin main",
+                    "timeout --kill-after=5 60 git push origin main",
+                    "git push --push-option -h origin main",
+                    "git push -o --help origin main",
+                    "git push origin main -h"):
+            check(f"F1 push attempt: {cmd[:60]!r}", git_push_attempt(cmd) is True)
+        for cmd in ("echo timeout 300 git push",
+                    "grep 'timeout 300 git push' log.txt",
+                    "git commit -m 'then timeout 300 git push'",
+                    "cat > n.md <<'EOF'\ntimeout 300 git push origin main\nEOF",
+                    "git push --dry-run origin main",
+                    "timeout 300 git push -n origin main",
+                    "git push --help",
+                    "timeout 60 git push -h",
+                    "pgrep -f 'git push origin'",
+                    "timeout git push",  # `git` is the duration word: no command
+                    # diff review round 1: timeout prints and runs nothing, or
+                    # execs the assignment word after its duration
+                    "git push -h",
+                    "timeout --help 60 git push origin main",
+                    "timeout --version 60 git push origin main",
+                    "timeout --v 60 git push origin main",
+                    "timeout 60 X=1 git push origin main"):
+            check(f"F1 NOT a push attempt: {cmd[:60]!r}", git_push_attempt(cmd) is False)
+        for cmd, want in (("bash " + f1_r + " -o out.md b.md", "codex_consult.sh"),
+                          ("sh /p/scripts/claude_consult.sh -", "claude_consult.sh"),
+                          ("CODEX_EFFORT=high bash " + f1_r + " b.md", "codex_consult.sh"),
+                          ("timeout 1500 bash " + f1_r + " -o r.md b.md", "codex_consult.sh"),
+                          ("timeout 60 env X=1 " + f1_r + " b.md", "codex_consult.sh"),
+                          ("cat > b.md <<'EOF'\nx\nEOF\nbash " + f1_r + " b.md",
+                           "codex_consult.sh")):
+            check(f"F1 runner invoked: {cmd[:60]!r}", review_runner_invoked(cmd) == want,
+                  str(review_runner_invoked(cmd)))
+        for cmd in ("bash " + f1_r + " --help",
+                    "HJW_PROBE=1 bash " + f1_r + " b.md",
+                    "echo bash " + f1_r,
+                    "bash other.sh " + f1_r,
+                    "bash other.sh",
+                    "bash -x " + f1_r + " b.md",   # interpreter options: not modeled
+                    "/bin/bash " + f1_r + " b.md",  # interpreter path: not modeled
+                    "bash -c '" + f1_r + " b.md'",  # a string operand: documented miss
+                    "cat > b.md <<'EOF'\nbash " + f1_r + " b.md\nEOF",
+                    # the documented residual: after an UNQUOTED heredoc the scan ends
+                    "cat > b.md <<EOF\nx\nEOF\nbash " + f1_r + " b.md",
+                    # diff review round 1: an interpreter OPTION naming the runner,
+                    # and timeout's boundaries (shared with the push matcher)
+                    "bash --rcfile=" + f1_r,
+                    "sh -x" + f1_r,
+                    "timeout --help 60 " + f1_r + " b.md",
+                    "timeout 60 X=1 " + f1_r + " b.md"):
+            check(f"F1 runner NOT invoked: {cmd[:60]!r}", review_runner_invoked(cmd) is None,
+                  str(review_runner_invoked(cmd)))
+        f1_data = tempfile.mkdtemp(prefix="hjw-test-f1-")
+        try:
+            rc, out = run("bash_guard.py",
+                          bash_payload("GIT_TERMINAL_PROMPT=0 timeout 120 git push origin main",
+                                       sid="sess-F1P"), f1_data)
+            f1_recs = [json.loads(l) for l in
+                       open(os.path.join(f1_data, "state", "observations.jsonl"))]
+            check("F1 hook: a `timeout N git push` allow carries the outward note and the "
+                  "outward-attempt record (arms the Stop record check)",
+                  rc == 0 and decision(out) != "deny"
+                  and ctx_of(out).startswith("[haejwo] outward action requested (git push)")
+                  and [r.get("via") for r in f1_recs] == ["ok", "outward-attempt"],
+                  f"out={out} recs={f1_recs}")
+        finally:
+            shutil.rmtree(f1_data, ignore_errors=True)
 
         print("== bash_guard.py unresolved targets (A9) ==")
         # A write target the hook cannot resolve (shell expansion / backtick)
@@ -1480,6 +1572,228 @@ def main():
                   a10_count("sess-ONE3", "delegation"))
         finally:
             shutil.rmtree(a10_data, ignore_errors=True)
+
+        # 2.36.0 F2: subagent-exempt allows (gate.py, bash_guard.py) are counted
+        # per (session, hook, worker type) interval; everything else stays one
+        # row per event. Counts must survive concurrency, a busy lock, an
+        # unreadable open file and closing; status keeps the largest n per iid.
+        print("== observe(): subagent-exempt interval aggregation (2.36.0 F2) ==")
+        import status_collect as agg_sc  # noqa: E402
+        import hjw_common as agg_hc  # noqa: E402
+        agg_data = tempfile.mkdtemp(prefix="hjw-test-agg-")
+        try:
+            agg_sdir = os.path.join(agg_data, "state")
+            agg_open = os.path.join(agg_sdir, agg_hc.OPEN_INTERVALS_FILE)
+
+            def agg_write(path, text):
+                with open(path, "w") as f:
+                    f.write(text)
+
+            def agg_rows():
+                p_ = os.path.join(agg_sdir, "observations.jsonl")
+                return [json.loads(l) for l in open(p_) if l.strip()] if os.path.isfile(p_) else []
+
+            def agg_calls(sid, hook=None):
+                pend, _ = agg_sc.load_open_intervals(agg_data)
+                rs = agg_sc._collapse([r for r in agg_rows() + pend if r.get("sid") == sid
+                                       and r.get("via") == "subagent-exempt"
+                                       and (hook is None or r.get("hook") == hook)])
+                return sum(agg_sc._calls(r) for r in rs)
+
+            for i in range(3):
+                run("gate.py", edit_payload(f"/repo/g/{i}.py", sid="sess-AG1",
+                                            agent="haejwo:default-worker"), agg_data)
+            rows = [r for r in agg_rows() if r.get("sid") == "sess-AG1"]
+            ivs = json.load(open(agg_open))
+            check("F2 agg: 3 subagent gate allows -> ONE opening row (n=1, iid) + the open "
+                  "interval at n=3; status counts 3",
+                  len(rows) == 1 and rows[0].get("n") == 1 and isinstance(rows[0].get("iid"), str)
+                  and rows[0].get("via") == "subagent-exempt"
+                  and rows[0].get("agent_type") == "haejwo:default-worker"
+                  and [v["n"] for v in ivs.values()] == [3] and agg_calls("sess-AG1") == 3,
+                  f"rows={rows} ivs={ivs}")
+            run("bash_guard.py", bash_payload("echo hi > src/a.py", sid="sess-AG1",
+                                              agent="haejwo:default-worker"), agg_data)
+            check("F2 agg: bash_guard subagent allows aggregate under their own hook key",
+                  agg_calls("sess-AG1", "bash_guard") == 1 and len(json.load(open(agg_open))) == 2,
+                  str(json.load(open(agg_open))))
+            run("gate.py", edit_payload("/repo/g/m.py", sid="sess-AG1"), agg_data)
+            run("delegation_gate.py", task_payload("haejwo:task-worker", sid="sess-AG1",
+                                                   agent="haejwo:default-worker"), agg_data)
+            rows = [r for r in agg_rows() if r.get("sid") == "sess-AG1"]
+            check("F2 agg: a main-agent allow and a nested delegation stay one row each",
+                  [(r.get("hook"), r.get("via")) for r in rows if "iid" not in r]
+                  == [("gate", "ok"), ("delegation", None)], str(rows))
+
+            # closing: an interval past OBS_AGG_INTERVAL closes with its final n
+            ivs = json.load(open(agg_open))
+            for v in ivs.values():
+                v["first"] -= agg_hc.OBS_AGG_INTERVAL + 100
+            agg_write(agg_open, json.dumps(ivs))
+            old_iids = sorted(v["iid"] for v in ivs.values() if v["n"] > 1)
+            run("gate.py", edit_payload("/repo/g/z.py", sid="sess-AG1",
+                                        agent="haejwo:default-worker"), agg_data)
+            closing = [r for r in agg_rows() if r.get("iid") in old_iids and r.get("n") == 3]
+            check("F2 agg: an expired interval closes with ONE row carrying the final n; "
+                  "the 1-call interval adds none; the next call opens a new interval",
+                  len(closing) == 1 and agg_calls("sess-AG1", "gate") == 4
+                  and agg_calls("sess-AG1", "bash_guard") == 1
+                  and len(json.load(open(agg_open))) == 1, f"{closing} {agg_rows()[-3:]}")
+            dup = agg_sc._collapse([dict(closing[0]), dict(closing[0], n=2), dict(closing[0])]
+                                   if closing else [])
+            check("F2 agg: an interval closed twice (crash before the open-file save) is "
+                  "counted once, at its largest n",
+                  len(dup) == 1 and agg_sc._calls(dup[0]) == 3, str(dup))
+
+            # a held observations lock: the plain one-call row, open file untouched
+            before = open(agg_open, "rb").read()
+            holder = open(os.path.join(agg_sdir, "__observations__.json.lock"), "w")
+            try:
+                fcntl.flock(holder, fcntl.LOCK_EX)
+                run("gate.py", edit_payload("/repo/g/l.py", sid="sess-AG1",
+                                            agent="haejwo:default-worker"), agg_data)
+            finally:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                holder.close()
+            last = agg_rows()[-1]
+            check("F2 agg: a busy lock appends the plain one-call row (no iid) and leaves the "
+                  "open file untouched; the count stays right",
+                  last.get("via") == "subagent-exempt" and "iid" not in last
+                  and last.get("path") == "/repo/g/l.py" and open(agg_open, "rb").read() == before
+                  and agg_calls("sess-AG1", "gate") == 5, str(last))
+
+            # an unreadable open file: plain rows, the file is left as found
+            agg_write(agg_open, "{not json")
+            run("gate.py", edit_payload("/repo/g/u.py", sid="sess-AG1",
+                                        agent="haejwo:default-worker"), agg_data)
+            last = agg_rows()[-1]
+            check("F2 agg: an unreadable open file -> the plain one-call row; file untouched",
+                  "iid" not in last and last.get("path") == "/repo/g/u.py"
+                  and open(agg_open).read() == "{not json", str(last))
+            os.remove(agg_open)
+
+            # the cap: past OBS_AGG_KEYS_CAP open intervals the oldest closes
+            now_ = time.time()
+            agg_write(agg_open, json.dumps({
+                f"k{i}": {"sid": "sess-AGC", "hook": "gate", "agent_type": f"w{i}",
+                          "iid": f"cap{i}", "n": 2, "first": now_ - 100 + i, "last": now_ - 100 + i}
+                for i in range(agg_hc.OBS_AGG_KEYS_CAP)}))
+            observe(agg_data, {"v": 2, "hook": "gate", "agent_type": "w-new", "sid": "sess-AGC",
+                               "decision": "allow", "via": "subagent-exempt"})
+            ivs = json.load(open(agg_open))
+            check("F2 agg: the open file stays at OBS_AGG_KEYS_CAP; the oldest interval closes "
+                  "with its row",
+                  len(ivs) == agg_hc.OBS_AGG_KEYS_CAP and "k0" not in ivs
+                  and any(r.get("iid") == "cap0" and r.get("n") == 2 for r in agg_rows()),
+                  str(len(ivs)))
+            os.remove(agg_open)
+
+            # diff review round 1, finding 4: the opening row reaches the log,
+            # then flush/close raises; the fallback plain row must share its iid
+            fi_data = os.path.join(agg_data, "fault")
+            fi_rec = {"v": 2, "hook": "gate", "tool": "Edit", "path": "/repo/f.py",
+                      "agent_type": "haejwo:task-worker", "agent_id": "a1",
+                      "sid": "sess-AGF", "decision": "allow", "via": "subagent-exempt"}
+            fi_real_open, fi_calls = open, []
+
+            class _CloseFails:
+                def __init__(self, fh):
+                    self.fh = fh
+
+                def write(self, t):
+                    return self.fh.write(t)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    self.fh.close()  # the bytes are visible now
+                    raise OSError(5, "injected close error")
+
+            def fi_open(path, mode="r", *a, **k):
+                fh = fi_real_open(path, mode, *a, **k)
+                if (str(path).endswith("observations.jsonl") and mode == "a"
+                        and not fi_calls):
+                    fi_calls.append(path)
+                    return _CloseFails(fh)
+                return fh
+
+            agg_hc.open = fi_open
+            try:
+                observe(fi_data, dict(fi_rec))
+            finally:
+                del agg_hc.open
+            fi_rows = [json.loads(l) for l in
+                       open(os.path.join(fi_data, "state", "observations.jsonl")) if l.strip()]
+            fi_merged = agg_sc._collapse(fi_rows)
+            check("F2 agg (fault injection): an append that fails AFTER its opening row is "
+                  "visible -> the fallback row carries the same iid; counted once",
+                  len(fi_calls) == 1 and len(fi_rows) == 2
+                  and fi_rows[0].get("iid") and fi_rows[0].get("iid") == fi_rows[1].get("iid")
+                  and sum(agg_sc._calls(r) for r in fi_merged) == 1, str(fi_rows))
+
+            # diff review round 1, finding 3: hooks write between the open-file
+            # read and the log read; status must retry or say it may be incomplete
+            import contextlib  # noqa: E402
+            import io  # noqa: E402
+
+            def snap_status(sdata, every):
+                real_load, hits = agg_sc.load_observations, []
+
+                def injecting(d):
+                    if every or not hits:
+                        hits.append(1)
+                        for _ in range(2):  # hook A opens the interval, hook B counts
+                            observe(sdata, {"v": 2, "hook": "gate", "tool": "Edit",
+                                            "path": "/r/s.py", "agent_type": "haejwo:task-worker",
+                                            "sid": "sess-SNAP", "decision": "allow",
+                                            "via": "subagent-exempt"})
+                        observe(sdata, {"v": 2, "hook": "gate", "tool": "Edit",
+                                        "path": "/r/m.py", "sid": "sess-SNAP",
+                                        "decision": "allow", "via": "ok"})
+                    return real_load(d)
+
+                agg_sc.load_observations = injecting
+                buf = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        agg_sc.main(["status_collect.py", sdata, "sess-SNAP"])
+                finally:
+                    agg_sc.load_observations = real_load
+                return buf.getvalue()
+
+            snap_out = snap_status(os.path.join(agg_data, "snap1"), every=False)
+            check("F2 status snapshot: writes between the two reads -> retried; the second "
+                  "read counts both calls, no incomplete note",
+                  "subagent-origin calls: haejwo:task-worker=2" in snap_out
+                  and "may be incomplete" not in snap_out, snap_out)
+            snap_out = snap_status(os.path.join(agg_data, "snap2"), every=True)
+            check("F2 status snapshot: still changing after the bounded retries -> the "
+                  "counts are printed with a may-be-incomplete note",
+                  "note: observation files changed during 3 reads (hooks writing or "
+                  "rotating) — the counts below may be incomplete" in snap_out, snap_out)
+
+            # concurrency: separate hook processes at once; every call counted
+            agg_n = 16
+            agg_out = []
+
+            def agg_one(i):
+                agg_out.append(run("gate.py", edit_payload(
+                    f"/repo/c/{i}.py", sid="sess-AGP", agent="haejwo:task-worker"), agg_data)[0])
+
+            agg_threads = [threading.Thread(target=agg_one, args=(i,)) for i in range(agg_n)]
+            for t_ in agg_threads:
+                t_.start()
+            for t_ in agg_threads:
+                t_.join()
+            bad_lines = [l for l in open(os.path.join(agg_sdir, "observations.jsonl"))
+                         if l.strip() and not l.strip().endswith("}")]
+            check(f"F2 agg: {agg_n} concurrent subagent gate calls -> all exit 0, every call "
+                  "counted exactly once, no torn line",
+                  agg_out == [0] * agg_n and agg_calls("sess-AGP") == agg_n and not bad_lines,
+                  f"rc={agg_out} calls={agg_calls('sess-AGP')} bad={bad_lines[:2]}")
+        finally:
+            shutil.rmtree(agg_data, ignore_errors=True)
 
         # K5: an observation is never load-bearing — a HELD observations lock must
         # not make the host wait for a gate decision.
@@ -1836,7 +2150,8 @@ def main():
                          encoding="utf-8-sig").read()
         # The rules name the codex runner's default inline (2.25.0 wording:
         # "medium (routine; codex default, claude: CLI default)").
-        rules_efforts = set(re.findall(r"(\w+) \(routine; codex default", rules_src))
+        # 3.0.0 wording: "medium routine; high plans/diffs".
+        rules_efforts = set(re.findall(r"(\w+) routine;", rules_src))
         check("reviewer effort default single-sourced (codex_consult.sh runner-default "
               "== rules/orchestration.md)",
               len(runner_efforts) == 1 and runner_efforts == rules_efforts,
@@ -1845,11 +2160,11 @@ def main():
         # b. Size ratchets on the cold-start read path: a doc nobody finishes
         # reading is a doc that does not ship its rules. Each cap pins the
         # SHIPPED count rounded up to the next 10 — a ratchet, not a budget.
-        for rel, cap in (("README.md", 450), ("README.ko.md", 320),  # 2.35.2: privacy + lean rewrite, README.md 768 -> 450 words (cap 770 -> 450), README.ko.md 547 -> 318 words (cap 650 -> 320); 2.35.1: README.md 740 -> 770 (the push-turn Stop-block sentence, `bash on|off`, the By-design pointer; shipped 768)
+        for rel, cap in (("README.md", 500), ("README.ko.md", 370),  # 3.0.0: the norms-only acceptance-duties sentence, README.md 462 -> 499 words (cap 470 -> 500), README.ko.md 328 -> 361 (cap 330 -> 370); 2.36.0 F3: the budget-window clause and the Measured link, README.md 450 -> 462 words (cap 450 -> 470), README.ko.md 318 -> 328 (cap 320 -> 330); 2.35.2: privacy + lean rewrite, README.md 768 -> 450 words (cap 770 -> 450), README.ko.md 547 -> 318 words (cap 650 -> 320); 2.35.1: README.md 740 -> 770 (the push-turn Stop-block sentence, `bash on|off`, the By-design pointer; shipped 768)
                          # 2.31.1: the record sentence; field round 2: the runner-disclosure sentence
                          # (project M 2026-10-20 reviewer runs from another repo and 0-shell-command reviews
                          # in a demo app went undisclosed) names both tokens
-                         ("haejwo/README.md", 2640),  # 2.35.3 acceptance docs: 2,402 -> 2,635 words (cap 2,410 -> 2,640; norm-only table re-sourced to field sessions 1-2, three measured-path rows, interactive/Codex/setup status, historical parity qualifier, #12 and C3 clauses, reviewer provenance labels; duplicates trimmed first; disclosed in docs/field/STABILIZATION-2034.md); 2.35.2: privacy + lean rewrite, 2,620 -> 2,402 words (cap 2,620 -> 2,410; exit codes, knobs and the codex@openai-codex note moved to docs/runners.md); 2.35.1 documentation patch: 2,580 (at cap) -> 2,620 shipped (turn_reset.py named, plan-marker record outside delegation_guard, config path, setup rounds, 30-day/fingerprint Keep rule, runner nits; disclosed in docs/field/STABILIZATION-2034.md); 2.34.0: the Contract section (K2: mechanisms + exemptions, demonstrated-delivery notes, norm-only omission table with denominators, host/path matrix, T1/T2 maintenance rule) replaced the 2.33 pilot paragraph: 2,249 -> 2,571 words, re-pinned to the shipped count rounded up (disclosed in docs/field/STABILIZATION-2034.md); 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
+                         ("haejwo/README.md", 3440),  # 3.0.0 review fixes: 3,401 -> 3,434 (cap 3,410 -> 3,440; receipt base label, failure semantics, leading-block provenance); 3.0.0 acceptance contract: 3,071 -> 3,401 words (cap 3,080 -> 3,410; the 3.0 duties as norms with what stays enforced, the F5 suite norm and its rollback signal, the review receipt, the reviewer's blocking-finding sentence, the 690-char Stop bound); 2.36.0 F3 contract honesty: 2,635 -> 3,071 words (cap 2,640 -> 3,080; the Measured subsection with the 3.0 lab numbers E2/E6/E7 and their limits, the prompt-window unit, push attempts vs executed pushes, Bash-mediated writes; the plan-marker clause removed with its record); 2.35.3 acceptance docs: 2,402 -> 2,635 words (cap 2,410 -> 2,640; norm-only table re-sourced to field sessions 1-2, three measured-path rows, interactive/Codex/setup status, historical parity qualifier, #12 and C3 clauses, reviewer provenance labels; duplicates trimmed first; disclosed in docs/field/STABILIZATION-2034.md); 2.35.2: privacy + lean rewrite, 2,620 -> 2,402 words (cap 2,620 -> 2,410; exit codes, knobs and the codex@openai-codex note moved to docs/runners.md); 2.35.1 documentation patch: 2,580 (at cap) -> 2,620 shipped (turn_reset.py named, plan-marker record outside delegation_guard, config path, setup rounds, 30-day/fingerprint Keep rule, runner nits; disclosed in docs/field/STABILIZATION-2034.md); 2.34.0: the Contract section (K2: mechanisms + exemptions, demonstrated-delivery notes, norm-only omission table with denominators, host/path matrix, T1/T2 maintenance rule) replaced the 2.33 pilot paragraph: 2,249 -> 2,571 words, re-pinned to the shipped count rounded up (disclosed in docs/field/STABILIZATION-2034.md); 2.32.0: Stop record check, withdrawn resolver, runner tokens; field round 3: the honest-promise paragraph and the examples moved out of the rules (P7: mechanism + exemptions); 2.33.0: the re-presentation paragraph (mechanism, three-way detection/execution/outcome distinction, bound, pilot removal condition, exemptions, misses) and the measured host facts; 2.33.0 diff review: measured exposure maxima incl. Stop blocks, the 60-char/tail placeholder rules, silent claim failure, the 64-id push disclosure
                          ("haejwo/commands/plan.md", 560),  # 2.32.0: the representative-screen checkpoint sentence; 2.33.0: the brief names revision, permitted verification, runner settings and deadline (field: one timeout, a 601 s run)
                          ("haejwo/commands/setup.md", 900),
                          ("haejwo/commands/status.md", 310)):
@@ -1872,8 +2187,12 @@ def main():
             {f for f in os.listdir(os.path.join(SCRIPTS, "lib"))
              if f.endswith((".sh", ".py"))}
             - {f[len("lib/"):] for f in runner_stack if f.startswith("lib/")})
-        check("line ratchet: runner stack (7 files) <= 1830 lines",
-              not stack_missing and not stack_unlisted and stack_lines <= 1830,
+        # 3.0.0 F6: the review receipt (detect.py `receipt`, hjw_receipt_write,
+        # HJW_REVIEW_BASE help, the blocking-finding contract sentence) re-pins
+        # the ratchet 1830 -> 1900 (shipped 1898); review fixes (lossless root
+        # transport, receipt failure fails the run, base label) 1900 -> 1930 (1924).
+        check("line ratchet: runner stack (7 files) <= 1930 lines",
+              not stack_missing and not stack_unlisted and stack_lines <= 1930,
               f"lines={stack_lines} missing={stack_missing} unlisted_lib={stack_unlisted}")
 
         # c. Retired surfaces stay retired, across every tracked doc, script and
@@ -1936,7 +2255,7 @@ def main():
         # explain them ship from turn 1) plus a defaults summary. The 4-line
         # UNCONFIGURED_CORE survives only on the degraded path below.
         check("unconfigured -> full rules injected (not just the minimal core)",
-              "does JUDGMENT" in ctx and "delegation signal" in ctx
+              "Host judges; subagents execute" in ctx and "no code edits via Bash" in ctx
               and UNCONFIGURED_CORE not in ctx, ctx[:200])
         check("unconfigured -> defaults summary labelled as defaults",
               "[haejwo config] defaults — not configured:" in ctx, ctx[-400:])
@@ -2240,7 +2559,7 @@ def main():
                       "active" in ctx_mal
                   and "defaults — not configured:" not in ctx_mal, ctx_mal[-300:])
             check("malformed config -> rules still injected (session stays operable)",
-                  "does JUDGMENT" in ctx_mal, ctx_mal[:200])
+                  "Host judges; subagents execute" in ctx_mal, ctx_mal[:200])
             # F2: the "not configured yet (first use) ... gate ON, bash-guard ON"
             # nudge is NOT a description of a malformed-config session — it
             # advertises enforcement this very status has switched off.
@@ -2382,7 +2701,7 @@ def main():
                   .replace("haejwo:deep-reasoner", "spawn_agent (deep-reasoner tier)")
                   and all(c4_ctx[k][1].startswith(c4_rules_x)
                           for k in ("unconfigured", "configured", "malformed"))
-                  and "- Implementation from a clear brief -> "
+                  and "- Implementation -> "
                       "`spawn_agent (default-worker tier)`." in c4_rules_x,
                   c4_ctx["configured"][1][:300])
             check("2.31 Codex unconfigured: the FULL rules ship (no emergency core), "
@@ -2394,7 +2713,7 @@ def main():
             check("F1/D1 Claude: the injection is the rules file unchanged "
                   "(tier names verbatim)",
                   c4_ctx["claude"][1].startswith(c4_rules_c)
-                  and "- Implementation from a clear brief -> `haejwo:default-worker`."
+                  and "- Implementation -> `haejwo:default-worker`."
                   in c4_ctx["claude"][1]
                   and all(t in c4_ctx["claude"][1] for t in c4_tiers),
                   c4_ctx["claude"][1][:300])
@@ -2848,7 +3167,7 @@ def main():
         finally:
             shutil.rmtree(a12_data, ignore_errors=True)
 
-        print("== delegation_gate.py envelope v2 (plan_marker_kind) ==")
+        print("== delegation_gate.py envelope v2 (plan_marker_kind removed 2.36.0) ==")
         rc, out = run("delegation_gate.py", task_payload(
             "haejwo:default-worker", sid="sess-PM1",
             prompt="Implement the thing.\nPlan: per the user-approved decision above — do X."),
@@ -2883,89 +3202,18 @@ def main():
         check("envelope v2: allow case records decision 'allow'",
               bool(r_allow) and r_allow.get("decision") == "allow", str(r_allow))
 
-        r_plan = _last(lambda r: r.get("sid") == "sess-PM1")
-        check("envelope v2: 'Plan:' prompt -> plan_marker_kind 'plan'",
-              bool(r_plan) and r_plan.get("plan_marker_kind") == "plan", str(r_plan))
-        check("envelope v2: prompt_bytes is no longer recorded (removed in 2.22)",
-              bool(r_plan) and "prompt_bytes" not in r_plan, str(r_plan))
-
-        r_noplan = _last(lambda r: r.get("sid") == "sess-PM2")
-        check("envelope v2: 'No plan because' prompt -> plan_marker_kind 'no_plan'",
-              bool(r_noplan) and r_noplan.get("plan_marker_kind") == "no_plan", str(r_noplan))
-
-        r_none = _last(lambda r: r.get("sid") == "sess-PM3")
-        check("envelope v2: bare prompt -> plan_marker_kind 'none'",
-              bool(r_none) and r_none.get("plan_marker_kind") == "none", str(r_none))
-
-        # (P2, 2.17) the marker is a LABEL AT THE HEAD OF A LINE, however
-        # markdown dresses it. Measured 2026-09-28: a delegation brief carried
-        # the agreed plan under `## Plan (합의본 — …)` and the substring match
-        # recorded plan_marker_kind=none, which status would have counted as
-        # drift. Telemetry only — it records the marker, never a real consensus.
-        from delegation_gate import _plan_marker_kind as marker_kind  # noqa: E402
-        PLAN_FORMS = [
-            ("Plan: per the approved decision — do X", "bare colon (legacy)"),
-            ("**Plan**: do X", "bold label, colon outside"),
-            ("**Plan:** do X", "bold label, colon inside"),
-            ("## Plan (합의본 — host + reviewer)", "heading + parenthetical"),
-            ("Plan — the agreed shape", "em dash"),
-            ("Plan - the agreed shape", "hyphen"),
-            ("### Plan", "heading, end of line"),
-            ("  ### **Plan**", "indented heading + bold, end of line"),
-            ("Context first.\n\n## Plan (x)\nbody", "heading on a later line"),
-            ("## Plan\r\nbody", "CRLF heading (a brief written with CRLF)"),
-            ("- **Plan**: do X", "list bullet + bold label"),
-            ("* **Plan**: do X", "asterisk bullet + bold label"),
-        ]
-        for text, label in PLAN_FORMS:
-            check(f"plan marker: {label} -> 'plan'", marker_kind(text) == "plan", repr(text))
-
-        NO_PLAN_FORMS = [
-            ("No plan because: mechanical rename", "bare colon (legacy)"),
-            ("No plan because mechanical rename", "prose (legacy substring)"),
-            ("**No plan because**: mechanical", "bold label, colon outside"),
-            ("**No plan because:** mechanical", "bold label, colon inside"),
-            ("## No plan because (mechanical)", "heading + parenthetical"),
-            ("### No plan because", "heading, end of line"),
-            ("- **No plan because**: mechanical", "list bullet + bold label"),
-            ("## No plan because\r\nmechanical", "CRLF heading"),
-        ]
-        for text, label in NO_PLAN_FORMS:
-            check(f"no-plan marker: {label} -> 'no_plan'",
-                  marker_kind(text) == "no_plan", repr(text))
-
-        # Negatives: prose that merely CONTAINS the word is not a marker. The
-        # spacing classes are [ \t] on purpose — \s would have let a "Plan"
-        # on one line pair with a separator on the next.
-        NEGATIVE_FORMS = [
-            ("Planning notes for the migration", "'Planning notes' prose"),
-            ("Plan to investigate the flake first", "'Plan to investigate' prose"),
-            ("The rename is already planned", "lowercase 'planned'"),
-            ("Plan-driven development is not a marker", "'Plan-driven' compound"),
-            ("Plan to investigate\n: the separator is on the NEXT line",
-             "separator on the NEXT line"),
-            ("Plan to investigate\r\n: the separator is on the NEXT line",
-             "CRLF separator on the NEXT line"),
-            ("- rename the files in place", "a bullet without the label"),
-        ]
-        for text, label in NEGATIVE_FORMS:
-            check(f"plan marker negative: {label} -> 'none'",
-                  marker_kind(text) == "none", repr(text))
-
-        check("plan marker: precedence unchanged — a plan label wins over 'No plan because'",
-              marker_kind("## No plan because (x)\n## Plan (y)") == "plan")
-        check("plan marker: non-string input still short-circuits to 'none'",
-              marker_kind(None) == "none" and marker_kind({"x": 1}) == "none")
-
-        # ...and the heading form reaches the RECORD, not just the parser.
-        rc, out = run("delegation_gate.py", task_payload(
-            "haejwo:default-worker", sid="sess-PM6",
-            prompt="Brief body.\n\n## Plan (합의본 — host + reviewer)\nDo X."), data)
-        check("allow: heading-form plan marker", decision(out) != "deny", str(out))
-        r_head = [json.loads(l) for l in open(obs_file)]
-        r_head = [r for r in r_head if r.get("sid") == "sess-PM6"]
-        check("envelope v2: '## Plan (…)' heading -> plan_marker_kind 'plan'",
-              bool(r_head) and r_head[-1].get("plan_marker_kind") == "plan", str(r_head[-1:]))
+        # 2.36.0 F2: the plan-marker presence record is gone (the 3.0 lab's
+        # cross-vendor read: `none` was no evidence of a missing plan); the
+        # plan-first duty stays in the rules. No marker form changes a record.
+        for pm_sid in ("sess-PM1", "sess-PM2", "sess-PM3"):
+            r_pm = _last(lambda r: r.get("sid") == pm_sid)
+            check(f"envelope v2: {pm_sid} records no plan_marker_kind (removed 2.36.0) and no "
+                  "prompt_bytes (removed 2.22)",
+                  bool(r_pm) and "plan_marker_kind" not in r_pm and "prompt_bytes" not in r_pm
+                  and r_pm.get("decision") == "allow", str(r_pm))
+        import delegation_gate as pm_dg  # noqa: E402
+        check("2.36.0 delegation_gate: the plan-marker parser is gone",
+              not hasattr(pm_dg, "_plan_marker_kind") and not hasattr(pm_dg, "_PLAN_LABEL_RE"))
 
         print("== delegation_gate.py fail-open edge cases ==")
         fo_data = tempfile.mkdtemp(prefix="hjw-test-failopen-")
@@ -2996,22 +3244,23 @@ def main():
             hits = [r for r in recs if pred(r)]
             return hits[-1] if hits else None
 
-        # (a) both markers present -> "Plan:" wins (documented precedence)
+        # (a) both markers present -> allowed and recorded
         rc, out = run("delegation_gate.py", task_payload(
             "haejwo:default-worker", sid="sess-PM4",
             prompt="No plan because: quick. Plan: per approved decision — do X."), data)
         check("allow: both plan markers present", decision(out) != "deny", str(out))
         r_both = _last_fresh(lambda r: r.get("sid") == "sess-PM4")
-        check("envelope: both markers present -> plan_marker_kind 'plan' (precedence)",
-              bool(r_both) and r_both.get("plan_marker_kind") == "plan", str(r_both))
+        check("envelope: both markers present -> recorded, no plan_marker_kind",
+              bool(r_both) and "plan_marker_kind" not in r_both, str(r_both))
 
-        # (b) non-string prompt (dict) -> no crash, allow, plan_marker_kind 'none'
+        # (b) non-string prompt (dict) -> no crash, allow
         rc, out = run("delegation_gate.py", task_payload(
             "haejwo:default-worker", sid="sess-PM5", prompt={"x": 1}), data)
         check("allow: non-string (dict) prompt -> no crash", rc == 0 and decision(out) != "deny", str(out))
         r_dict = _last_fresh(lambda r: r.get("sid") == "sess-PM5")
-        check("envelope: non-string prompt -> plan_marker_kind 'none'",
-              bool(r_dict) and r_dict.get("plan_marker_kind") == "none", str(r_dict))
+        check("envelope: non-string prompt -> recorded, no plan_marker_kind",
+              bool(r_dict) and r_dict.get("decision") == "allow"
+              and "plan_marker_kind" not in r_dict, str(r_dict))
 
         # (c) lone surrogate in prompt -> no crash, decision recorded
         rc, out = run("delegation_gate.py", task_payload(
@@ -3495,10 +3744,33 @@ def main():
             codex_script = os.path.join(SCRIPTS, "codex_consult.sh")
             claude_script = os.path.join(SCRIPTS, "claude_consult.sh")
             CONTRACT_HEAD = "REVIEWER CONTRACT: analyze and reply only."
+            # 3.0.0 F6: the review receipt at the head of every returned reply file.
+            RECEIPT_HEAD = "---- haejwo review receipt (runner facts; not a verdict) ----"
+            RECEIPT_END = "---- end receipt ----"
+            RECEIPT_KEYS = ["repository", "base", "HEAD", "snapshot", "limitations"]
+            RECEIPT_BASE_SUPPLIED = "base (caller-supplied, not verified)"
+            RECEIPT_LIMITS = ("A snapshot identifies the observed state, not reviewer "
+                              "coverage. No inheritance through a merge.")
+
+            def receipt_of(path):
+                """The receipt's fields in order ({} when the block is absent)."""
+                try:
+                    lines = open(path, encoding="utf-8").read().split("\n")
+                except Exception:
+                    return {}
+                if not lines or lines[0] != RECEIPT_HEAD or RECEIPT_END not in lines:
+                    return {}
+                fields = {}
+                for line in lines[1:lines.index(RECEIPT_END)]:
+                    k, _, v = line.partition(": ")
+                    fields[k] = v
+                return fields
             LABEL_SENTENCE = ("For each finding, label provenance as regression (introduced by "
                               "this change), base (already present), or unresolved (baseline "
                               "unavailable, inapplicable, or insufficient), and flag any requested "
                               "remedy beyond the brief or plan.")
+            BLOCKING_SENTENCE = ("A blocking finding names the agreed criterion it violates "
+                                 "and the minimum remedy; list optional hardening separately.")
 
             # Stub codex/claude executable. Captures argv (one arg per line) +
             # full stdin per invocation; the `--version` probe is NOT captured
@@ -3661,7 +3933,7 @@ exit "$rc"
                 for var in ("CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
                             "CLAUDE_MODEL", "CODEX_TIMEOUT", "CLAUDE_TIMEOUT",
                             "CLAUDE_PLUGIN_DATA", "CLAUDE_CODE_SESSION_ID",
-                            "HJW_CLAUDE_EFFORT"):
+                            "HJW_CLAUDE_EFFORT", "HJW_REVIEW_BASE"):
                     env.pop(var, None)
                 if "CLAUDE_PLUGIN_DATA" not in extra_env:
                     env["CLAUDE_PLUGIN_DATA"] = empty_data_dir_named("nocfg-")
@@ -3781,6 +4053,11 @@ exit "$rc"
                 # (wrapped in the runner source, so compared whitespace-normalized).
                 check(f"{label} file-brief: contract asks for provenance labels",
                       bool(calls) and LABEL_SENTENCE in " ".join(calls[0][1].split()), calls[:1])
+                # 3.0.0: a blocking finding names the violated criterion and the
+                # minimum remedy; optional hardening is listed apart.
+                check(f"{label} file-brief: contract asks blocking findings for criterion "
+                      "and minimum remedy",
+                      bool(calls) and BLOCKING_SENTENCE in calls[0][1], calls[:1])
 
                 cap2 = os.path.join(runner_tmp, f"cap-{label}-stdin")
                 make_stub(bin_dir, label, cap2)
@@ -5448,14 +5725,17 @@ exit "$rc"
                       os.path.isfile(pc_out) and os.path.getsize(pc_out) > 0
                       and os.path.isfile(pc_log) and os.path.getsize(pc_log) > 0,
                       sorted(os.listdir(pc_out_dir)))
-                # ARTIFACT INTEGRITY: the reply FILE is the reviewer's answer
-                # byte for byte — a runner that merged its log into the reply,
-                # or re-wrote it through a filter, would still print something
-                # plausible on stdout.
-                check(f"{who} postconditions: the reply FILE holds the reviewer's bytes "
-                      "exactly",
-                      open(pc_out, "rb").read() == b"STUB-REPLY-OK-1\n",
-                      open(pc_out, "rb").read()[:120])
+                # ARTIFACT INTEGRITY: the reply FILE is the review receipt
+                # (3.0.0 F6) followed by the reviewer's answer byte for byte — a
+                # runner that merged its log into the reply, or re-wrote it
+                # through a filter, would still print something plausible on
+                # stdout.
+                pc_bytes = open(pc_out, "rb").read()
+                check(f"{who} postconditions: the reply FILE holds the receipt, then the "
+                      "reviewer's bytes exactly",
+                      pc_bytes.startswith(RECEIPT_HEAD.encode())
+                      and pc_bytes.split(RECEIPT_END.encode() + b"\n\n", 1)[-1]
+                      == b"STUB-REPLY-OK-1\n", pc_bytes[:120])
                 check(f"{who} postconditions: the log is a DISTINCT file from the reply, "
                       "with the runner's own record in it",
                       os.path.realpath(pc_log) != os.path.realpath(pc_out)
@@ -5471,6 +5751,224 @@ exit "$rc"
                           (os.stat(pc_out).st_ino, os.stat(pc_log).st_ino)
                           and '"type":"turn.completed"' in open(pc_events).read(),
                           sorted(os.listdir(pc_out_dir)))
+
+                # (1b) 3.0.0 F6 review receipt: facts only, in the reply
+                # file's header. Clean repo: repository = the snapshot root,
+                # base `unavailable` (no HJW_REVIEW_BASE), HEAD = the commit,
+                # schema 1 + a SHA-256 digest, the fixed limitations line.
+                pc_head = subprocess.run(["git", "-C", pc_repo, "rev-parse", "HEAD"],
+                                         capture_output=True, text=True).stdout.strip()
+                rc1 = receipt_of(pc_out)
+                check(f"{who} receipt: clean repo -> well-formed facts block",
+                      rc1.get("repository") == os.path.realpath(pc_repo)
+                      and rc1.get("base") == "unavailable" and rc1.get("HEAD") == pc_head
+                      and re.fullmatch(r"schema=1 sha256=[0-9a-f]{64} truncated=0 unreadable=0",
+                                       rc1.get("snapshot", "")) is not None
+                      and rc1.get("limitations") == RECEIPT_LIMITS
+                      and list(rc1) == RECEIPT_KEYS, str(rc1))
+                rcpt_env = {"PATH": pc_bin + os.pathsep + os.environ.get("PATH", ""),
+                            "TMPDIR": pc_tmp}
+                rcpt_out = os.path.join(pc_out_dir, "again.md")
+                rc, out, err = run_script(script, ["-o", rcpt_out,
+                                                   brief_file(f"pc-{who}-brief.md")],
+                                          rcpt_env, cwd=pc_repo)
+                rc2 = receipt_of(rcpt_out)
+                check(f"{who} receipt: an identical state -> an identical digest",
+                      rc == 0 and bool(rc1.get("snapshot"))
+                      and rc2.get("snapshot") == rc1.get("snapshot"), f"rc={rc} {rc1} {rc2}")
+                with open(os.path.join(pc_repo, "seed.txt"), "a") as f:
+                    f.write("x")  # one byte, uncommitted: a dirty tracked file
+                rcpt_out = os.path.join(pc_out_dir, "dirty.md")
+                rc, out, err = run_script(script, ["-o", rcpt_out,
+                                                   brief_file(f"pc-{who}-brief.md")],
+                                          dict(rcpt_env, HJW_REVIEW_BASE="v2.35.3"),
+                                          cwd=pc_repo)
+                rc3 = receipt_of(rcpt_out)
+                # Review fix 1: a supplied base is labelled caller-supplied and
+                # unverified INSIDE the receipt; without one it stays `base: unavailable`.
+                check(f"{who} receipt: dirty repo (one byte) -> a different digest, same "
+                      "HEAD, the caller's base verbatim and labelled unverified",
+                      rc == 0 and rc3.get("HEAD") == pc_head
+                      and rc3.get(RECEIPT_BASE_SUPPLIED) == "v2.35.3" and "base" not in rc3
+                      and rc3.get("snapshot", "").startswith("schema=1 sha256=")
+                      and rc3.get("snapshot") != rc1.get("snapshot")
+                      and RECEIPT_HEAD in out
+                      and list(rc3) == [RECEIPT_BASE_SUPPLIED if k == "base" else k
+                                        for k in RECEIPT_KEYS],
+                      f"rc={rc} {rc3} err={err[-300:]}")
+                check(f"{who} receipt: the runner leaves no temp file behind",
+                      sorted(os.listdir(pc_tmp)) == [], sorted(os.listdir(pc_tmp)))
+                if who == "codex":
+                    # Non-git directory (read-only sandbox, the only codex path
+                    # that runs there): every observed field reads `unavailable`.
+                    ng_dir = tempfile.mkdtemp(prefix="hjw-rcpt-nogit-")
+                    try:
+                        ng_out = os.path.join(pc_out_dir, "nogit.md")
+                        rc, out, err = run_script(script, ["-o", ng_out,
+                                                           brief_file(f"pc-{who}-brief.md")],
+                                                  rcpt_env, cwd=ng_dir)
+                        rc4 = receipt_of(ng_out)
+                        check("codex receipt: non-git directory -> graceful, every observed "
+                              "field `unavailable`",
+                              rc == 0 and all(rc4.get(k) == "unavailable" for k in
+                                              ("repository", "base", "HEAD", "snapshot"))
+                              and rc4.get("limitations") == RECEIPT_LIMITS
+                              and re.search(rb"---- end receipt ----\n\nSTUB-REPLY-OK-\d+\n\Z",
+                                            open(ng_out, "rb").read()) is not None,
+                              f"rc={rc} {rc4} err={err[-300:]}")
+                    finally:
+                        shutil.rmtree(ng_dir, ignore_errors=True)
+
+                # Review fix 2: a receipt that cannot be written (helper failure or
+                # timeout, reply not reopenable) FAILS the run through the runner's
+                # failure path, and the reviewer's answer stays as returned. A copy
+                # of the scripts tree whose detect.py fails only the receipt mode.
+                rf_root = tempfile.mkdtemp(prefix="hjw-rcpt-fail-")
+                try:
+                    rf_scripts = os.path.join(rf_root, "scripts")
+                    shutil.copytree(SCRIPTS, rf_scripts,
+                                    ignore=shutil.ignore_patterns("__pycache__"))
+                    with open(os.path.join(rf_scripts, "lib", "detect.py"), "w") as f:
+                        f.write("import os, runpy, sys\n"
+                                "if sys.argv[1:2] == ['receipt']:\n"
+                                "    sys.exit(int(os.environ['STUB_RECEIPT_RC']))\n"
+                                f"sys.argv[0] = {os.path.join(SCRIPTS, 'lib', 'detect.py')!r}\n"
+                                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+                    for stub_rc, words in (("124", "review receipt timed out"),
+                                           ("1", "review receipt not written (rc=1)")):
+                        rf_out = os.path.join(pc_out_dir, f"rf-{stub_rc}.md")
+                        rc, out, err = run_script(
+                            os.path.join(rf_scripts, os.path.basename(script)),
+                            ["-o", rf_out, brief_file(f"pc-{who}-brief.md")],
+                            dict(rcpt_env, STUB_RECEIPT_RC=stub_rc), cwd=pc_repo)
+                        rf_bytes = (open(rf_out, "rb").read()
+                                    if os.path.isfile(rf_out) else b"<absent>")
+                        check(f"{who} receipt failure (helper rc={stub_rc}) -> the run FAILS, "
+                              "the reviewer's answer is kept as returned",
+                              rc != 0 and f"{who}_consult FAILED" in err and words in err
+                              and "reply (" not in out
+                              and re.fullmatch(rb"STUB-REPLY-OK-\d+\n", rf_bytes) is not None,
+                              f"rc={rc} out={out[-200:]!r} err={err[-300:]!r} reply={rf_bytes[:80]!r}")
+                finally:
+                    shutil.rmtree(rf_root, ignore_errors=True)
+                if who == "codex":
+                    # Review fix 3: the repository root is transported losslessly
+                    # (sentinel; ONLY git's own newline stripped), so a root ending in
+                    # a newline is the snapshot's root, then escaped to one line. The
+                    # runners themselves start from `WORKDIR="$(pwd)"`, which loses
+                    # such a name before detection (a base limit), so the transport
+                    # function and the receipt rendering are tested directly.
+                    nl_base = tempfile.mkdtemp(prefix="hjw-rcpt-nl-")
+                    try:
+                        nl_repo = make_repo_committed("tree\n", base=nl_base)
+                        p = subprocess.run(
+                            ["bash", "-c", 'HJW_LIB="$1"; . "$HJW_LIB/consult_common.sh"; '
+                             'hjw_scope_root "$2"; printf "%s|END" "$HJW_SCOPE_ROOT"',
+                             "x", os.path.join(SCRIPTS, "lib"), nl_repo],
+                            capture_output=True, text=True, timeout=60)
+                        check("receipt transport: a root ending in a newline survives "
+                              "hjw_scope_root intact",
+                              p.returncode == 0
+                              and p.stdout == os.path.realpath(nl_repo) + "|END",
+                              repr(p.stdout[-80:]))
+                        nl_reply = os.path.join(nl_base, "reply.md")
+                        write_file(nl_reply, "R\n")
+                        p = subprocess.run(["python3", os.path.join(SCRIPTS, "lib", "detect.py"),
+                                            "receipt", nl_reply, os.path.realpath(nl_repo), "", ""],
+                                           capture_output=True, text=True, timeout=60)
+                        check("receipt transport: the displayed repository is that root, "
+                              "escaped to one line",
+                              p.returncode == 0 and receipt_of(nl_reply).get("repository")
+                              == os.path.realpath(nl_repo).replace("\n", "\\n"),
+                              str(receipt_of(nl_reply)))
+                    finally:
+                        shutil.rmtree(nl_base, ignore_errors=True)
+                    # Review round 2: the receipt is published by ONE os.replace of a
+                    # hidden temp file beside the reply. Fault injection inside the
+                    # helper: a write that fails, a kill after partial output, a
+                    # failed publish -> the reply stays byte-identical; handled errors
+                    # leave no temp file, a kill leaves only `.<name>.*.receipt-tmp`.
+                    fi_base = tempfile.mkdtemp(prefix="hjw-rcpt-fi-")
+                    try:
+                        fi_lib = os.path.join(SCRIPTS, "lib")
+                        fi_answer = b"REVIEWER ANSWER\nline two\n"
+                        for fi_name, fi_patch, fi_rc, fi_left in (
+                            ("write fails after partial output",
+                             "def _w(fd, b, _o=os.write):\n"
+                             "    _o(fd, bytes(b[:len(b) // 2])); raise OSError(5, 'injected')\n"
+                             "os.write = _w\n", 1, 0),
+                            ("killed after partial output",
+                             "def _w(fd, b, _o=os.write):\n"
+                             "    _o(fd, bytes(b[:len(b) // 2])); os._exit(137)\n"
+                             "os.write = _w\n", 137, 1),
+                            ("publish (os.replace) fails",
+                             "def _r(a, b): raise OSError(28, 'injected')\n"
+                             "os.replace = _r\n", 1, 0)):
+                            fi_dir = tempfile.mkdtemp(dir=fi_base)
+                            fi_reply = os.path.join(fi_dir, "reply.md")
+                            with open(fi_reply, "wb") as f:
+                                f.write(fi_answer)
+                            p = subprocess.run(
+                                ["python3", "-c",
+                                 "import os, sys\nsys.path.insert(0, sys.argv[1])\n" + fi_patch
+                                 + "import detect\ndetect.cmd_receipt(sys.argv[2:])\n",
+                                 fi_lib, fi_reply, "/repo", "", ""],
+                                capture_output=True, text=True, timeout=60)
+                            fi_rest = sorted(n for n in os.listdir(fi_dir) if n != "reply.md")
+                            check(f"receipt fault injection ({fi_name}): reply byte-identical, "
+                                  f"helper exit {fi_rc}, {fi_left} hidden temp file(s) left",
+                                  p.returncode == fi_rc
+                                  and open(fi_reply, "rb").read() == fi_answer
+                                  and len(fi_rest) == fi_left
+                                  and all(n.startswith(".reply.md.") and n.endswith(".receipt-tmp")
+                                          for n in fi_rest),
+                                  f"rc={p.returncode} left={fi_rest} err={p.stderr[-200:]!r}")
+                        # success path keeps the reply's permission bits
+                        fi_reply = os.path.join(fi_base, "mode.md")
+                        with open(fi_reply, "wb") as f:
+                            f.write(fi_answer)
+                        os.chmod(fi_reply, 0o640)
+                        p = subprocess.run(["python3", os.path.join(fi_lib, "detect.py"), "receipt",
+                                            fi_reply, "/repo", "", ""],
+                                           capture_output=True, text=True, timeout=60)
+                        fi_bytes = open(fi_reply, "rb").read()
+                        check("receipt publish: permission bits kept, receipt then the answer, "
+                              "no temp file left",
+                              p.returncode == 0
+                              and os.stat(fi_reply).st_mode & 0o7777 == 0o640
+                              and fi_bytes.startswith(RECEIPT_HEAD.encode())
+                              and fi_bytes.endswith(b"\n\n" + fi_answer)
+                              and not [n for n in os.listdir(fi_base) if n.endswith(".receipt-tmp")],
+                              f"rc={p.returncode} mode={oct(os.stat(fi_reply).st_mode)}")
+                        # Review round 3: the temp name is bounded (`.` + at most 100
+                        # bytes of the reply's name, whole characters), so a reply whose
+                        # own name fits NAME_MAX gets its receipt; skipped when this
+                        # filesystem's NAME_MAX is smaller than the names below.
+                        for ln_label, ln_name in (("242-byte ASCII name", "a" * 239 + ".md"),
+                                                  ("multi-byte name cut mid-character",
+                                                   "가" * 81 + ".md")):
+                            ln_dir = tempfile.mkdtemp(dir=fi_base)
+                            try:
+                                ln_max = os.pathconf(ln_dir, "PC_NAME_MAX")
+                            except (OSError, ValueError):
+                                ln_max = 255
+                            if len(ln_name.encode("utf-8")) > ln_max:
+                                print(f"  skip receipt long name ({ln_label}): NAME_MAX {ln_max}")
+                                continue
+                            ln_reply = os.path.join(ln_dir, ln_name)
+                            with open(ln_reply, "wb") as f:
+                                f.write(fi_answer)
+                            p = subprocess.run(["python3", os.path.join(fi_lib, "detect.py"), "receipt",
+                                                ln_reply, "/repo", "", ""],
+                                               capture_output=True, text=True, timeout=60)
+                            ln_bytes = open(ln_reply, "rb").read()
+                            check(f"receipt publish: {ln_label} -> receipt written, no temp left",
+                                  p.returncode == 0 and ln_bytes.startswith(RECEIPT_HEAD.encode())
+                                  and ln_bytes.endswith(b"\n\n" + fi_answer)
+                                  and os.listdir(ln_dir) == [ln_name],
+                                  f"rc={p.returncode} err={p.stderr[-200:]!r} dir={os.listdir(ln_dir)}")
+                    finally:
+                        shutil.rmtree(fi_base, ignore_errors=True)
 
                 # (2) a STDIN brief: the runner materializes the brief itself,
                 # so its artifacts are DERIVED from that temp name and land in
@@ -6661,7 +7159,21 @@ exit "$rc"
                 st_rec(2005.0, hook="gate", tool="Write", path="/r/d.py", decision="allow",
                        via="subagent-exempt", agent_type="haejwo:task-worker", agent_id="a1"),
                 st_rec(2006.0, hook="bash_guard", decision="allow", via="no-code-write", zz=1),
+                # 2.36.0 F2 interval rows: i1 opened then closed at n=5; i2 opened,
+                # still open (its count lives in the open-interval file)
+                st_rec(2007.0, hook="bash_guard", decision="allow", via="subagent-exempt",
+                       agent_type="haejwo:default-worker", iid="i1", n=1, first=2007.0,
+                       last=2007.0),
+                st_rec(2011.0, hook="bash_guard", decision="allow", via="subagent-exempt",
+                       agent_type="haejwo:default-worker", iid="i1", n=5, first=2007.0,
+                       last=2010.0),
+                st_rec(2012.0, hook="gate", decision="allow", via="subagent-exempt",
+                       agent_type="haejwo:default-worker", iid="i2", n=1, first=2012.0,
+                       last=2012.0),
                 "{not json\n"]))
+            write_file(os.path.join(st_data, "state", "__observations_open__.json"), json.dumps(
+                {"k": {"sid": "sess-W39-sta", "hook": "gate", "agent_type": "haejwo:default-worker",
+                       "iid": "i2", "n": 3, "first": 2012.0, "last": 2014.0}}))
             st_before = st_tree(st_data)
             rc, out, err = st_run(st_data, "sess-W39-status", {"CODEX_EFFORT": "low"})
             st_want = [
@@ -6672,10 +7184,14 @@ exit "$rc"
                 "this turn: 2/3 code edits: /r/a.py, /r/b.py",
                 "reviewer (codex): enabled model=m1 effort=high sandbox=read-only consent=none "
                 "verified=never verified",
-                "observations (machine-wide, 4 files): records=8 span=1970-01-01 00:16..1970-01-01 "
-                "00:33 distinct_sids=2 denies=3 unparsable_lines=1",
-                "observations (this session, sid sess-W39-sta): 7 records — bash_guard=2 "
-                "delegation=2 gate=3; subagent-origin records: haejwo:task-worker=1",
+                "observations (machine-wide, 4 files): records=11 distinct_sids=2 denies=3 "
+                "unparsable_lines=1",
+                "retained: 1970-01-01 00:16..1970-01-01 00:33 (oldest..newest observation; "
+                "size-bounded, 4 files) — no generation rotated out yet; every count below "
+                "covers this interval only",
+                "observations (this session, sid sess-W39-sta): 9 records — bash_guard=3 "
+                "delegation=2 gate=4; subagent-origin calls: haejwo:default-worker=8, "
+                "haejwo:task-worker=1",
                 "  1970-01-01 00:33 gate deny/budget actor=main Edit a.py",
                 "  1970-01-01 00:33 gate deny/budget actor=main Edit b.py",
                 "  1970-01-01 00:33 bash_guard deny/redirect actor=main /r/c.py",
@@ -6683,9 +7199,13 @@ exit "$rc"
                 "  1970-01-01 00:33 delegation allow/- actor=main codex:codex-rescue model=None",
                 "  1970-01-01 00:33 gate allow/subagent-exempt actor=haejwo:task-worker Write d.py",
                 "  1970-01-01 00:33 bash_guard allow/no-code-write actor=main",
+                "  1970-01-01 00:33 bash_guard allow/subagent-exempt actor=haejwo:default-worker "
+                "x5 calls 1970-01-01 00:33..1970-01-01 00:33",
+                "  1970-01-01 00:33 gate allow/subagent-exempt actor=haejwo:default-worker "
+                "x3 calls 1970-01-01 00:33..1970-01-01 00:33",
                 "delegations (this session): 1 — haejwo:default-worker/None=1 "
                 "(type/requested_model; None = no override)",
-                "  denies=0 tier_pin_check: pass:not-a-tier=1; plan_marker_kind none=1",
+                "  denies=0 tier_pin_check: pass:not-a-tier=1",
                 "  codex: rescue delegations=1",
                 "anomalies (this session): 3",
                 "  deny streak x3 (bash_guard, gate) ending 1970-01-01 00:33",
@@ -6712,12 +7232,26 @@ exit "$rc"
             check("W39 status: verified 40 days ago while enabled -> the re-verify hint",
                   rc == 0 and "(40d ago) — re-run /haejwo:setup to re-verify" in out, out)
 
+            # 2.36.0 F2: with a third prior generation present, rotation may have
+            # dropped records: the retained line says so instead of a clean span.
+            write_file(os.path.join(st_data, "state", "observations.jsonl.3"),
+                       st_rec(500.0, sid="other-sessio", hook="gate", tool="Edit",
+                              path="/r/y.py", decision="allow", via="ok"))
+            rc, out, err = st_run(st_data, "sess-W39-status")
+            check("W39 status (2.36.0): observations.jsonl.3 present -> the retained interval "
+                  "starts at the oldest record and says earlier records may have been rotated out",
+                  rc == 0 and "retained: 1970-01-01 00:08..1970-01-01 00:33 (oldest..newest "
+                  "observation; size-bounded, 4 files) — earlier records may have been rotated "
+                  "out (observations.jsonl.3 exists); every count below covers this interval "
+                  "only" in out, out)
+
             # Malformed everything, unknown session id: still exit 0, notes in the block.
             st_bad = os.path.join(st_root, "bad")
             os.makedirs(os.path.join(st_bad, "state", "observations.jsonl"))
             write_file(os.path.join(st_bad, "config.json"), "{bad")
             write_file(os.path.join(st_bad, "state", "sess-bad.json"), "nope")
             write_file(os.path.join(st_bad, "state", "observations.jsonl.1"), "[1,2]\n")
+            write_file(os.path.join(st_bad, "state", "__observations_open__.json"), "nope")
             for sid, label in (("sess-bad", "known"), ("$CLAUDE_CODE_SESSION_ID", "unsubstituted")):
                 rc, out, err = st_run(st_bad, sid)
                 check(f"W39 status: malformed config/state/observations ({label} session id) "
@@ -6726,6 +7260,8 @@ exit "$rc"
                       and out.splitlines()[1].startswith("CONFIG MALFORMED")
                       and "state file sess-bad.json unreadable (JSONDecodeError)" in out
                       and "note: observations.jsonl unreadable (IsADirectoryError)" in out
+                      and "note: __observations_open__.json unreadable (JSONDecodeError) — "
+                      "subagent-exempt call counts may be partial" in out
                       and "unparsable_lines=1" in out
                       and out.rstrip().endswith("summary: gate OFF, budget 2, configured no")
                       and (label == "known" or ("may be another session's" in out
@@ -6812,11 +7348,10 @@ exit "$rc"
         check("F11 status.md: configured=no no longer claims defaults; stored gate values apply",
               "stored gate values apply even before setup" in c3_md["status"]
               and "defaults active" not in c3_md["status"])
-        check("F11/D3 status.md: the plan_marker_kind none label covers generic agents and is "
-              "not a violation count",
-              "recorded non-rescue delegations, including generic agents; a missing marker is "
-              "not necessarily a violation" in c3_md["status"]
-              and "haejwo tiers only" not in c3_md["status"])
+        check("2.36.0 status.md: the retired plan-marker label is gone; aggregated "
+              "subagent counts are never a session total",
+              "plan_marker_kind" not in c3_md["status"]
+              and "NEVER a session total" in c3_md["status"])
         check("F18 status.md: the observations log is disclosed as pruned by size, not by age",
               "pruned by size, ~800 KB, four files, not by age" in c3_md["status"])
 

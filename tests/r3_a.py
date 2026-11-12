@@ -29,14 +29,16 @@ RUNNER_T = (
     "the report; a same-model review is not independent.")
 PUSH_T = (
     "[haejwo] push-bearing Bash call returned (tool call {id}); quoted shell "
-    "output tail: \"{tail}\"{interrupted}. The Outward actions line states "
-    "repo; branch; action; result and the authorizing words.")
+    "output tail: \"{tail}\"{interrupted}. "
+    "Record: actual result; verbatim words, time | standing (not verified "
+    "in this session): <source>.")
 STOP_REASON = (
     "[haejwo] This turn requested git push. Finish with the record lines "
     "(presence is all this hook checks): `Outward actions: <repo; branch; "
-    "action; result> - authorized by: <user words, time>` and `Final-diff "
+    "action; actual result> - authorized by: <verbatim user words, time | "
+    "standing (not verified in this session): <source>>` and `Final-diff "
     "review: <change id; reply; closing statement | not run because: "
-    "<reason>>`.")
+    "<reason>>`. Include failed attempts.")
 CMD_SHAPE = ('python3 "${{CLAUDE_PLUGIN_ROOT}}/scripts/{}" '
              '"${{CLAUDE_PLUGIN_ROOT}}" "${{CLAUDE_PLUGIN_DATA}}"')
 
@@ -134,7 +136,7 @@ def run_section():
               not hasattr(turn_reset, "CHECKLIST")
               and not hasattr(turn_reset, "render_checklist")
               and not hasattr(post_bash, "REVIEW_INVOKED"))
-        check("R3 report_check REASON is the 2.32.0 reason, unchanged",
+        check("R3 report_check REASON is the 3.0.0 reason (2.32.0 labels; 3.0.0 authorization forms)",
               report_check.REASON == STOP_REASON)
         tid30 = "toolu_" + "X" * 24
         rv = RUNNER_T.format(runner="claude_consult.sh", id=tid30)
@@ -146,8 +148,10 @@ def run_section():
               len(pmax) <= 390, len(pmax))
         smax = report_check.block_reason({"outward_calls": 99, "outward_ids": [
             "toolu_" + str(k) * 24 for k in range(8)]})
-        check("R3 Stop reason <= 600 chars at its maximum (count 99, eight 30-char ids)",
-              len(smax) <= 600 and smax.endswith("; +91 more)."), len(smax))
+        # 3.0.0 F7: the two authorization forms and failed attempts re-pin the
+        # bound 600 -> 690 (measured 689; README's per-session formula).
+        check("R3 Stop reason <= 690 chars at its maximum (count 99, eight 30-char ids)",
+              len(smax) <= 690 and smax.endswith("; +91 more)."), len(smax))
         # D7: the tail is the last line non-empty AFTER sanitizing
         check("R3 post_bash tail: an ANSI-only last stderr line is skipped",
               post_bash.output_tail({"stderr": "real line\n\x1b[0m\x1b[K\n"})
@@ -239,7 +243,9 @@ def run_section():
             ("env --chdir=HJW_PROBE=1 " + R_, "codex_consult.sh"),
             ("env -S 'HJW_PROBE=1' " + R_, "codex_consult.sh"),         # -S operand
             ("env -u HJW_PROBE=1 " + R_, "codex_consult.sh"),           # -u operand
-            ("timeout 90 HJW_PROBE=1 " + R_, "codex_consult.sh"),       # timeout's command
+            # timeout's command word: 2.36.0 (diff review) — timeout execs
+            # "HJW_PROBE=1", so no runner call is detected (it was a note before)
+            ("timeout 90 HJW_PROBE=1 " + R_, None),
             ("nohup HJW_PROBE=1 " + R_, "codex_consult.sh"),            # nohup's command
             ("/p/codex_consult.sh HJW_PROBE=1 b.md", "codex_consult.sh"),  # after the command
             ("env -u X HJW_PROBE=1 " + R_, None),

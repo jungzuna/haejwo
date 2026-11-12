@@ -20,9 +20,9 @@ and the options.
 
 ## 1. Missing-marker note
 - Would: a nonblocking note on a delegation whose brief lacks `Plan:` / `No plan because:` (respecting read-only and mechanical exemptions).
-- Not built: a new delivery assumption and obligation; the marker's PRESENCE is already recorded (a record, not adequacy).
+- Not built: a new delivery assumption and obligation; the marker's PRESENCE is already recorded (a record, not adequacy). *Dated note 2026-11-11: no longer true; 2.36.0 (F2) deleted the plan-marker record and its display, so nothing records marker presence now.*
 - Reopen evidence: a T1 incident traced to an unplanned feature-scale brief, or a field audit with a predeclared denominator showing missing markers on risk-classed briefs that led to material rework.
-- Options: Build (bounded, measured delivery) · Defer · `Reject:` remove the item; the presence record stays the only mechanism.
+- Options: Build (bounded, measured delivery) · Defer · `Reject:` remove the item; the presence record stays the only mechanism. *Dated note 2026-11-11: since 2.36.0 there is no presence record; on `Reject:` the plan-first norm and the worker's one clarifying question are the only levers.*
 
 ## 2. Acceptance-record reminder
 - Would: a compact reminder of both record labels (`Final-diff review:` / `Outward actions:`) at the detected acceptance point, no Stop block.
@@ -40,7 +40,8 @@ and the options.
 - Would: record which reviewer run covered which change, so a review count means reviewed changes.
 - Not built: needs a change identity and failure semantics that are not specified.
 - Reopen evidence: a T1 incident caused by a misleading review count or record (K6), or a specified change identity with a measured failure mode.
-- Options: Build · Defer · `Reject:` remove the item; the runner note keeps stating only "detected runner call".
+- 3.0.0 (2026-11-11; [consensus](2026-11-11-consensus-v3.md) F6): PARTIALLY BUILT as the review receipt. Each returned reply file now starts with runner facts: repository, the caller's base or `unavailable`, HEAD, the snapshot schema and digest, and the line "A snapshot identifies the observed state, not reviewer coverage. No inheritance through a merge." Still not built: any link from a receipt to a later change, a pointer file or repository-wide "last review" state, comparison with a pushed HEAD, verdict parsing, any block. A digest identifies a state; it does not establish that the reviewer read it.
+- Options: Build (the remaining ledger, on the reopen evidence above) · Defer · `Reject:` remove the item; the receipt stays the whole mechanism and the runner note keeps stating only "detected runner call".
 
 ## 5. Round detector
 - Would: notice review/fix rounds that repeat without convergence.
@@ -62,7 +63,8 @@ and the options.
   - K is a cost policy. Reaching it establishes neither correctness nor permission to ship.
   - Host change to Codex's draft: the draft counted only rounds whose findings were all *rejected* by the host, which would not fire on session 2, where every finding was accepted.
   - Related, adopted in 2.35.3: the reviewer now labels provenance and flags beyond-brief remedies (#19), which exposes (a) without enforcing it.
-- Options: Build (one rules sentence; it must displace bytes, since the rules are at 3,744/3,750) · Defer · `Reject:` remove the item; the existing added-scope disclosure rule stays the only lever.
+- 3.0.0 (2026-11-11; [consensus](2026-11-11-consensus-v3.md) F7): candidate (b) ADOPTED as a norm with K = 3: "After 3 consecutive review rejections on one agreed unit, pause for owner with both positions; renaming NEVER resets count." It displaced bytes (the rules are at 3,749/3,750). No detector, no counter and no hook: rounds are still not countable by the plugin, so this item's detector stays unbuilt. No benefit is claimed. Candidate (a) is not adopted as written; the plan-first and brief-traceability norms remain its only lever.
+- Options: Build (the detector, on the reopen evidence above) · Defer · `Reject:` remove the item; the rules sentence stays norm-only.
 
 ## 6. Interpreter reminders
 - Would: re-present the scratch-delegation obligation on main-agent inline interpreter calls (`python -c`, `python - <<EOF`).
@@ -142,7 +144,8 @@ and the options.
   - Children run with an isolated HOME: user config is not read and the reviewer is disabled.
   - On this pod any shell grant is refused (no `bwrap` or `socat`). So the bash guard, the Codex runner and every Bash-mediated norm cannot be measured here.
 - Not built: the obligations of interest are Bash-mediated, so measuring them needs a system install (an owner and system decision) and then a bounded, owner-amended experiment. It has no automatic schedule and never reopens a release by itself.
-- Options: Build (install the sandbox prerequisites, then one bounded experiment) · Defer · `Reject:` field sessions stay the only behavioural evidence.
+- 2026-11-11 lab ([consensus](2026-11-11-consensus-v3.md)): with `claude plugin eval` children still lacking a shell, the lab ran its headless experiments (E4, E6, E7; US$ figures are the CLI's API-price equivalent, drawn from a subscription, nothing billed) on a `claude -p` harness instead: Claude Code 2.1.322 headless, a fresh HOME and config dir per run, the token passed only by environment, `--setting-sources project,local`, `--strict-mcp-config`, parent `CLAUDE*` variables stripped, every arm copied to the same neutral path. Bash worked there, so the bash guard and Bash-mediated writes were exercised. It could NOT measure: interactive sessions, the installed cache with user config, the cross-vendor reviewer (off in every arm), Codex hosts, the field host model (fable-5-1; the lab used fable-5-2), long sessions with compaction, real owners, and the disclosure norms (credential, side-effect and decision disclosure), whose opportunities the tiny tasks did not contain.
+- Options: Build (install the sandbox prerequisites, then one bounded experiment) · Defer · `Reject:` field sessions and the `claude -p` lab stay the only behavioural evidence.
 
 ## 17. Stale long-running sessions after a plugin update
 - Observed: a session started on 2.33.0 kept its plugin root after the cache moved to 2.35.x and the old directory was removed. From 2026-10-30 every haejwo hook in that session failed with "Plugin directory does not exist". Hooks fail open (P4), so the session ran ungated with no notice to the model. A new session loaded 2.35.2 cleanly.
@@ -159,6 +162,41 @@ and the options.
 - Not built: documentation only, and a single report.
 - Reopen evidence: a second report, or the owner's word. It can then ride the next wording patch.
 - Options: Build (one sentence in `commands/setup.md` and `docs/runners.md`) · Defer · `Reject:` the runner hint is enough.
+
+## 20. Decisive file-budget experiment
+- Would: settle whether the file budget (counter, warning and deny as one removal target) changes outcomes, with at least 29 paired A2/A3 runs (zero harms then bounds paired harm at 10%, one-sided 95%) under the 2026-11-11 protocol's Amendment 1 rule.
+- Not built: the 2026-11-11 E6 pilot had 12 pairs (harm bound 22%), declared descriptive before it ran; extending that batch would be optional stopping. The budget stays default-on.
+- Reopen evidence: an owner decision to fund a new, separately declared and budgeted experiment (about US$65–75 by the protocol's smoke-based estimate, Amendment 2; the pilot's A2/A3 mean costs imply about US$51 for 29 pairs before smoke, preflight and descriptive-arm overhead), with frozen tasks and a blinded cross-vendor diff review.
+- 2026-11-12, run on the owner's word as protocol Amendment 3 (E8; [consensus §11](2026-11-11-consensus-v3.md)): 32 fresh A2/A3 pairs, 64 runs, US$55.83 (API-price equivalent). 32/32 passed in both arms; 0 paired harms (bound 8.9%); code-writing delegation 24/24 in both; mean cost 0.874 vs 0.871; 0 denies and 10 warnings in A3; blinded cross-vendor review 0 critical defects after the reviewer withdrew a first verdict of 12. All five criteria hold. Limits: v2.35.3 arms, four small tasks, one host model, reviewer off.
+- Open now (owner decision, not a build): keep the budget default-on, or make it opt-in with these numbers printed in the Contract. Rollback signal if it becomes opt-in: protocol Amendment 1, P13.
+- Decided 2026-11-12 (owner-delegated debate, Codex gpt-6-astra; [consensus §12](2026-11-11-consensus-v3.md)): **default-on in 3.0.0**, as a policy choice despite the pass.
+- Reopen evidence, fixed now so it is the last test asked for: a separately budgeted, frozen comparison on the actual 3.x rules with long sessions that demonstrably reach compaction and realistic editing work after it; routing identical between arms; the same complete budget surface removed as in E8; at least 29 fresh pairs; Amendment 1's acceptance, harm, delegation and cost thresholds; incomplete runs count as failures; blinded cross-vendor review. A pass supports opt-in without another speculative veto (rollback signal: Amendment 1, P13). A reproducible budget-caused failure or material rework reopens it earlier.
+- Options: Build (the 3.x test) · Defer · `Reject:` keep the budget and close the question.
+
+## 21. Routing by judgment instead of file count
+- Would: replace "3+ files → delegate" with a judgment-bearing/mechanical distinction (E6: plugin arms cost more on mechanical or tightly specified tasks for no visible quality gain).
+- Not built: it collides with the file budget. The gate as built denies a direct 5-file rename, so the routing line and the budget cannot change separately; a semantic exemption would put judgment inside a countable gate (P5) and change the measured removal target. The reviewer signed "wait" (2026-11-11).
+- Reopen evidence: #20's result, or an owner decision to change the routing line and the budget together under P13 (evidence-bearing re-audit plus a rollback signal).
+- Options: Build (routing and budget changed together, cross-vendor reviewed) · Defer · `Reject:` keep the file-count routing and the budget.
+
+## 22. Quotation-source reader
+- Would: on a push turn, check that the `authorized by:` quotation is a substring of an earlier human-typed message and nudge once if not.
+- Not built: the lab's offline replay (E3) missed the predeclared pass line of zero erroneous nudges. Simulated nudges: project E session A 6 blocks, all 6 wrong; session B 43 blocks (50 with the 2.36.0 matcher), 0 wrong, 5 colliding with a nudge the turn had already spent. Quoted spans matched an earlier human message in 4/11 (A) and 4/61 (B). Push turns sit 85–136 MB into session A's transcript.
+- Qualification (the reviewer's): the six session-A nudges were on real owner quotations that the host had shortened with an ellipsis, not classification errors or invented permission; under 3.0's verbatim norm those records would need correction. E3 therefore does not establish that a reader cannot satisfy the new norm. Stop already supplies `last_assistant_message`, so the final message's absence from the transcript at Stop is not itself a blocker.
+- Reopen evidence: a frozen matcher validated on fresh sessions from other projects, with independently labelled quotation cases and adversarial ellipsis cases (the two lab sessions are now development data).
+- Options: Build (after that validation; cross-vendor reviewed, P13) · Defer · `Reject:` the verbatim norm stays norm-only.
+
+## 23. Restructuring `tests/test_hooks.py`
+- Would: split the suite's single `main()` (5,982 lines at v2.35.3) into separately runnable groups.
+- Not built: no defect traced to the structure; the 2.36/3.0 releases froze it (signed F10).
+- Reopen evidence: a maintainer or worker failure traced to the suite's structure (a missed failure, a fixture interaction), or a release that must touch most of the suite anyway.
+- Options: Build (mechanical split, counts unchanged, cross-checked) · Defer · `Reject:` keep the one `main()`; new tests follow the existing style.
+
+## 24. Comment guidance
+- Would: guidance against comments that narrate a change or record process history.
+- Not built: the reviewer's reading of both field sessions found 0 sessions misled by a stale comment and 0 owner complaints about comment length; the E6 blinded review found no such comment in 48 diffs. The plugin's own long comments follow `PROMPTS.md` ("scars belong next to code"), so plugin-level guidance would need that law amended first.
+- Reopen evidence: a project-level trial first (one line in a project instruction file, plus one line in the diff-review brief) that shows an effect, then an owner amendment of `PROMPTS.md`.
+- Options: Build (after the trial and the amendment) · Defer · `Reject:` no comment guidance; `PROMPTS.md` stands.
 
 ## Closed
 - 19. Reviewer contract: provenance labels. ADOPTED in 2.35.3 (owner amendment 2026-11-03; [debate 10](2026-11-03-consensus-external-skills.md) P1 → the plan critique in the ledger).

@@ -23,8 +23,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hjw_common import (  # noqa: E402
-    STALE_DAYS, _safe_sid, command_name, gate_disabled_by_env,
-    load_config_with_status, on_codex_host, state_file,
+    OPEN_INTERVALS_FILE, STALE_DAYS, _safe_sid, command_name,
+    gate_disabled_by_env, load_config_with_status, on_codex_host, state_file,
 )
 
 MAX_BYTES = 4 << 20  # observe() rotates at 200KB; anything larger is not ours
@@ -34,9 +34,12 @@ ENV_KEYS = ("HAEJWO_GATE", "CODEX_MODEL", "CODEX_EFFORT", "CODEX_SANDBOX",
             "CODEX_TIMEOUT", "CLAUDE_MODEL", "HJW_CLAUDE_EFFORT", "CLAUDE_TIMEOUT")
 # Record shapes the 2.26 hooks write; anything else is a "new shape".
 BASE_KEYS = {"v", "hook", "agent_type", "agent_id", "sid", "decision", "ts"}
+# 2.36.0: a subagent-exempt interval row (hjw_common._aggregate_locked)
+INTERVAL_KEYS = {"via", "iid", "n", "first", "last"}
 KNOWN_KEYS = {
-    "gate": BASE_KEYS | {"tool", "path", "via", "offending"},
-    "bash_guard": BASE_KEYS | {"via", "target"},
+    "gate": BASE_KEYS | {"tool", "path", "via", "offending"} | INTERVAL_KEYS,
+    "bash_guard": BASE_KEYS | {"via", "target"} | INTERVAL_KEYS,
+    # plan_marker_kind RETIRED 2.36.0: records from earlier sessions still parse
     "delegation": BASE_KEYS | {"subagent_type", "requested_model",
                                "plan_marker_kind", "tier_pin_check"},
     "report_check": BASE_KEYS | {"via", "chars"},  # chars: 2.33.0
@@ -178,12 +181,128 @@ def load_observations(data):
     return recs, bad, notes
 
 
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _is_interval(r):
+    """A subagent-exempt interval row (2.36.0): `iid`, a count `n` >= 1 and
+    the interval's first/last call time. Older one-call rows are not."""
+    n = r.get("n")
+    return (isinstance(r.get("iid"), str) and isinstance(n, int)
+            and not isinstance(n, bool) and n >= 1
+            and _num(r.get("first")) and _num(r.get("last")))
+
+
+def _calls(r):
+    return r["n"] if _is_interval(r) else 1
+
+
+def load_open_intervals(data):
+    """(rows for the intervals still open, note). Read BEFORE the log: an
+    interval closed between the two reads then appears in the log with the
+    same iid and a count at least as large (_collapse keeps the largest)."""
+    if not data:
+        return [], None
+    obj, note = _read_json(os.path.join(data, "state", OPEN_INTERVALS_FILE))
+    if note == "absent":
+        return [], None
+    ivs = list(obj.values()) if isinstance(obj, dict) else None
+    if note or ivs is None or not all(isinstance(iv, dict) and _is_interval(iv)
+                                      for iv in ivs):
+        return [], (f"{OPEN_INTERVALS_FILE} unreadable ({note or 'not interval objects'}) "
+                    "— subagent-exempt call counts may be partial")
+    rows = []
+    for iv in ivs:
+        r = {"v": 2, "decision": "allow", "via": "subagent-exempt"}
+        r.update({k: iv.get(k) for k in ("hook", "agent_type", "sid", "iid", "n",
+                                         "first", "last")})
+        r["ts"] = iv["last"]
+        rows.append(r)
+    return rows, None
+
+
+SNAPSHOT_TRIES = 3
+_SNAPSHOT_FILES = ("observations.jsonl.3", "observations.jsonl.2",
+                   "observations.jsonl.1", "observations.jsonl", OPEN_INTERVALS_FILE)
+
+
+def _files_sig(data):
+    """(inode, size, mtime_ns) per observation file; None when absent."""
+    sig = []
+    for name in _SNAPSHOT_FILES:
+        try:
+            st = os.stat(os.path.join(data, "state", name))
+            sig.append((st.st_ino, st.st_size, st.st_mtime_ns))
+        except Exception:
+            sig.append(None)
+    return sig
+
+
+def read_snapshot(data):
+    """(pending, pending note, records, unparsable count, notes) from reads
+    that saw no write. Hooks write without waiting for this reader (2.36.0
+    diff review round 1): between the open-interval read and the log read a
+    hook can open an interval and another raise its count (the count is then
+    missing), and a rotation can move an unread generation onto a name
+    already read (a base limitation of the 4-file read). So: open file, the
+    generations, the open file again, with every file's stat before and
+    after; a change retries, up to SNAPSHOT_TRIES reads; still changing ->
+    the last read with a note that its counts may be incomplete."""
+    for _ in range(SNAPSHOT_TRIES):
+        before = _files_sig(data) if data else None
+        pending, pnote = load_open_intervals(data)  # BEFORE the log (see there)
+        recs, bad, notes = load_observations(data)
+        again, _ = load_open_intervals(data)
+        if not data or (again == pending and _files_sig(data) == before):
+            return pending, pnote, recs, bad, notes
+    notes = notes + [f"observation files changed during {SNAPSHOT_TRIES} reads (hooks writing "
+                     "or rotating) — the counts below may be incomplete"]
+    return pending, pnote, recs, bad, notes
+
+
+def _collapse(recs):
+    """Interval rows merged per iid (the opening row, a closing row, the open
+    file): the largest n, earliest first, latest last. Other rows as given."""
+    out, by_iid = [], {}
+    for r in recs:
+        if not _is_interval(r):
+            out.append(r)
+            continue
+        m = by_iid.get(r["iid"])
+        if m is None:
+            by_iid[r["iid"]] = m = dict(r)
+            out.append(m)
+            continue
+        m["n"] = max(m["n"], r["n"])
+        m["first"] = min(m["first"], r["first"])
+        m["last"] = max(m["last"], r["last"])
+        m["ts"] = max(_ts(m), _ts(r))
+    return out
+
+
 def _ts(r):
     t = r.get("ts")
     return float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) else 0.0
 
 
+def retention_line(data, recs):
+    """The retained interval: oldest..newest observation time over all rows
+    read (an interval row spans first..last)."""
+    times = [t for r in recs
+             for t in ((r["first"], r["last"]) if _is_interval(r) else (_ts(r),)) if t]
+    span = f"{_stamp(min(times))}..{_stamp(max(times))}" if times else "-"
+    dropped = bool(data) and os.path.exists(
+        os.path.join(data, "state", "observations.jsonl.3"))
+    return (f"retained: {span} (oldest..newest observation; size-bounded, 4 files) — "
+            + ("earlier records may have been rotated out (observations.jsonl.3 exists)"
+               if dropped else "no generation rotated out yet")
+            + "; every count below covers this interval only")
+
+
 def _detail(r):
+    if _is_interval(r):
+        return f"x{r['n']} calls {_stamp(r['first'])}..{_stamp(r['last'])}"
     h = r.get("hook")
     if h == "gate":
         return f"{r.get('tool')} {os.path.basename(str(r.get('path') or ''))}"
@@ -194,26 +313,34 @@ def _detail(r):
     return ""
 
 
-def observation_lines(recs, bad, sid12):
+def _actor_calls(mine):
+    actors = collections.Counter()
+    for r in mine:
+        if r.get("agent_type"):
+            actors[r.get("agent_type")] += _calls(r)
+    return actors
+
+
+def observation_lines(recs, bad, sid12, pending=()):
+    """`pending`: load_open_intervals rows, merged into this session's."""
     lines = []
-    ts = [_ts(r) for r in recs if _ts(r)]
     lines.append(
         f"observations (machine-wide, 4 files): records={len(recs)} "
-        f"span={_stamp(min(ts)) if ts else '-'}..{_stamp(max(ts)) if ts else '-'} "
         f"distinct_sids={len({r.get('sid') for r in recs})} "
         f"denies={sum(1 for r in recs if r.get('decision') == 'deny')} unparsable_lines={bad}")
     if not sid12:
         lines.append("observations (this session): session id unknown — machine-wide line only")
         return lines, []
-    mine = sorted((r for r in recs if r.get("sid") == sid12), key=_ts)
+    mine = sorted(_collapse([r for r in list(recs) + list(pending)
+                             if r.get("sid") == sid12]), key=_ts)
     if not mine:
         lines.append(f"observations (this session, sid {sid12}): none")
         return lines, mine
     by_hook = collections.Counter(str(r.get("hook")) for r in mine)
-    actors = collections.Counter(r.get("agent_type") for r in mine if r.get("agent_type"))
+    actors = _actor_calls(mine)
     lines.append(f"observations (this session, sid {sid12}): {len(mine)} records — "
                  + " ".join(f"{h}={n}" for h, n in sorted(by_hook.items()))
-                 + "; subagent-origin records: "
+                 + "; subagent-origin calls: "
                  + (", ".join(f"{a}={n}" for a, n in actors.most_common()) if actors
                     else "none (no subagent origin observed — not proof worker hooks never fire)"))
     for r in mine[-LAST_N:]:
@@ -234,8 +361,7 @@ def delegation_lines(mine):
         f"delegations (this session): {len(own)} — " + ", ".join(
             f"{p}={n}" for p, n in pairs.most_common(LAST_N)) + " (type/requested_model; None = no override)",
         f"  denies={sum(1 for r in own if r.get('decision') == 'deny')} tier_pin_check: "
-        + ", ".join(f"{p}={n}" for p, n in sorted(pins.items()))
-        + f"; plan_marker_kind none={sum(1 for r in own if r.get('plan_marker_kind') == 'none')}",
+        + ", ".join(f"{p}={n}" for p, n in sorted(pins.items())),
         f"  codex: rescue delegations={len(rescue)}",
     ]
 
@@ -251,8 +377,7 @@ def anomaly_lines(mine):
                        f" ending {_stamp(run[-1].get('ts'))}")
         run = []
     spawned = {r.get("subagent_type") for r in mine if r.get("hook") == "delegation"}
-    for actor, n in collections.Counter(
-            r.get("agent_type") for r in mine if r.get("agent_type")).most_common():
+    for actor, n in _actor_calls(mine).most_common():
         if actor not in spawned:
             out.append(f"actor {actor} x{n} has no delegation record this session")
     if any(r.get("agent_type") for r in mine) and not spawned:
@@ -282,10 +407,11 @@ def main(argv):
     budget = cfg["gate"]["max_files_per_turn"]
     print(turn_line(data, sid, "-" if budget is None else budget))
     print(reviewer_line(cfg, on_codex, now))
-    recs, bad, notes = load_observations(data)
-    for n in notes:
+    pending, pnote, recs, bad, notes = read_snapshot(data)
+    for n in notes + ([pnote] if pnote else []):
         print("note: " + n)
-    olines, mine = observation_lines(recs, bad, sid[:12])
+    olines, mine = observation_lines(recs, bad, sid[:12], pending)
+    olines.insert(1, retention_line(data, recs + pending))
     print("\n".join(olines))
     if sid:
         print("\n".join(delegation_lines(mine)))
